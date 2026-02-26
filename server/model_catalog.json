@@ -1,0 +1,254 @@
+{
+  "gpt-5.2": {
+    "vendor": "OpenAI",
+    "display_name": "GPT-5.2",
+    "description": "Frontier reasoning model; best for complex coding and agentic tasks.",
+    "input_cost_per_million": 1.75,
+    "output_cost_per_million": 14.0,
+    "context_window": 400000,
+    "tags": ["frontier", "reasoning", "general"]
+  },
+  "gpt-5.2-pro": {
+    "vendor": "OpenAI",
+    "display_name": "GPT-5.2 Pro",
+    "description": "Highest-compute variant of GPT-5.2 for the most demanding tasks.",
+    "input_cost_per_million": 21.0,
+    "output_cost_per_million": 168.0,
+    "context_window": 400000,
+    "tags": ["frontier", "reasoning", "high-cost"]
+  },
+  "gpt-5.1": {
+    "vendor": "OpenAI",
+    "display_name": "GPT-5.1",
+    "description": "Strong general-purpose model; good blend of quality and price.",
+    "input_cost_per_million": 1.25,
+    "output_cost_per_million": 10.0,
+    "context_window": 200000,
+    "tags": ["general"]
+  },
+  "gpt-5": {
+    "vendor": "OpenAI",
+    "display_name": "GPT-5",
+    "description": "Earlier flagship reasoning model; still solid for many workloads.",
+    "input_cost_per_million": 1.25,
+    "output_cost_per_million": 10.0,
+    "context_window": 272000,
+    "tags": ["general", "reasoning", "previous-gen"]
+  },
+  "gpt-5-mini": {
+    "vendor": "OpenAI",
+    "display_name": "GPT-5 mini",
+    "description": "Cheaper, faster GPT-5 variant for well-defined tasks and tooling.",
+    "input_cost_per_million": 0.25,
+    "output_cost_per_million": 2.0,
+    "context_window": 500000,
+    "tags": ["cheap", "fast"]
+  },
+  "gpt-5-nano": {
+    "vendor": "OpenAI",
+    "display_name": "GPT-5 nano",
+    "description": "Lowest-cost GPT-5 variant; ideal for routing, tagging, and utilities.",
+    "input_cost_per_million": 0.05,
+    "output_cost_per_million": 0.4,
+    "context_window": 200000,
+    "tags": ["cheap", "utility", "fast"]
+  },
+  "gpt-5.2-chat-latest": {
+    "vendor": "OpenAI",
+    "display_name": "GPT-5.2 (chat-latest)",
+    "description": "Alias that tracks the latest GPT-5.2 chat configuration.",
+    "input_cost_per_million": 1.75,
+    "output_cost_per_million": 14.0,
+    "context_window": 400000,
+    "tags": ["alias", "frontier", "reasoning"]
+  },
+  "gpt-5.1-chat-latest": {
+    "vendor": "OpenAI",
+    "display_name": "GPT-5.1 (chat-latest)",
+    "description": "Alias that tracks the latest GPT-5.1 chat configuration.",
+    "input_cost_per_million": 1.25,
+    "output_cost_per_million": 10.0,
+    "context_window": 200000,
+    "tags": ["alias", "general"]
+  },
+  "gpt-5-chat-latest": {
+    "vendor": "OpenAI",
+    "display_name": "GPT-5 (chat-latest)",
+    "description": "Alias that tracks the latest GPT-5 chat configuration.",
+    "input_cost_per_million": 1.25,
+    "output_cost_per_million": 10.0,
+    "context_window": 272000,
+    "tags": ["alias", "general"]
+  },
+  "gpt-5.2-codex": {
+    "vendor": "OpenAI",
+    "display_name": "GPT-5.2 Codex",
+    "description": "Most capable coding-oriented GPT-5.2 variant.",
+    "input_cost_per_million": 1.75,
+    "output_cost_per_million": 14.0,
+    "context_window": 400000,
+    "tags": ["code", "reasoning"]
+  },
+  "gpt-5.1-codex-max": {
+    "vendor": "OpenAI",
+    "display_name": "GPT-5.1 Codex Max",
+    "description": "High-horizon coding model tuned for long-running agentic work.",
+    "input_cost_per_million": 1.25,
+    "output_cost_per_million": 10.0,
+    "context_window": 400000,
+    "tags": ["code", "long-context"]
+  },
+  "gpt-5.1-codex": {
+    "vendor": "OpenAI",
+    "display_name": "GPT-5.1 Codex",
+    "description": "Agentic coding model based on GPT-5.1.",
+    "input_cost_per_million": 1.25,
+    "output_cost_per_million": 10.0,
+    "context_window": 200000,
+    "tags": ["code"]
+  },
+  "gpt-5-codex": {
+    "vendor": "OpenAI",
+    "display_name": "GPT-5 Codex",
+    "description": "Coding-optimized variant of GPT-5.",
+    "input_cost_per_million": 1.25,
+    "output_cost_per_million": 10.0,
+    "context_window": 272000,
+    "tags": ["code"]
+  },
+  "gpt-4.1": {
+    "vendor": "OpenAI",
+    "display_name": "GPT-4.1",
+    "description": "Smartest non-reasoning GPT model; strong general-purpose default.",
+    "input_cost_per_million": 2.0,
+    "output_cost_per_million": 8.0,
+    "context_window": 1048576,
+    "tags": ["general", "non-reasoning"]
+  },
+  "gpt-4.1-mini": {
+    "vendor": "OpenAI",
+    "display_name": "GPT-4.1 mini",
+    "description": "Smaller, cheaper GPT-4.1 variant.",
+    "input_cost_per_million": 0.4,
+    "output_cost_per_million": 2.8,
+    "context_window": 200000,
+    "tags": ["cheap", "fast"]
+  },
+  "gpt-4.1-nano": {
+    "vendor": "OpenAI",
+    "display_name": "GPT-4.1 nano",
+    "description": "Lowest-cost GPT-4.1 variant for simple tasks.",
+    "input_cost_per_million": 0.2,
+    "output_cost_per_million": 0.8,
+    "context_window": 100000,
+    "tags": ["cheap", "utility"]
+  },
+  "gpt-4o": {
+    "vendor": "OpenAI",
+    "display_name": "GPT-4o",
+    "description": "High-intelligence multimodal GPT model (retiring Feb 13, 2026).",
+    "input_cost_per_million": 4.25,
+    "output_cost_per_million": 17.0,
+    "context_window": 128000,
+    "tags": ["multimodal", "deprecated-soon"]
+  },
+  "gpt-4o-mini": {
+    "vendor": "OpenAI",
+    "display_name": "GPT-4o mini",
+    "description": "Smaller, cheaper GPT-4o variant.",
+    "input_cost_per_million": 0.25,
+    "output_cost_per_million": 1.0,
+    "context_window": 128000,
+    "tags": ["cheap", "fast", "multimodal"]
+  },
+  "o1": {
+    "vendor": "OpenAI",
+    "display_name": "o1",
+    "description": "Earlier full o-series reasoning model.",
+    "input_cost_per_million": 7.5,
+    "output_cost_per_million": 30.0,
+    "context_window": 200000,
+    "tags": ["reasoning", "previous-gen"]
+  },
+  "o1-pro": {
+    "vendor": "OpenAI",
+    "display_name": "o1-pro",
+    "description": "High-compute variant of o1.",
+    "input_cost_per_million": 75.0,
+    "output_cost_per_million": 300.0,
+    "context_window": 200000,
+    "tags": ["reasoning", "high-cost", "previous-gen"]
+  },
+  "o1-mini": {
+    "vendor": "OpenAI",
+    "display_name": "o1-mini",
+    "description": "Smaller reasoning model derived from o1.",
+    "input_cost_per_million": 0.55,
+    "output_cost_per_million": 2.2,
+    "context_window": 128000,
+    "tags": ["cheap", "reasoning", "previous-gen"]
+  },
+  "o3": {
+    "vendor": "OpenAI",
+    "display_name": "o3",
+    "description": "Reasoning model for complex tasks; largely superseded by GPT-5.x.",
+    "input_cost_per_million": 3.5,
+    "output_cost_per_million": 14.0,
+    "context_window": 200000,
+    "tags": ["reasoning"]
+  },
+  "o3-pro": {
+    "vendor": "OpenAI",
+    "display_name": "o3-pro",
+    "description": "Higher-compute o3 variant.",
+    "input_cost_per_million": 10.0,
+    "output_cost_per_million": 40.0,
+    "context_window": 200000,
+    "tags": ["reasoning", "high-cost"]
+  },
+  "o3-deep-research": {
+    "vendor": "OpenAI",
+    "display_name": "o3 Deep Research",
+    "description": "Deep research reasoning model for long, reference-heavy tasks.",
+    "input_cost_per_million": 5.0,
+    "output_cost_per_million": 20.0,
+    "context_window": 400000,
+    "tags": ["reasoning", "research"]
+  },
+  "o3-mini": {
+    "vendor": "OpenAI",
+    "display_name": "o3-mini",
+    "description": "Smaller o3 variant; good for cheaper reasoning tasks.",
+    "input_cost_per_million": 0.55,
+    "output_cost_per_million": 2.2,
+    "context_window": 128000,
+    "tags": ["cheap", "reasoning"]
+  },
+  "o4-mini": {
+    "vendor": "OpenAI",
+    "display_name": "o4-mini",
+    "description": "Fast, cost-efficient reasoning model that predates GPT-5 mini.",
+    "input_cost_per_million": 2.0,
+    "output_cost_per_million": 8.0,
+    "context_window": 200000,
+    "tags": ["reasoning", "previous-gen"]
+  },
+  "o4-mini-deep-research": {
+    "vendor": "OpenAI",
+    "display_name": "o4-mini Deep Research",
+    "description": "Deep research variant of o4-mini.",
+    "input_cost_per_million": 1.0,
+    "output_cost_per_million": 4.0,
+    "context_window": 400000,
+    "tags": ["reasoning", "research", "previous-gen"]
+  },
+  "gpt-5.1-thinking": {
+    "vendor": "OpenAI",
+    "display_name": "GPT-5.1 Thinking",
+    "description": "High-coherence reasoning profile used in your scaffold.",
+    "input_cost_per_million": 1.25,
+    "output_cost_per_million": 10.0,
+    "context_window": 200000,
+    "tags": ["reasoning", "custom"]
+  }
+}

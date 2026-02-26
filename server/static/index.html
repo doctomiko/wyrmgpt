@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>WyrmGPT</title>
+  <link rel="icon" type="image/png" href="/static/cropped-White-Dragon-Logo-512-32x32.png">
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div id="layout">
+    <aside id="sidebar">
+      <div class="sideHeader">
+        <div class="title">WyrmGPT</div>
+        <button id="newChat">New</button>
+      </div>
+      <div id="projectHeader">
+        <span>Projects</span>
+        <button id="newProjectBtn" title="Create new project">+</button>
+      </div>
+      <div id="projectList"></div>
+      <hr>
+      <div id="convList" class="convList"></div> <!--div id="conversationList"></div-->
+    </aside>
+
+    <section id="main">
+      <div id="chatTop">
+        <div id="chatTitle" class="chatTitle">…</div>
+        <div class="chatTopActions">
+          <div class="modelPicker">
+            <label>Model A</label>
+            <select id="modelSelectA"></select>
+            <div id="modelInfoA" class="modelInfo"></div>
+          </div>
+          <div id="advancedModelB" class="modelPicker">
+            <label>Model B</label>
+            <select id="modelSelectB"></select>
+            <div id="modelInfoB" class="modelInfo"></div>
+          </div>
+          <button id="chatMenuButton" class="iconButton" title="Chat menu">
+            ☰
+          </button>
+          <div id="chatMenu" class="chatMenu hidden">
+            <button id="renameChat">Rename</button>
+            <button id="suggestChat">Suggest Title</button>
+            <button id="openMemory">Memory &amp; Context…</button>
+            <label class="menuAdvanced">
+              <input type="checkbox" id="advancedCheckbox" />
+              Advanced A/B controls
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <main id="chat"></main>
+
+      <footer>
+        <textarea id="input" rows="2" placeholder="Message…"></textarea>
+        <button id="send">Send</button>
+        <!--button id="sendAB" title="Send and compare models A/B">Send A/B</button-->
+      </footer>
+    </section>
+
+    <!-- Memory & context modal -->
+    <div id="memoryModal" class="modal hidden">
+      <div class="modalBackdrop"></div>
+      <div class="modalPanel">
+        <div class="modalHeader">
+          <div class="modalTitle">Memory &amp; Context</div>
+          <button id="closeMemory" class="iconButton" title="Close">&times;</button>
+        </div>
+        <div class="modalBody">
+          <div class="memSection">
+            <div class="memTitle">Pinned (manual)</div>
+            <div class="memAdd">
+              <textarea id="pinText" rows="3" placeholder="Add a pinned memory…"></textarea>
+              <button id="addPin">Pin</button>
+            </div>
+            <div id="pinList" class="pinList"></div>
+          </div>
+
+          <!--div class="memSection">
+            <div class="contextHeaderRow">
+              <div class="memTitle">Context pack (what will be sent)</div>
+              <button id="toggleContext">Show more</button>
+            </div>
+            <pre id="contextPreview" class="contextPreview">Loading…</pre>
+          </div-->
+        </div>
+      </div>
+    </div>
+
+    <aside id="rightSidePanel">
+      <!--div class="memHeader">Memory</div>
+      <div class="memSection">
+        <div class="memTitle">Pinned (manual)</div>
+        <div class="memAdd">
+          <textarea id="pinText" rows="3" placeholder="Add a pinned memory…"></textarea>
+          <button id="addPin">Pin</button>
+        </div>
+        <div id="pinList" class="pinList"></div>
+      </div-->
+      <div class="rightSideSection">
+        <div class="contextHeaderRow">
+          <div class="memTitle">Context pack (what will be sent)</div>
+          <button id="toggleContext">Show more</button>
+        </div>
+        <pre id="contextPreview" class="contextPreview">Loading…</pre>
+      </div>
+    </aside>
+  </div>
+  <div id="moveToModal" class="modal hidden">
+    <div class="modalBackdrop"></div>
+    <div class="modalPanel" style="max-width: 520px;">
+      <div class="modalHeader">
+        <div class="modalTitle">Move conversation to project</div>
+        <button id="moveToClose" class="iconButton" title="Close">&times;</button>
+      </div>
+      <div class="modalBody">
+        <div style="margin-bottom: 8px;">
+          Type to search projects, or type a new name to create one. Leave blank to unassign.
+        </div>
+        <input id="moveToInput" list="moveToDatalist" placeholder="Project name…" />
+        <datalist id="moveToDatalist"></datalist>
+        <div class="modalActions">
+          <button id="moveToCancel">Cancel</button>
+          <button id="moveToClear">Clear</button>
+          <button id="moveToApply">Move</button>
+        </div>
+      </div>
+    </div>
+  </div>  
+  <div id="convMenu" class="convMenu hidden">
+    <button id="menuRename">Rename</button>
+    <button id="menuSuggest">Suggest Title</button>
+    <button id="menuMoveTo">Move To…</button>
+    <button id="menuSummarize">Summarize</button>
+    <button id="menuArchive">Archive</button>
+    <button id="menuDelete">Delete</button>
+  </div>
+  <div id="projMenu" class="convMenu hidden">
+    <button id="projRename">Rename</button>
+    <button id="projDesc">Edit description…</button>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
