@@ -1,0 +1,76 @@
+# TODO (actionable items)
+
+1. Review `system_prompt.txt`
+   - Decide if the current persona (explicit adult/flirty allowances) is acceptable.
+   - If not, replace `system_prompt.txt` or set `SYSTEM_PROMPT_FILE`/`SYSTEM_PROMPT` in your .env.
+
+2. Disable debug leakage
+   - Set `DEBUG_ERRORS=0` for non-dev use.
+   - Consider removing or protecting `/api/debug/*` endpoints behind auth or local-only binding.
+
+3. Protect server / add auth
+   - Add authentication (token/basic/OAuth) or run behind a reverse-proxy with access control.
+   - Bind server to localhost only when not using a proxy.
+
+4. Secure OpenAI API key and document costs
+   - Ensure `OPENAI_API_KEY` is never committed.
+   - Add a note that A/B mode (`/api/chat_ab`) issues two model calls (double cost).
+
+5. Handle pinned memories safely
+   - Pinned memories are global (all conversations). Audit pins and document this behavior.
+   - Consider making pins per-project or per-conversation if that’s unexpected.
+
+6. Client debug
+   - Turn off `DEBUG_BOOT = true` in `server/static/app.js` for production.
+
+7. Backup & migration caution
+   - Back up `data/callie_mvp.sqlite3` and include `-wal`/`-shm` files.
+   - Warn users before running `server/scripts/migrate_reset_v2.py` (destructive if DB has data variants).
+
+8. Model sync caution
+   - `server/scripts/sync_model_catalog.py` will write `server/model_catalog.json` and requires `OPENAI_API_KEY`.
+   - Back up `model_catalog.json` before running.
+
+9. Rate limiting / abuse mitigation
+   - Consider adding rudimentary rate limits or running behind an authenticated proxy for shared networks.
+
+10. Docs / README additions
+   - Add a short "Deployment Checklist" referencing the above items and where to change env vars.
+# RODO / TODO (actionable items)
+
+1. Review `system_prompt.txt`
+   - Decide if the current persona (explicit adult/flirty allowances) is acceptable.
+   - If not, replace `system_prompt.txt` or set `SYSTEM_PROMPT_FILE`/`SYSTEM_PROMPT` in your .env.
+
+2. Disable debug leakage
+   - Set `DEBUG_ERRORS=0` for non-dev use.
+   - Consider removing or protecting `/api/debug/*` endpoints behind auth or local-only binding.
+
+3. Protect server / add auth
+   - Add authentication (token/basic/OAuth) or run behind a reverse-proxy with access control.
+   - Bind server to localhost only when not using a proxy.
+
+4. Secure OpenAI API key and document costs
+   - Ensure `OPENAI_API_KEY` is never committed.
+   - Add a note that A/B mode (`/api/chat_ab`) issues two model calls (double cost).
+
+5. Handle pinned memories safely
+   - Pinned memories are global (all conversations). Audit pins and document this behavior.
+   - Consider making pins per-project or per-conversation if that’s unexpected.
+
+6. Client debug
+   - Turn off `DEBUG_BOOT = true` in `server/static/app.js` for production.
+
+7. Backup & migration caution
+   - Back up `data/callie_mvp.sqlite3` and include `-wal`/`-shm` files.
+   - Warn users before running `server/scripts/migrate_reset_v2.py` (destructive if DB has data variants).
+
+8. Model sync caution
+   - `server/scripts/sync_model_catalog.py` will write `server/model_catalog.json` and requires `OPENAI_API_KEY`.
+   - Back up `model_catalog.json` before running.
+
+9. Rate limiting / abuse mitigation
+   - Consider adding rudimentary rate limits or running behind an authenticated proxy for shared networks.
+
+10. Docs / README additions
+   - Add a short "Deployment Checklist" referencing the above items and where to change env vars.
