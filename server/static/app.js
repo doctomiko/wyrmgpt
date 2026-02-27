@@ -21,6 +21,10 @@ const suggestBtn = document.getElementById("suggestChat");
 const pinTextEl = document.getElementById("pinText");
 const addPinBtn = document.getElementById("addPin");
 const pinListEl = document.getElementById("pinList");
+const memoryTextEl = document.getElementById("memoryText");
+const memoryTagsEl = document.getElementById("memoryTags");
+const memoryImportanceEl = document.getElementById("memoryImportance");
+const saveMemoryBtn = document.getElementById("saveMemory");
 
 const convMenuEl = document.getElementById("convMenu");
 const menuRenameBtn = document.getElementById("menuRename");
@@ -1140,6 +1144,85 @@ async function addPin() {
   await refreshContext();
 }
 
+async function createMemoryFromUi() {
+  if (!memoryTextEl) return;
+
+  const content = (memoryTextEl.value || "").trim();
+  if (!content) {
+    alert("Memory content cannot be empty.");
+    return;
+  }
+
+  const tagsRaw = (memoryTagsEl?.value || "").trim();
+  const tags = tagsRaw || null;
+
+  let importance = 0;
+  if (memoryImportanceEl && memoryImportanceEl.value !== "") {
+    const parsed = parseInt(memoryImportanceEl.value, 10);
+    importance = Number.isNaN(parsed) ? 0 : parsed;
+  }
+
+  try {
+    // 1) Create the memory
+    const res = await fetch("/api/memories", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        content,
+        importance,
+        tags
+      })
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert("Failed to create memory: " + (err.detail || res.status));
+      return;
+    }
+
+    const data = await res.json();
+    const memoryId = data.id;
+    if (!memoryId) {
+      console.warn("createMemory: no id in response", data);
+      return;
+    }
+
+    // 2) Link to current conversation, if any
+    if (conversationId) {
+      const resLinkConv = await fetch(
+        `/api/memories/${encodeURIComponent(memoryId)}/link_conversation/${encodeURIComponent(conversationId)}`,
+        { method: "POST" }
+      );
+      if (!resLinkConv.ok) {
+        console.warn("Failed to link memory to conversation", await resLinkConv.text());
+      }
+    }
+
+    // 3) Link to current project, if the conversation has one
+    const meta = conversationMap.get(conversationId);
+    const pid = meta?.project_id ?? null;
+    if (pid != null) {
+      const resLinkProj = await fetch(
+        `/api/memories/${encodeURIComponent(memoryId)}/link_project/${pid}`,
+        { method: "POST" }
+      );
+      if (!resLinkProj.ok) {
+        console.warn("Failed to link memory to project", await resLinkProj.text());
+      }
+    }
+
+    // 4) Clean up UI & refresh context
+    memoryTextEl.value = "";
+    if (memoryTagsEl) memoryTagsEl.value = "";
+    if (memoryImportanceEl) memoryImportanceEl.value = "0";
+
+    await refreshContext();
+  } catch (e) {
+    console.error("createMemoryFromUi failed", e);
+    alert("Error creating memory – see console for details.");
+  }
+}
+
 async function renameChat() {
   if (!conversationId) return;
   const current = conversationMap.get(conversationId)?.title || "New chat";
@@ -1521,6 +1604,11 @@ function bindModelSelect() {
 sendBtn.addEventListener("click", send);
 newBtn.addEventListener("click", newChat);
 addPinBtn.addEventListener("click", addPin);
+if (saveMemoryBtn) {
+  saveMemoryBtn.addEventListener("click", () => {
+    createMemoryFromUi().catch(e => console.error("createMemoryFromUi error", e));
+  });
+}
 renameBtn.addEventListener("click", renameChat);
 suggestBtn.addEventListener("click", suggestChatTitle);
 if (modelSelectA) {

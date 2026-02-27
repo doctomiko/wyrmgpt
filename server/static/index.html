@@ -61,6 +61,15 @@
       </footer>
     </section>
 
+    <aside id="rightSidePanel">
+      <div class="rightSideSection">
+        <div class="contextHeaderRow">
+          <div class="memTitle">Context pack (what will be sent)</div>
+          <button id="toggleContext">Show more</button>
+        </div>
+        <pre id="contextPreview" class="contextPreview">Loading…</pre>
+      </div>
+    </aside>
     <!-- Memory & context modal -->
     <div id="memoryModal" class="modal hidden">
       <div class="modalBackdrop"></div>
@@ -78,36 +87,26 @@
             </div>
             <div id="pinList" class="pinList"></div>
           </div>
-
-          <!--div class="memSection">
-            <div class="contextHeaderRow">
-              <div class="memTitle">Context pack (what will be sent)</div>
-              <button id="toggleContext">Show more</button>
-            </div>
-            <pre id="contextPreview" class="contextPreview">Loading…</pre>
-          </div-->
+        <div class="memSection">
+          <div class="memTitle">Long-term memory (machine)</div>
+          <div class="memAdd">
+            <textarea id="memoryText" rows="3" placeholder="Store a longer-term memory…"></textarea>
+          </div>
+          <div class="memAdd">
+            <label>
+              Tags
+              <input id="memoryTags" type="text" placeholder="comma, separated, tags" />
+            </label>
+            <label>
+              Importance
+              <input id="memoryImportance" type="number" value="0" min="0" max="10" />
+            </label>
+            <button id="saveMemory">Save memory</button>
+          </div>
+        </div>          
         </div>
       </div>
     </div>
-
-    <aside id="rightSidePanel">
-      <!--div class="memHeader">Memory</div>
-      <div class="memSection">
-        <div class="memTitle">Pinned (manual)</div>
-        <div class="memAdd">
-          <textarea id="pinText" rows="3" placeholder="Add a pinned memory…"></textarea>
-          <button id="addPin">Pin</button>
-        </div>
-        <div id="pinList" class="pinList"></div>
-      </div-->
-      <div class="rightSideSection">
-        <div class="contextHeaderRow">
-          <div class="memTitle">Context pack (what will be sent)</div>
-          <button id="toggleContext">Show more</button>
-        </div>
-        <pre id="contextPreview" class="contextPreview">Loading…</pre>
-      </div>
-    </aside>
   </div>
   <div id="moveToModal" class="modal hidden">
     <div class="modalBackdrop"></div>
