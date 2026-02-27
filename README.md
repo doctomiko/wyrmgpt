@@ -1,4 +1,4 @@
-# WyrmGPT (ChatOSS)
+# WyrmGPT
 
 WyrmGPT is a tiny, local-first web UI (FastAPI + vanilla JS) for chatting with OpenAI models while keeping the *scaffold* under your control: conversations live in a local SQLite DB, chats can be organized into Projects, and you can A/B two models and pick which answer becomes “canonical” for future context.
 

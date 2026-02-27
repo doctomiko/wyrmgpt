@@ -87,9 +87,3 @@ But it also makes you responsible for safety and privacy.
 6. Back up `data/` (include `-wal`/`-shm`) before running migrations.
 7. Warn users that A/B mode doubles model calls and costs.
 8. Decide whether pinned memories should remain global; change code if not.
-
----
-
-If you want, I can:
-- make a compact `DEPLOYMENT.md` with these steps, or
-- open a PR that edits `README.md` to include a short "Deployment Checklist" and references these files.

@@ -16,6 +16,7 @@ _bak/
 
 # Virtualenv
 .venv/
+.venv-bak/
 
 # Local DB / runtime data
 data/
