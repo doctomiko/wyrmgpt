@@ -19,17 +19,6 @@ from typing import Any, Optional
 import json
 from pathlib import Path
 
-DEBUG_ERRORS = os.getenv("DEBUG_ERRORS", "1") == "1"
-
-MODEL_CATALOG: dict[str, dict] = {}
-
-# add near your OpenAI client init (or near globals)
-_MODELS_CACHE: dict[str, Any] | None = None
-_MODELS_CACHE_TS: float = 0.0
-_MODELS_TTL_SECONDS = 300  # 5 minutes
-
-_ALLOWED_MODEL_PREFIXES = ("gpt-", "o1", "o3", "o4")
-
 # region data layer imports
 
 from .db import (
@@ -87,9 +76,19 @@ from .db import (
 
 # endregion
 
+from .artifactor import artifact_file
 from .context import build_context, build_model_input
 
-# DB_PATH = Path(__file__).parent / "state.db"
+DEBUG_ERRORS = os.getenv("DEBUG_ERRORS", "1") == "1"
+
+MODEL_CATALOG: dict[str, dict] = {}
+
+# add near your OpenAI client init (or near globals)
+_MODELS_CACHE: dict[str, Any] | None = None
+_MODELS_CACHE_TS: float = 0.0
+_MODELS_TTL_SECONDS = 300  # 5 minutes
+
+_ALLOWED_MODEL_PREFIXES = ("gpt-", "o1", "o3", "o4")
 
 load_dotenv()
 
@@ -750,6 +749,9 @@ async def api_upload_file(
         elif scope_type_norm == "project" and proj_id is not None:
             db_project_add_file(proj_id, fid)
             invalidate_context_cache_for_project(proj_id)
+
+        # kick off artifacting for this file (best-effort; logs on failure)
+        artifact_file(file_row)
 
         results.append({"id": fid, "name": orig_name, "path": str(dest_path)})
 

@@ -5,6 +5,7 @@ import json
 import uuid
 import re
 from pathlib import Path
+from pydantic.dataclasses import dataclass
 from datetime import datetime, timezone
 from contextlib import contextmanager
 from typing import Any, Iterator
@@ -16,7 +17,15 @@ DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "callie_mvp.sqlite3"
 _VALID_TABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5  
+
+# near the top of db.py, alongside other imports or type helpers:
+@dataclass
+class FileScope:
+    project_id: int | None
+    scope_type: str | None
+    scope_id: int | None
+    scope_uuid: str | None
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -357,6 +366,16 @@ def migrate_schema_v3(conn: sqlite3.Connection) -> None:
         """
     )
 
+def migrate_schema_v4(conn: sqlite3.Connection) -> None:
+    """
+    Non-destructive migration for artifact chunking.
+
+    Adds:
+      - chunk_index INTEGER on artifacts
+    """
+    if _table_exists(conn, "artifacts"):
+        _add_column_if_missing(conn, "artifacts", "chunk_index", "INTEGER")
+
 def db_debug_info(conn: sqlite3.Connection | None = None) -> dict:
     if conn is None:
         with db_session() as sconn:
@@ -420,6 +439,7 @@ def init_schema() -> None:
             # Bring older DBs up to compatibility without dropping data
             migrate_schema_minimal(conn)
             migrate_schema_v3(conn)
+            migrate_schema_v4(conn)
 
         conn.execute("PRAGMA foreign_keys = ON;")
         print(f"DB initialized with schema version {SCHEMA_VERSION} (was {current})")
@@ -909,7 +929,6 @@ def _message_count(conn: sqlite3.Connection, conversation_id: str) -> int:
     ).fetchone()
     return int(row["c"])
 
-
 def add_message(conversation_id: str, role: str, content: str, meta: dict | None = None) -> None:
     now = _utcnow_iso()
     with db_session() as conn:
@@ -1071,7 +1090,6 @@ def create_memory(content: str, importance: int = 0, tags: Any = None) -> dict:
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
-
 
 def memory_link_project(memory_id: str, project_id: int) -> None:
     """
@@ -1405,8 +1423,166 @@ def update_file_description(file_id: str, description: str | None) -> None:
             (desc, _utcnow_iso(), file_id),
         )
 
+def get_file_by_id(file_id: str) -> dict:
+    """
+    Fetch a file row by id from the files table.
+
+    Raises ValueError if the file does not exist.
+    """
+    file_id = (file_id or "").strip()
+    if not file_id:
+        raise ValueError("file_id is required.")
+
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT * FROM files WHERE id = ?",
+            (file_id,),
+        ).fetchone()
+
+    if row is None:
+        raise ValueError(f"File not found: {file_id}")
+
+    return dict(row)
+
+def resolve_scope_for_file(file_row: dict) -> FileScope:
+    """
+    Decide project_id / scope_type / scope_id / scope_uuid for a file row.
+
+    For now we only support:
+      - project-scoped files, where scope_id is the project_id
+      - conversation-scoped files, where we derive project_id from the conversation
+        (if the conversation is attached to a project).
+
+    Global/unassigned conversations are skipped until we have a dedicated
+    'inbox/global' project row.
+    """
+    scope_type = (file_row.get("scope_type") or "").strip() or None
+    scope_id = file_row.get("scope_id")
+    scope_uuid = (file_row.get("scope_uuid") or "").strip() or None
+
+    project_id: int | None = None
+
+    if scope_type == "project" and scope_id is not None:
+        project_id = int(scope_id)
+    elif scope_type == "conversation" and scope_uuid:
+        with db_session() as conn:
+            row = conn.execute(
+                "SELECT project_id FROM conversations WHERE id = ?",
+                (scope_uuid,),
+            ).fetchone()
+        if row is not None and row["project_id"] is not None:
+            project_id = int(row["project_id"])
+        else:
+            project_id = None
+    else:
+        project_id = None
+
+    return FileScope(
+        project_id=project_id,
+        scope_type=scope_type,
+        scope_id=scope_id if isinstance(scope_id, int) else None,
+        scope_uuid=scope_uuid,
+    )
+
 # endregion
 # region Artifacts
+
+def create_file_artifacts(
+    *,
+    file_row: dict,
+    project_id: int,
+    scope_type: str | None,
+    scope_id: int | None,
+    scope_uuid: str | None,
+    chunks: list[str],
+    source_kind: str | None,
+    provenance: str | None,
+) -> list[str]:
+    """
+    Insert one artifact row per chunk for a given file.
+
+    Handles soft-deleting the previous artifact set for that file_id.
+
+    Returns the list of artifact IDs.
+    """
+    from .db import soft_delete_artifacts_for_file  # safe self-import once module is loaded
+
+    file_id = file_row.get("id")
+    if not file_id:
+        raise ValueError("file_row missing 'id'")
+
+    file_id_str = str(file_id)
+
+    # Soft delete old artifacts for this file.
+    try:
+        soft_delete_artifacts_for_file(file_id_str)
+    except Exception as e:
+        # Fallback if helper is missing or fails (during odd migration states).
+        now = _utcnow_iso()
+        with db_session() as conn:
+            conn.execute(
+                """
+                UPDATE artifacts
+                SET is_deleted = 1, deleted_at = ?
+                WHERE file_id = ?
+                  AND (is_deleted IS NULL OR is_deleted = 0)
+                """,
+                (now, file_id_str),
+            )
+
+    artifact_ids: list[str] = []
+    name = file_row.get("name") or Path(str(file_row.get("path", "file"))).name
+    tags: Any = None
+
+    for idx, chunk in enumerate(chunks):
+        if not chunk:
+            continue
+
+        # Create the artifact row itself.
+        try:
+            art = create_scoped_artifact(
+                project_id=project_id,
+                name=name,
+                content=chunk,
+                tags=tags,
+                scope_type=scope_type,
+                scope_id=scope_id,
+                scope_uuid=scope_uuid,
+                file_id=file_id_str,
+                source_kind=source_kind,
+                provenance=provenance,
+                chunk_index=idx,
+            )
+        except TypeError:
+            # Fallback for older signature without chunk_index.
+            art = create_scoped_artifact(
+                project_id=project_id,
+                name=name,
+                content=chunk,
+                tags=tags,
+                scope_type=scope_type,
+                scope_id=scope_id,
+                scope_uuid=scope_uuid,
+                file_id=file_id_str,
+                source_kind=source_kind,
+                provenance=provenance,
+            )
+
+        art_id = art.get("id")
+        if not art_id:
+            continue
+
+        artifact_ids.append(str(art_id))
+
+        # If this file is conversation-scoped, link the artifact to that conversation.
+        if scope_type == "conversation" and scope_uuid:
+            try:
+                conversation_link_artifact(scope_uuid, str(art_id))
+            except Exception:
+                # Don’t explode artifact creation just because linking failed.
+                pass
+
+    return artifact_ids
 
 def create_artifact(project_id: int, name: str, content: str, tags: Any = None) -> dict:
     if project_id is None:
@@ -1512,6 +1688,63 @@ def list_artifacts_for_project(
 
     return [dict(r) for r in rows]
 
+def list_artifacts_for_file(
+    file_id: str,
+    include_deleted: bool = False,
+) -> list[dict]:
+    """
+    Return all artifacts associated with a given file_id,
+    ordered by chunk_index (if present) and updated_at.
+    """
+    file_id = (file_id or "").strip()
+    if not file_id:
+        raise ValueError("file_id is required.")
+
+    with db_session() as conn:
+        _ensure_file_exists(conn, file_id)
+        sql = """
+            SELECT *
+            FROM artifacts
+            WHERE file_id = ?
+        """
+        params: list[object] = [file_id]
+        if not include_deleted:
+            sql += " AND (is_deleted IS NULL OR is_deleted = 0)"
+        sql += " ORDER BY chunk_index ASC, updated_at ASC"
+        rows = conn.execute(sql, params).fetchall()
+
+    return [dict(r) for r in rows]
+
+def soft_delete_artifacts_for_file(
+    file_id: str,
+    deleted_by_user_id: str | None = None,
+) -> int:
+    """
+    Soft-delete all artifacts associated with a given file_id.
+
+    Returns the number of rows affected.
+    """
+    file_id = (file_id or "").strip()
+    if not file_id:
+        raise ValueError("file_id is required.")
+
+    deleted_by_user_id = (deleted_by_user_id or "").strip() or None
+    now = _utcnow_iso()
+
+    with db_session() as conn:
+        _ensure_file_exists(conn, file_id)
+        cur = conn.execute(
+            """
+            UPDATE artifacts
+            SET is_deleted = 1,
+                deleted_at = ?,
+                deleted_by_user_id = ?
+            WHERE file_id = ?
+              AND (is_deleted IS NULL OR is_deleted = 0)
+            """,
+            (now, deleted_by_user_id, file_id),
+        )
+        return cur.rowcount
 
 def create_scoped_artifact(
     project_id: int,
@@ -1525,9 +1758,13 @@ def create_scoped_artifact(
     file_id: str | None = None,
     source_kind: str | None = None,
     provenance: str | None = None,
+    chunk_index: int | None = None,
 ) -> dict:
     """
-    Extended artifact-creation helper that fills the additional schema v3 columns.
+    Extended artifact-creation helper that fills the additional schema columns.
+
+    This is the variant you should use for file-/scope-aware artifacts
+    and for multi-chunk file artifacts (via chunk_index).
     """
     if project_id is None:
         raise ValueError("project_id is required.")
@@ -1544,6 +1781,16 @@ def create_scoped_artifact(
     file_id = (file_id or "").strip() or None
     source_kind = (source_kind or "").strip() or None
     provenance = (provenance or "").strip() or None
+
+    if chunk_index is None:
+        chunk_index_int: int | None = None
+    else:
+        try:
+            chunk_index_int = int(chunk_index)
+        except (TypeError, ValueError):
+            raise ValueError("chunk_index must be an integer or None.")
+        if chunk_index_int < 0:
+            raise ValueError("chunk_index cannot be negative.")
 
     aid = str(uuid.uuid4())
     now = _utcnow_iso()
@@ -1564,10 +1811,11 @@ def create_scoped_artifact(
                 file_id,
                 source_kind,
                 provenance,
+                chunk_index,
                 is_deleted,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
             """,
             (
                 aid,
@@ -1581,6 +1829,7 @@ def create_scoped_artifact(
                 file_id,
                 source_kind,
                 provenance,
+                chunk_index_int,
                 now,
             ),
         )

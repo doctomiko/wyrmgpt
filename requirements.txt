@@ -1,6 +1,10 @@
-uvicorn[standard]
+chardet
 fastapi
-python-dotenv
-python-multipart
 openai
 pydantic
+pypdf
+python-docx
+python-dotenv
+python-multipart
+uvicorn[standard]
+

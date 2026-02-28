@@ -17,17 +17,21 @@ def get_system_prompt() -> str:
     3) DEFAULT_SYSTEM_PROMPT (fallback hardcoded string)
     """
     file_path = os.getenv("SYSTEM_PROMPT_FILE", "").strip()
+    print(f"Loading system prompt from file: {file_path}")  # Debug print)
     if file_path:
         p = Path(file_path)
         if p.exists() and p.is_file():
             return p.read_text(encoding="utf-8")
 
+    print("No valid SYSTEM_PROMPT_FILE found, checking SYSTEM_PROMPT env var...")  # Debug print
     val = os.getenv("SYSTEM_PROMPT", "")
     if val:
+        print(f"Loaded SYSTEM_PROMPT from env var: {val[:60]}...")  # Debug print (showing only first 60 chars)
         # If your .env uses \n escapes, turn them into real newlines
         val = val.replace("\\n", "\n")
         return val
-
+    
+    print("No SYSTEM_PROMPT env var found, using default system prompt.")  # Debug print
     return DEFAULT_SYSTEM_PROMPT
 
 def build_context(conversation_id: str, history_limit: int = 200, preview_limit: int = 20) -> dict:
