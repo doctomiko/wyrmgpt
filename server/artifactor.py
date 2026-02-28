@@ -25,6 +25,7 @@ except Exception:  # defensive
     word_helpers = None  # type: ignore[assignment]
 
 from .image_helpers import is_image_file, build_image_reference_json
+from .zip_helpers import is_zip_file, list_zip_entries, build_zip_index_text
 
 logger = logging.getLogger(__name__)
 
@@ -336,6 +337,30 @@ def artifact_file(file_row: dict) -> list[str]:
         except Exception as e:
             logger.exception(
                 "Image artifacting failed for file %s (%s): %s", file_id, path, e
+            )
+            return []
+
+    # --- ZIP PATH: create a single "zip index" artifact for now ---
+    if is_zip_file(path, mime_type):
+        try:
+            entries = list_zip_entries(path)
+            index_text = build_zip_index_text(path, entries)
+            chunks = [index_text]  # one artifact describing the archive
+
+            artifact_ids = create_file_artifacts(
+                file_row=file_row,
+                project_id=scope.project_id,
+                scope_type=scope.scope_type,
+                scope_id=scope.scope_id,
+                scope_uuid=scope.scope_uuid,
+                chunks=chunks,
+                source_kind=file_row.get("source_kind") or "file:zip",
+                provenance=file_row.get("provenance") or "artifact:file_upload",
+            )
+            return artifact_ids
+        except Exception as e:
+            logger.exception(
+                "ZIP artifacting failed for file %s (%s): %s", file_id, path, e
             )
             return []
 
