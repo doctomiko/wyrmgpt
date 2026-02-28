@@ -1,15 +1,17 @@
-let conversationMap = new Map(); // id -> {id,title,created_at}
-let conversationId = null; // currently active conversation ID
-let menuTargetConversationId = null; // which conversation the context menu is currently targeting (for rename/suggest actions)
-let contextExpanded = false; // whether the "show more" context view is expanded, which affects how much context is fetched and shown in the preview
-let advancedMode = false; // whether advanced features (model B, A/B button) are enabled
-let hideSendInAdvanced = true; // if true, "Send" button is hidden whenever A/B is visible, forcing users to use A/B for better comparison data
+
+// ----------------------------------
+// DOM references
+// ----------------------------------
+
+// Usually const but some are reassigned later
+
 const modelSelectA = document.getElementById("modelSelectA");
 const modelSelectB = document.getElementById("modelSelectB");
 
 const chatEl = document.getElementById("chat");
 const inputEl = document.getElementById("input");
 const newBtn = document.getElementById("newChat");
+const manageFilesTopBtn = document.getElementById("manageFilesTop");
 const sendBtn = document.getElementById("send");
 const chatMenuButton = document.getElementById("chatMenuButton");
 const chatMenu = document.getElementById("chatMenu");
@@ -60,19 +62,97 @@ const memoryBackdrop = memoryModal
 const projMenuEl = document.getElementById("projMenu");
 const projRenameBtn = document.getElementById("projRename");
 const projDescBtn = document.getElementById("projDesc");
-let menuTargetProjectId = null;
-let projectsCache = [];
+const projUploadBtn = document.getElementById("projUpload");
 
-if (advancedCheckbox) {
-  // restore saved setting
-  advancedMode = localStorage.getItem("chatoss.advanced") === "1";
-  advancedCheckbox.checked = advancedMode;
+const attachBtn = document.getElementById("attachButton");
+const uploadModal = document.getElementById("uploadModal");
+const uploadScopeEl = document.getElementById("uploadScope");
+const uploadFilesEl = document.getElementById("uploadFiles");
+const uploadStatusEl = document.getElementById("uploadStatus");
+const uploadStartBtn = document.getElementById("uploadStart");
+const uploadCancelBtn = document.getElementById("uploadCancel");
+const uploadCloseBtn = document.getElementById("uploadClose");
+const uploadBackdrop = uploadModal
+  ? uploadModal.querySelector(".modalBackdrop")
+  : null;
 
-  advancedCheckbox.addEventListener("change", () => {
-    advancedMode = advancedCheckbox.checked;
-    localStorage.setItem("chatoss.advanced", advancedMode ? "1" : "0");
-    applyAdvancedVisibility();
-  });
+const convViewFilesBtn = document.getElementById("menuConvViewFiles");
+const projFilesBtn = document.getElementById("projFiles");
+
+const filesModal = document.getElementById("filesModal");
+const filesListEl = document.getElementById("filesList");
+const filesCloseBtn = document.getElementById("filesClose");
+const filesSaveBtn = document.getElementById("filesSave");
+const filesCloseBottomBtn = document.getElementById("filesCloseBottom");
+const filesBackdrop = filesModal ? filesModal.querySelector(".modalBackdrop") : null;
+
+// ----------------------------------
+// Global variables we'll need later
+// ----------------------------------
+
+// Note: Some globals are in the regions where their functions use them.
+
+// Conversation state:
+let conversationMap = new Map(); // id -> {id,title,created_at}
+let conversationId = null; // currently active conversation ID
+let menuTargetConversationId = null; // which conversation the context menu is currently targeting (for rename/suggest actions)
+// Context view state:
+let contextExpanded = false; // whether the "show more" context view is expanded, which affects how much context is fetched and shown in the preview
+// Toggle advanced AB mode features on/off.
+let advancedMode = false; // whether advanced features (model B, A/B button) are enabled
+let hideSendInAdvanced = true; // This is likely no longer useful // if true, "Send" button is hidden whenever A/B is visible, forcing users to use A/B for better comparison data
+// Project modal state:
+let menuTargetProjectId = null; // which project the context menu is currently targeting (for rename/desc/upload actions)
+let projectsCache = []; // cache of projects for quick lookup when showing the "move to project" list in conversation menu
+// Upload modal state:
+let uploadProjectIdForced = null;
+// Files modal state:
+let filesModalMode = null; // "conversation" | "project" | "global" | "all"
+let filesModalConversationId = null;
+let filesModalProjectId = null;
+let hasAnyFiles = false;
+
+// ----------------------------------
+// Helpers for UI state management and updates. 
+// ----------------------------------
+
+// These are usually called by event handlers or after API calls to update the screen based on the current app state.
+
+function formatDate(iso) {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString();
+  } catch {
+    return iso || "";
+  }
+}
+
+function convMetaText(c) {
+  // You can swap created_at for updated_at later if you add it to the API.
+  return formatDate(c.created_at);
+}
+
+async function loadMessages(cid) {
+  return await fetchJsonDebug(`/api/conversation/${cid}/messages`);
+}
+
+async function fetchContext(cid, previewLimit = 20) {
+  return await fetchJsonDebug(`/api/conversation/${cid}/context?preview_limit=${previewLimit}`);
+}
+
+async function newChat() {
+  const res = await fetch("/api/new", { method: "POST" });
+  const data = await res.json();
+  conversationId = data.conversation_id;
+  localStorage.setItem("callie_mvp_conversation_id", conversationId);
+
+  //const conversations = await fetchConversations();
+  //renderConversations(conversations);
+  await refreshConversationLists();
+
+  clearChat();
+  addMsg("assistant", "New chat started.");
+  await refreshContext();
 }
 
 function toggleChatMenu(forceState) {
@@ -87,17 +167,32 @@ function toggleChatMenu(forceState) {
   }
 }
 
-if (chatMenuButton) {
-  chatMenuButton.addEventListener("click", (e) => {
-    e.stopPropagation();
-    toggleChatMenu();
-  });
-}
-if (chatMenu) {
-  chatMenu.addEventListener("click", (e) => {
-    // don't let clicks inside menu bubble up and close it
-    e.stopPropagation();
-  });
+// to ensure small modals (like conversation and project mgmt.) don't end up off-screen if the click is near the edge
+function positionMenu(menuEl, x, y) {
+  if (!menuEl) return;
+
+  // Initial position near the click
+  menuEl.style.left = x + "px";
+  menuEl.style.top = y + "px";
+  menuEl.classList.remove("hidden");
+
+  // Now clamp into viewport
+  const rect = menuEl.getBoundingClientRect();
+  const padding = 8;
+
+  let left = rect.left;
+  let top = rect.top;
+
+  const maxLeft = window.innerWidth - rect.width - padding;
+  const maxTop = window.innerHeight - rect.height - padding;
+
+  if (left > maxLeft) left = maxLeft;
+  if (top > maxTop) top = maxTop;
+  if (left < padding) left = padding;
+  if (top < padding) top = padding;
+
+  menuEl.style.left = left + "px";
+  menuEl.style.top = top + "px";
 }
 
 // #region Debug Helpers
@@ -134,6 +229,8 @@ async function fetchJsonDebug(url, opts) {
 
 // #endregion
 
+// #region Memory modal helpers
+
 function openMemoryModal() {
   if (!memoryModal) return;
   memoryModal.classList.remove("hidden");
@@ -143,6 +240,10 @@ function closeMemoryModal() {
   if (!memoryModal) return;
   memoryModal.classList.add("hidden");
 }
+
+// #endregion
+
+// #region Message rendering helpers
 
 function addMsgTextOnly(role, text) {
   const div = document.createElement("div");
@@ -160,6 +261,191 @@ function escapeHtml(s) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
 }
+
+function addAssistantMsgWithModel(modelId, initialText) {
+  let labelText = "Unknown model";
+  if (modelId) {
+    const m = findModelById(modelId);
+    labelText = m ? m.display_name : modelId;
+  }
+
+  // Outer wrapper just groups label + bubble
+  const wrapper = document.createElement("div");
+  wrapper.className = "msgWithModel";
+
+  // Label bar above the bubble
+  const metaBar = document.createElement("div");
+  metaBar.className = "abMeta singleMeta";
+
+  const labelSpan = document.createElement("span");
+  labelSpan.className = "abLabel";
+  labelSpan.textContent = labelText;
+
+  metaBar.appendChild(labelSpan);
+  wrapper.appendChild(metaBar);
+
+  // Actual chat bubble
+  const bubble = document.createElement("div");
+  bubble.className = "msg assistant";
+
+  const body = document.createElement("div");
+  body.className = "msgBody";
+  body.innerHTML = renderMarkdown(initialText || "");
+
+  bubble.appendChild(body);
+  wrapper.appendChild(bubble);
+
+  chatEl.appendChild(wrapper);
+  chatEl.scrollTop = chatEl.scrollHeight;
+
+  // Streaming code updates the body only
+  return body;
+}
+
+function addMsg(role, text) {
+  const div = document.createElement("div");
+  div.className = `msg ${role}`;
+  div.innerHTML = renderMarkdown(text);
+  chatEl.appendChild(div);
+  chatEl.scrollTop = chatEl.scrollHeight;
+  return div;
+}
+
+function clearChat() {
+  chatEl.innerHTML = "";
+}
+
+function renderMessagesWithAB(rows) {
+  let i = 0;
+  while (i < rows.length) {
+    const msg = rows[i];
+    const meta = msg.meta || {};
+
+    // First try: explicit A/B grouping via meta.ab_group
+    const abGroup = meta.ab_group || null;
+    if (msg.role === "assistant" && abGroup) {
+      const next = rows[i + 1];
+      if (
+        next &&
+        next.role === "assistant" &&
+        next.meta &&
+        next.meta.ab_group === abGroup
+      ) {
+        renderABRow(msg, next, meta.canonical, next.meta.canonical);
+        i += 2;
+        continue;
+      }
+    }
+
+    // Second try: heuristic repair for legacy rows
+    if (msg.role === "assistant") {
+      const next = rows[i + 1];
+      const prev = rows[i - 1];
+      const msgHasNoMeta = !meta || Object.keys(meta).length === 0;
+
+      if (
+        msgHasNoMeta &&
+        next &&
+        next.role === "assistant" &&
+        (!next.meta || Object.keys(next.meta).length === 0) &&
+        prev &&
+        prev.role === "user"
+      ) {
+        // Treat msg as A, next as B
+        renderABRow(
+          { ...msg, meta: { ab_group: `rehab-${msg.id}`, canonical: true } },
+          { ...next, meta: { ab_group: `rehab-${msg.id}`, canonical: false } },
+          true,
+          false
+        );
+        i += 2;
+        continue;
+      }
+    }
+
+    // Fallback: single message (non A/B)
+    if (msg.role === "assistant") {
+      const meta = msg.meta || {};
+      const modelId = meta.model || null;
+      addAssistantMsgWithModel(modelId, msg.content || "");
+    } else {
+      addMsg(msg.role, msg.content || "");
+    }
+    i += 1;
+  }
+}
+
+function renderABRow(msgA, msgB, canonicalA, canonicalB) {
+  // Try to get model labels if you’re storing them in meta; otherwise fall back.
+  const modelA = (msgA.meta && msgA.meta.model) || "model A";
+  const modelB = (msgB.meta && msgB.meta.model) || "model B";
+  // Reuse the same builder used for live A/B sends
+  const { rowEl, msgAEl, msgBEl } = addABRow(modelA, modelB);
+  // Fill in the content
+  msgAEl.innerHTML = renderMarkdown(msgA.content);
+  msgBEl.innerHTML = renderMarkdown(msgB.content);
+  // Restore canonical choice if we know it
+  if (canonicalA) {
+    markCanonical(rowEl, "A");
+  } else if (canonicalB) {
+    markCanonical(rowEl, "B");
+  }
+}
+
+function addABRow(modelA, modelB) {
+  const row = document.createElement("div");
+  row.className = "abRow";
+
+  const makeCol = (labelText) => {
+    const col = document.createElement("div");
+    col.className = "abCol";
+
+    const meta = document.createElement("div");
+    meta.className = "abMeta";
+
+    const label = document.createElement("span");
+    label.className = "abLabel";
+    label.textContent = labelText;
+
+    const btn = document.createElement("button");
+    btn.className = "abChoose";
+    btn.textContent = "Use";
+    meta.appendChild(label);
+    meta.appendChild(btn);
+
+    const msg = document.createElement("div");
+    msg.className = "msg assistant abMsg";
+    msg.textContent = "Thinking…";
+
+    col.appendChild(meta);
+    col.appendChild(msg);
+
+    return { col, meta, label, btn, msg };
+  };
+
+  let safeLabelA = modelA && modelA.trim() ? modelA : "Unknown Model A";
+  if (safeLabelA == "model A") safeLabelA = "Unknown Model A";
+  const { col: colA, label: labelA, btn: btnA, msg: msgA } =
+    makeCol(`A · ${safeLabelA}`);
+  let safeLabelB = modelB && modelB.trim() ? modelB : "Unknown Model B";
+  if (safeLabelB == "model B") safeLabelB = "Unknown Model B";
+  const { col: colB, label: labelB, btn: btnB, msg: msgB } =
+    makeCol(`B · ${safeLabelB}`);
+
+  row.appendChild(colA);
+  row.appendChild(colB);
+  chatEl.appendChild(row);
+  chatEl.scrollTop = chatEl.scrollHeight;
+
+  btnA.addEventListener("click", () => chooseCanonical(row, "A"));
+  btnB.addEventListener("click", () => chooseCanonical(row, "B"));
+
+  return { rowEl: row, msgAEl: msgA, msgBEl: msgB, labelAEl: labelA, labelBEl: labelB };
+}
+
+// #endregion
+
+// #region Markdown rendering helpers
 
 // helper: process blockquotes with > and nested >>, >>> etc.
 function applyBlockquotes(t) {
@@ -370,72 +656,9 @@ function renderMarkdown(text) {
   return html;
 }
 
-function addAssistantMsgWithModel(modelId, initialText) {
-  let labelText = "Unknown model";
-  if (modelId) {
-    const m = findModelById(modelId);
-    labelText = m ? m.display_name : modelId;
-  }
+// #endregion
 
-  // Outer wrapper just groups label + bubble
-  const wrapper = document.createElement("div");
-  wrapper.className = "msgWithModel";
-
-  // Label bar above the bubble
-  const metaBar = document.createElement("div");
-  metaBar.className = "abMeta singleMeta";
-
-  const labelSpan = document.createElement("span");
-  labelSpan.className = "abLabel";
-  labelSpan.textContent = labelText;
-
-  metaBar.appendChild(labelSpan);
-  wrapper.appendChild(metaBar);
-
-  // Actual chat bubble
-  const bubble = document.createElement("div");
-  bubble.className = "msg assistant";
-
-  const body = document.createElement("div");
-  body.className = "msgBody";
-  body.innerHTML = renderMarkdown(initialText || "");
-
-  bubble.appendChild(body);
-  wrapper.appendChild(bubble);
-
-  chatEl.appendChild(wrapper);
-  chatEl.scrollTop = chatEl.scrollHeight;
-
-  // Streaming code updates the body only
-  return body;
-}
-
-function addMsg(role, text) {
-  const div = document.createElement("div");
-  div.className = `msg ${role}`;
-  div.innerHTML = renderMarkdown(text);
-  chatEl.appendChild(div);
-  chatEl.scrollTop = chatEl.scrollHeight;
-  return div;
-}
-
-function clearChat() {
-  chatEl.innerHTML = "";
-}
-
-function formatDate(iso) {
-  try {
-    const d = new Date(iso);
-    return d.toLocaleString();
-  } catch {
-    return iso || "";
-  }
-}
-
-function convMetaText(c) {
-  // You can swap created_at for updated_at later if you add it to the API.
-  return formatDate(c.created_at);
-}
+// #region Conversation list helpers
 
 function makeConversationItem(c) {
   const item = document.createElement("div");
@@ -457,7 +680,7 @@ function makeConversationItem(c) {
   item.addEventListener("contextmenu", (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
-    showConvMenu(ev.clientX, ev.clientY, c.id);
+    showConvMenu(ev, c.id);
   });
 
   return item;
@@ -481,46 +704,87 @@ function renderConversations(conversations) {
   updateChatTitle();
 }
 
-/*
-function renderConversations(conversations) {
-  convListEl.innerHTML = "";
-
-  conversations.forEach(c => {
-    const item = document.createElement("div");
-    item.className = "convItem" + (c.id === conversationId ? " active" : "");
-    item.dataset.id = c.id;
-
-    const t = document.createElement("div");
-    t.className = "convTitle";
-    t.textContent = c.title || "New chat";
-
-    const m = document.createElement("div");
-    m.className = "convMeta";
-    m.textContent = (c.project_name ? `${c.project_name} • ` : "") + formatDate(c.created_at);
-    //m.textContent = formatDate(c.created_at);
-
-    item.appendChild(t);
-    item.appendChild(m);
-
-    item.addEventListener("click", () => {
-      selectConversation(c.id);
-    });
-    item.addEventListener("contextmenu", (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      showConvMenu(ev.clientX, ev.clientY, c.id);
-    });
-
-    convListEl.appendChild(item);
-  });
-
-  updateChatTitle();
-}
-*/
-
 function updateChatTitle() {
   const meta = conversationMap.get(conversationId);
   chatTitleEl.textContent = meta?.title || "…";
+}
+
+async function selectConversation(cid) {
+  conversationId = cid;
+  localStorage.setItem("callie_mvp_conversation_id", conversationId);
+
+  //const conversations = await fetchConversations();
+  //renderConversations(conversations);
+  await refreshConversationLists();
+  
+  clearChat();
+
+  const msgs = await loadMessages(cid); // now returns raw with meta
+  if (!msgs.length) {
+    addMsg("assistant", "Empty chat. Say something mean to the void.");
+  } else {
+    renderMessagesWithAB(msgs);
+  }
+
+  await refreshContext();
+}
+
+// #endregion
+
+// #region Advanced mode (AB) helpers
+
+function bindModelSelect() {
+  const selA = document.getElementById("modelSelectA");
+  const selB = document.getElementById("modelSelectB");
+
+  if (selA) {
+    selA.addEventListener("change", () => {
+      localStorage.setItem("chatoss.modelA", selA.value);
+      updateModelInfo("A");
+      applyAdvancedVisibility();
+    });
+  }
+
+  if (selB) {
+    selB.addEventListener("change", () => {
+      localStorage.setItem("chatoss.modelB", selB.value);
+      updateModelInfo("B");
+      applyAdvancedVisibility();
+    });
+  }
+}
+
+function markCanonical(rowEl, slot) {
+  const cols = rowEl.querySelectorAll(".abCol");
+  cols.forEach(c => c.classList.remove("abCanonical"));
+  const idx = slot === "B" ? 1 : 0;
+  if (cols[idx]) cols[idx].classList.add("abCanonical");
+}
+
+async function chooseCanonical(rowEl, slot) {
+  const abGroup = rowEl.dataset.abGroup;
+  if (!conversationId || !abGroup) {
+    // No backend metadata? Just visually toggle.
+    markCanonical(rowEl, slot);
+    return;
+  }
+
+  try {
+    await fetch("/api/ab/canonical", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        conversation_id: conversationId,
+        ab_group: abGroup,
+        slot
+      })
+    });
+  } catch (e) {
+    console.error("Failed to set canonical A/B", e);
+  }
+
+  markCanonical(rowEl, slot);
+  await refreshContext();
 }
 
 // Show/hide model B dropdown
@@ -537,13 +801,9 @@ function applyAdvancedVisibility() {
   });
 }
 
-async function loadMessages(cid) {
-  return await fetchJsonDebug(`/api/conversation/${cid}/messages`);
-}
+// #endregion
 
-async function fetchContext(cid, previewLimit = 20) {
-  return await fetchJsonDebug(`/api/conversation/${cid}/context?preview_limit=${previewLimit}`);
-}
+// #region Context helpers
 
 function renderContext(ctx) {
   const lines = [];
@@ -604,117 +864,9 @@ async function refreshContext() {
   toggleContextBtn.textContent = contextExpanded ? "Show less" : "Show more";
 }
 
-async function selectConversation(cid) {
-  conversationId = cid;
-  localStorage.setItem("callie_mvp_conversation_id", conversationId);
+// #endregion
 
-  //const conversations = await fetchConversations();
-  //renderConversations(conversations);
-  await refreshConversationLists();
-  
-  clearChat();
-
-  const msgs = await loadMessages(cid); // now returns raw with meta
-  if (!msgs.length) {
-    addMsg("assistant", "Empty chat. Say something mean to the void.");
-  } else {
-    renderMessagesWithAB(msgs);
-  }
-
-  await refreshContext();
-}
-
-function renderMessagesWithAB(rows) {
-  let i = 0;
-  while (i < rows.length) {
-    const msg = rows[i];
-    const meta = msg.meta || {};
-
-    // First try: explicit A/B grouping via meta.ab_group
-    const abGroup = meta.ab_group || null;
-    if (msg.role === "assistant" && abGroup) {
-      const next = rows[i + 1];
-      if (
-        next &&
-        next.role === "assistant" &&
-        next.meta &&
-        next.meta.ab_group === abGroup
-      ) {
-        renderABRow(msg, next, meta.canonical, next.meta.canonical);
-        i += 2;
-        continue;
-      }
-    }
-
-    // Second try: heuristic repair for legacy rows
-    if (msg.role === "assistant") {
-      const next = rows[i + 1];
-      const prev = rows[i - 1];
-      const msgHasNoMeta = !meta || Object.keys(meta).length === 0;
-
-      if (
-        msgHasNoMeta &&
-        next &&
-        next.role === "assistant" &&
-        (!next.meta || Object.keys(next.meta).length === 0) &&
-        prev &&
-        prev.role === "user"
-      ) {
-        // Treat msg as A, next as B
-        renderABRow(
-          { ...msg, meta: { ab_group: `rehab-${msg.id}`, canonical: true } },
-          { ...next, meta: { ab_group: `rehab-${msg.id}`, canonical: false } },
-          true,
-          false
-        );
-        i += 2;
-        continue;
-      }
-    }
-
-    // Fallback: single message (non A/B)
-    if (msg.role === "assistant") {
-      const meta = msg.meta || {};
-      const modelId = meta.model || null;
-      addAssistantMsgWithModel(modelId, msg.content || "");
-    } else {
-      addMsg(msg.role, msg.content || "");
-    }
-    i += 1;
-  }
-}
-
-function renderABRow(msgA, msgB, canonicalA, canonicalB) {
-  // Try to get model labels if you’re storing them in meta; otherwise fall back.
-  const modelA = (msgA.meta && msgA.meta.model) || "model A";
-  const modelB = (msgB.meta && msgB.meta.model) || "model B";
-  // Reuse the same builder used for live A/B sends
-  const { rowEl, msgAEl, msgBEl } = addABRow(modelA, modelB);
-  // Fill in the content
-  msgAEl.innerHTML = renderMarkdown(msgA.content);
-  msgBEl.innerHTML = renderMarkdown(msgB.content);
-  // Restore canonical choice if we know it
-  if (canonicalA) {
-    markCanonical(rowEl, "A");
-  } else if (canonicalB) {
-    markCanonical(rowEl, "B");
-  }
-}
-
-async function newChat() {
-  const res = await fetch("/api/new", { method: "POST" });
-  const data = await res.json();
-  conversationId = data.conversation_id;
-  localStorage.setItem("callie_mvp_conversation_id", conversationId);
-
-  //const conversations = await fetchConversations();
-  //renderConversations(conversations);
-  await refreshConversationLists();
-
-  clearChat();
-  addMsg("assistant", "New chat started.");
-  await refreshContext();
-}
+// #region Sending messages
 
 async function send() {
   const text = inputEl.value.trim();
@@ -849,6 +1001,12 @@ async function sendAB(text, modelA, modelB) {
   }
 }
 
+// #endregion
+
+// #region Model select helpers
+
+let models = [];
+
 function findModelById(id) {
   return models.find((m) => m.id === id) || null;
 }
@@ -900,8 +1058,6 @@ function updateModelInfo(which) {
 
   infoEl.innerHTML = parts.join(" · ");
 }
-
-let models = [];
 
 async function refreshModels() {
   const data = await fetchJsonDebug("/api/models");
@@ -957,44 +1113,6 @@ function renderModelDropdowns() {
   // If we didn't have anything saved, leave the defaults (first options)
 }
 
-/*
-function renderModelDropdowns() {
-  if (!modelSelectA || !modelSelectB) return;
-
-  const currentA = modelSelectA.value;
-  const currentB = modelSelectB.value;
-
-  modelSelectA.innerHTML = "";
-  modelSelectB.innerHTML = "";
-
-  for (const m of models) {
-    const labelParts = [m.display_name];
-    if (m.vendor) labelParts.push(m.vendor);
-    if (m.input_cost_per_million != null && m.output_cost_per_million != null) {
-      labelParts.push(
-        `~$${m.input_cost_per_million}/${m.output_cost_per_million} per M tok`
-      );
-    }
-    const label = labelParts.join(" · ");
-
-    const optA = document.createElement("option");
-    optA.value = m.id;
-    optA.textContent = label;
-
-    const optB = document.createElement("option");
-    optB.value = m.id;
-    optB.textContent = label;
-
-    modelSelectA.appendChild(optA);
-    modelSelectB.appendChild(optB);
-  }
-
-  // Restore previous selections if possible
-  if (currentA) modelSelectA.value = currentA;
-  if (currentB) modelSelectB.value = currentB;
-}
-*/
-
 function initABUI() {
   renderModelDropdowns();
   
@@ -1003,89 +1121,9 @@ function initABUI() {
   }
 }
 
-function addABRow(modelA, modelB) {
-  const row = document.createElement("div");
-  row.className = "abRow";
+// #endregion
 
-  const makeCol = (labelText) => {
-    const col = document.createElement("div");
-    col.className = "abCol";
-
-    const meta = document.createElement("div");
-    meta.className = "abMeta";
-
-    const label = document.createElement("span");
-    label.className = "abLabel";
-    label.textContent = labelText;
-
-    const btn = document.createElement("button");
-    btn.className = "abChoose";
-    btn.textContent = "Use";
-    meta.appendChild(label);
-    meta.appendChild(btn);
-
-    const msg = document.createElement("div");
-    msg.className = "msg assistant abMsg";
-    msg.textContent = "Thinking…";
-
-    col.appendChild(meta);
-    col.appendChild(msg);
-
-    return { col, meta, label, btn, msg };
-  };
-
-  let safeLabelA = modelA && modelA.trim() ? modelA : "Unknown Model A";
-  if (safeLabelA == "model A") safeLabelA = "Unknown Model A";
-  const { col: colA, label: labelA, btn: btnA, msg: msgA } =
-    makeCol(`A · ${safeLabelA}`);
-  let safeLabelB = modelB && modelB.trim() ? modelB : "Unknown Model B";
-  if (safeLabelB == "model B") safeLabelB = "Unknown Model B";
-  const { col: colB, label: labelB, btn: btnB, msg: msgB } =
-    makeCol(`B · ${safeLabelB}`);
-
-  row.appendChild(colA);
-  row.appendChild(colB);
-  chatEl.appendChild(row);
-  chatEl.scrollTop = chatEl.scrollHeight;
-
-  btnA.addEventListener("click", () => chooseCanonical(row, "A"));
-  btnB.addEventListener("click", () => chooseCanonical(row, "B"));
-
-  return { rowEl: row, msgAEl: msgA, msgBEl: msgB, labelAEl: labelA, labelBEl: labelB };
-}
-
-function markCanonical(rowEl, slot) {
-  const cols = rowEl.querySelectorAll(".abCol");
-  cols.forEach(c => c.classList.remove("abCanonical"));
-  const idx = slot === "B" ? 1 : 0;
-  if (cols[idx]) cols[idx].classList.add("abCanonical");
-}
-
-async function chooseCanonical(rowEl, slot) {
-  const abGroup = rowEl.dataset.abGroup;
-  if (!conversationId || !abGroup) {
-    // No backend metadata? Just visually toggle.
-    markCanonical(rowEl, slot);
-    return;
-  }
-
-  try {
-    await fetch("/api/ab/canonical", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        conversation_id: conversationId,
-        ab_group: abGroup,
-        slot
-      })
-    });
-  } catch (e) {
-    console.error("Failed to set canonical A/B", e);
-  }
-
-  markCanonical(rowEl, slot);
-  await refreshContext();
-}
+// #region Memory Pin helpers
 
 async function fetchPins() {
   return await fetchJsonDebug("/api/memory/pins");
@@ -1223,231 +1261,15 @@ async function createMemoryFromUi() {
   }
 }
 
-async function renameChat() {
-  if (!conversationId) return;
-  const current = conversationMap.get(conversationId)?.title || "New chat";
-  const next = prompt("Rename chat:", current);
-  if (next === null) return;
+// #endregion
 
-  const title = next.trim();
-  await fetch(`/api/conversation/${conversationId}/title`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title })
-  });
+// #region Conversation management (context menu/modal) helpers
 
-  //const conversations = await fetchConversations();
-  //renderConversations(conversations);
-  await refreshConversationLists();
-  await refreshContext();
+function getMenuCid() {
+  return menuTargetConversationId;
 }
-
-async function suggestChatTitle() {
-  if (!conversationId) return;
-
-  suggestBtn.disabled = true;
-  suggestBtn.textContent = "Thinking…";
-  try {
-    const res = await fetch(`/api/conversation/${conversationId}/suggest_title`, { method: "POST" });
-    const data = await res.json();
-    if (data?.title) {
-      //const conversations = await fetchConversations();
-      //renderConversations(conversations);
-      await refreshConversationLists();
-      await refreshContext();
-    }
-  } finally {
-    suggestBtn.disabled = false;
-    suggestBtn.textContent = "Suggest";
-  }
-}
-
-async function summarizeConversation(conversationId) {
-  try {
-    const res = await fetch(`/api/conversations/${conversationId}/summarize`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" }
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      alert("Failed to summarize: " + (err.detail || res.status));
-      return;
-    }
-    const data = await res.json();
-    // reload that conversation so the new summary message appears
-    await loadConversation(conversationId);
-  } catch (e) {
-    console.error("summarizeConversation failed", e);
-    alert("Error summarizing conversation.");
-  }
-}
-
-async function fetchProjects() {
-  const res = await fetch("/api/projects");
-  if (!res.ok) return [];
-  const data = await res.json();
-  return data.projects || [];
-}
-
-function projectExpandedKey(pid) {
-  return `chatoss.projectExpanded.${pid}`;
-}
-
-function getProjectExpanded(pid, defaultValue) {
-  const v = localStorage.getItem(projectExpandedKey(pid));
-  if (v === "1") return true;
-  if (v === "0") return false;
-  return !!defaultValue;
-}
-
-function setProjectExpanded(pid, expanded) {
-  localStorage.setItem(projectExpandedKey(pid), expanded ? "1" : "0");
-}
-
-function renderProjects(projects, conversations) {
-  if (!projectListEl) return;
-
-  projectsCache = projects || [];
-  projectListEl.innerHTML = "";
-
-  // Group conversations by project_id, preserving whatever order /api/conversations returned
-  const byPid = new Map();
-  (conversations || []).forEach(c => {
-    if (c.project_id == null) return;
-    const pid = c.project_id;
-    if (!byPid.has(pid)) byPid.set(pid, []);
-    byPid.get(pid).push(c);
-  });
-
-  projectsCache.forEach(p => {
-    const convs = byPid.get(p.id) || [];
-    const containsActive = convs.some(x => x.id === conversationId);
-
-    // Default: collapsed unless it contains the active conversation
-    const expanded = getProjectExpanded(p.id, containsActive);
-
-    const block = document.createElement("div");
-    block.className = "projBlock";
-
-    const header = document.createElement("div");
-    header.className = "projItem projHeader";
-
-    const toggle = document.createElement("span");
-    toggle.className = "projToggle";
-    toggle.textContent = expanded ? "▾" : "▸";
-
-    const name = document.createElement("div");
-    name.className = "projName";
-    name.textContent = p.name;
-    if (p.description) name.title = p.description;
-
-    const count = document.createElement("div");
-    count.className = "projCount";
-    count.textContent = String(convs.length);
-
-    header.appendChild(toggle);
-    header.appendChild(name);
-    header.appendChild(count);
-
-    // Left-click toggles expand/collapse
-    header.addEventListener("click", (ev) => {
-      // Don’t toggle if this was a right-click opening the project menu
-      const next = !getProjectExpanded(p.id, containsActive);
-      setProjectExpanded(p.id, next);
-      renderProjects(projectsCache, conversations); // re-render just the project list
-    });
-
-    // Right-click opens the project context menu (rename/description)
-    header.addEventListener("contextmenu", (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      menuTargetProjectId = p.id;
-      projMenuEl.style.left = `${ev.clientX}px`;
-      projMenuEl.style.top = `${ev.clientY}px`;
-      projMenuEl.classList.remove("hidden");
-    });
-
-    const children = document.createElement("div");
-    children.className = "projConvs";
-    if (!expanded) children.classList.add("hidden");
-
-    convs.forEach(c => {
-      children.appendChild(makeConversationItem(c));
-    });
-
-    block.appendChild(header);
-    block.appendChild(children);
-    projectListEl.appendChild(block);
-  });
-}
-
-/*
-function renderProjects(projects, conversations) {
-  if (!projectListEl) return;
-
-  const counts = new Map();
-  (conversations || []).forEach(c => {
-    const pid = c.project_id ?? null;
-    counts.set(pid, (counts.get(pid) || 0) + 1);
-  });
-
-  projectsCache = projects || [];
-  
-  projectListEl.innerHTML = "";
-
-  // Show projects even if they have 0 convs
-  projectsCache.forEach(p => {
-    const row = document.createElement("div");
-    row.className = "projItem";
-
-    const left = document.createElement("div");
-    left.textContent = p.name;
-    if (p.description) left.title = p.description;
-
-    const right = document.createElement("div");
-    right.className = "projCount";
-    right.textContent = String(counts.get(p.id) || 0);
-
-    row.appendChild(left);
-    row.appendChild(right);
-    row.addEventListener("contextmenu", (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      menuTargetProjectId = p.id;
-      projMenuEl.style.left = `${ev.clientX}px`;
-      projMenuEl.style.top = `${ev.clientY}px`;
-      projMenuEl.classList.remove("hidden");
-    });
-
-    projectListEl.appendChild(row);
-  });
-}
-*/
-
-async function refreshConversationLists() {
-  // projectsCache is already kept fresh in boot and after project edits;
-  // if it’s empty (first run), fetch projects once.
-  if (!projectsCache || !projectsCache.length) {
-    projectsCache = await fetchProjects();
-  }
-  const conversations = await fetchConversations();
-  renderProjects(projectsCache, conversations);
-  renderConversations(conversations);
-  return conversations;
-}
-
-async function updateProject(projectId, fields) {
-  const res = await fetch(`/api/projects/${projectId}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(fields || {})
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    alert("Project update failed: " + (err.detail || res.status));
-    return false;
-  }
-  return true;
+function getMenuTitle(cid) {
+  return conversationMap.get(cid)?.title || "New chat";
 }
 
 async function deleteConversationWithConfirmation(cid, title) {
@@ -1567,12 +1389,14 @@ async function archiveConversation(conversationId, archived) {
   }
 }
 
-
-function showConvMenu(x, y, targetId) {
+function showConvMenu(e, targetId) {
   menuTargetConversationId = targetId;
-  convMenuEl.style.left = `${x}px`;
-  convMenuEl.style.top = `${y}px`;
-  convMenuEl.classList.remove("hidden");
+  positionMenu(convMenuEl, e.clientX, e.clientY);
+  if (convViewFilesBtn) {
+    // pessimistically disable, then re-enable if we find files
+    setFilesButtonEnabled(convViewFilesBtn, false);
+    refreshConversationFilesState(targetId);
+  }
 }
 
 function hideConvMenu() {
@@ -1580,53 +1404,748 @@ function hideConvMenu() {
   convMenuEl.classList.add("hidden");
 }
 
-function bindModelSelect() {
-  const selA = document.getElementById("modelSelectA");
-  const selB = document.getElementById("modelSelectB");
+// This one is project aware
+async function refreshConversationLists() {
+  // projectsCache is already kept fresh in boot and after project edits;
+  // if it’s empty (first run), fetch projects once.
+  if (!projectsCache || !projectsCache.length) {
+    projectsCache = await fetchProjects();
+  }
+  const conversations = await fetchConversations();
+  renderProjects(projectsCache, conversations);
+  renderConversations(conversations);
+  return conversations;
+}
 
-  if (selA) {
-    selA.addEventListener("change", () => {
-      localStorage.setItem("chatoss.modelA", selA.value);
-      updateModelInfo("A");
-      applyAdvancedVisibility();
+async function renameChat() {
+  if (!conversationId) return;
+  const current = conversationMap.get(conversationId)?.title || "New chat";
+  const next = prompt("Rename chat:", current);
+  if (next === null) return;
+
+  const title = next.trim();
+  await fetch(`/api/conversation/${conversationId}/title`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title })
+  });
+
+  //const conversations = await fetchConversations();
+  //renderConversations(conversations);
+  await refreshConversationLists();
+  await refreshContext();
+}
+
+async function suggestChatTitle() {
+  if (!conversationId) return;
+
+  suggestBtn.disabled = true;
+  suggestBtn.textContent = "Thinking…";
+  try {
+    const res = await fetch(`/api/conversation/${conversationId}/suggest_title`, { method: "POST" });
+    const data = await res.json();
+    if (data?.title) {
+      //const conversations = await fetchConversations();
+      //renderConversations(conversations);
+      await refreshConversationLists();
+      await refreshContext();
+    }
+  } finally {
+    suggestBtn.disabled = false;
+    suggestBtn.textContent = "Suggest";
+  }
+}
+
+async function summarizeConversation(conversationId) {
+  try {
+    const res = await fetch(`/api/conversations/${conversationId}/summarize`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" }
     });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert("Failed to summarize: " + (err.detail || res.status));
+      return;
+    }
+    const data = await res.json();
+    // reload that conversation so the new summary message appears
+    await loadConversation(conversationId);
+  } catch (e) {
+    console.error("summarizeConversation failed", e);
+    alert("Error summarizing conversation.");
+  }
+}
+
+// #endregion
+
+// #region Project management (menu/modal) helpers
+
+async function fetchProjects() {
+  const res = await fetch("/api/projects");
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.projects || [];
+}
+
+function projectExpandedKey(pid) {
+  return `chatoss.projectExpanded.${pid}`;
+}
+
+function getProjectExpanded(pid, defaultValue) {
+  const v = localStorage.getItem(projectExpandedKey(pid));
+  if (v === "1") return true;
+  if (v === "0") return false;
+  return !!defaultValue;
+}
+
+function setProjectExpanded(pid, expanded) {
+  localStorage.setItem(projectExpandedKey(pid), expanded ? "1" : "0");
+}
+
+function renderProjects(projects, conversations) {
+  if (!projectListEl) return;
+
+  projectsCache = projects || [];
+  projectListEl.innerHTML = "";
+
+  // Group conversations by project_id, preserving whatever order /api/conversations returned
+  const byPid = new Map();
+  (conversations || []).forEach(c => {
+    if (c.project_id == null) return;
+    const pid = c.project_id;
+    if (!byPid.has(pid)) byPid.set(pid, []);
+    byPid.get(pid).push(c);
+  });
+
+  projectsCache.forEach(p => {
+    const convs = byPid.get(p.id) || [];
+    const containsActive = convs.some(x => x.id === conversationId);
+
+    // Default: collapsed unless it contains the active conversation
+    const expanded = getProjectExpanded(p.id, containsActive);
+
+    const block = document.createElement("div");
+    block.className = "projBlock";
+
+    const header = document.createElement("div");
+    header.className = "projItem projHeader";
+
+    const toggle = document.createElement("span");
+    toggle.className = "projToggle";
+    toggle.textContent = expanded ? "▾" : "▸";
+
+    const name = document.createElement("div");
+    name.className = "projName";
+    name.textContent = p.name;
+    if (p.description) name.title = p.description;
+
+    const count = document.createElement("div");
+    count.className = "projCount";
+    count.textContent = String(convs.length);
+
+    header.appendChild(toggle);
+    header.appendChild(name);
+    header.appendChild(count);
+
+    // Left-click toggles expand/collapse
+    header.addEventListener("click", (ev) => {
+      // Don’t toggle if this was a right-click opening the project menu
+      const next = !getProjectExpanded(p.id, containsActive);
+      setProjectExpanded(p.id, next);
+      renderProjects(projectsCache, conversations); // re-render just the project list
+    });
+
+    // Right-click opens the project context menu (rename/description)
+    header.addEventListener("contextmenu", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      menuTargetProjectId = p.id;
+      positionMenu(projMenuEl, ev.clientX, ev.clientY);
+      //projMenuEl.style.left = `${ev.clientX}px`;
+      //projMenuEl.style.top = `${ev.clientY}px`;
+      //projMenuEl.classList.remove("hidden");
+      if (projFilesBtn) {
+        setFilesButtonEnabled(projFilesBtn, false);
+        refreshProjectFilesState(p.id);
+      }
+    });
+
+    const children = document.createElement("div");
+    children.className = "projConvs";
+    if (!expanded) children.classList.add("hidden");
+
+    convs.forEach(c => {
+      children.appendChild(makeConversationItem(c));
+    });
+
+    block.appendChild(header);
+    block.appendChild(children);
+    projectListEl.appendChild(block);
+  });
+}
+
+async function updateProject(projectId, fields) {
+  const res = await fetch(`/api/projects/${projectId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(fields || {})
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    alert("Project update failed: " + (err.detail || res.status));
+    return false;
+  }
+  return true;
+}
+
+// #endregion
+
+// #region File upload helpers
+
+function openUploadModal(forceScope, explicitProjectId) {
+  if (!uploadModal) return;
+
+  uploadProjectIdForced = explicitProjectId ?? null;
+
+  // Reset state
+  if (uploadFilesEl) uploadFilesEl.value = "";
+  if (uploadStatusEl) uploadStatusEl.textContent = "";
+
+  if (!uploadScopeEl) {
+    uploadModal.classList.remove("hidden");
+    return;
   }
 
-  if (selB) {
-    selB.addEventListener("change", () => {
-      localStorage.setItem("chatoss.modelB", selB.value);
-      updateModelInfo("B");
-      applyAdvancedVisibility();
-    });
+  const meta = conversationId ? conversationMap.get(conversationId) : null;
+  const hasProject = !!(meta && meta.project_id != null);
+
+  // Enable/disable the Project option based on whether there is a project
+  const projectOption = Array.from(uploadScopeEl.options || []).find(
+    o => o.value === "project"
+  );
+  if (projectOption) {
+    const allowProject = hasProject || explicitProjectId != null;
+    projectOption.disabled = !allowProject;
+    if (!allowProject && uploadScopeEl.value === "project") {
+      uploadScopeEl.value = "conversation";
+    }
   }
+
+  // Lock scope when invoked from project menu
+  if (forceScope === "project") {
+    uploadScopeEl.value = "project";
+    uploadScopeEl.disabled = true;
+  } else {
+    uploadScopeEl.disabled = false;
+    if (!uploadScopeEl.value) {
+      uploadScopeEl.value = "conversation";
+    }
+  }
+
+  uploadModal.classList.remove("hidden");
+}
+
+function closeUploadModal() {
+  if (!uploadModal) return;
+  uploadModal.classList.add("hidden");
+  uploadProjectIdForced = null;
+}
+
+async function startUpload() {
+  if (!uploadFilesEl || !uploadScopeEl) return;
+  const files = Array.from(uploadFilesEl.files || []);
+  if (!files.length) {
+    alert("Choose at least one file.");
+    return;
+  }
+
+  const scope = uploadScopeEl.value || "conversation";
+
+  let payloadConversationId = null;
+  let payloadProjectId = null;
+
+  if (scope === "conversation") {
+    if (!conversationId) {
+      alert("You need an active conversation for conversation scope.");
+      return;
+    }
+    payloadConversationId = conversationId;
+  } else if (scope === "project") {
+    if (uploadProjectIdForced != null) {
+      payloadProjectId = uploadProjectIdForced;
+    } else {
+      const meta = conversationId ? conversationMap.get(conversationId) : null;
+      payloadProjectId = meta?.project_id ?? null;
+    }
+    if (payloadProjectId == null) {
+      alert("No project is associated with this chat.");
+      return;
+    }
+  } else if (scope === "global") {
+    // No extra ids needed
+  } else {
+    alert("Invalid scope: " + scope);
+    return;
+  }
+
+  const form = new FormData();
+  files.forEach(f => form.append("files", f));
+
+  const params = new URLSearchParams();
+  params.set("scope_type", scope);
+  if (payloadConversationId) params.set("conversation_id", payloadConversationId);
+  if (payloadProjectId != null) params.set("project_id", String(payloadProjectId));
+
+  const prevSendDisabled = sendBtn.disabled;
+  const prevInputDisabled = inputEl.disabled;
+  const prevAttachDisabled = attachBtn ? attachBtn.disabled : false;
+
+  sendBtn.disabled = true;
+  inputEl.disabled = true;
+  if (attachBtn) attachBtn.disabled = true;
+  if (uploadStartBtn) uploadStartBtn.disabled = true;
+  if (uploadStatusEl) uploadStatusEl.textContent = "Uploading…";
+
+  try {
+    const res = await fetch(`/api/upload_file?${params.toString()}`, {
+      method: "POST",
+      body: form
+    });
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      console.error("Upload failed", res.status, txt);
+      if (uploadStatusEl) uploadStatusEl.textContent = "Upload failed.";
+      alert("Upload failed: " + (txt.slice(0, 200) || res.status));
+      return;
+    }
+
+    const data = await res.json().catch(() => ({}));
+    console.log("Upload OK", data);
+    if (uploadStatusEl) uploadStatusEl.textContent = "Uploaded.";
+    closeUploadModal();
+
+    try {
+      await refreshGlobalFilesState();
+    } catch (e) {
+      console.error("refreshGlobalFilesState after upload failed", e);
+    }
+
+    // New files can change context; refresh if we can
+    try {
+      await refreshContext();
+    } catch (e) {
+      console.warn("refreshContext after upload failed", e);
+    }
+  } finally {
+    sendBtn.disabled = prevSendDisabled;
+    inputEl.disabled = prevInputDisabled;
+    if (attachBtn) attachBtn.disabled = prevAttachDisabled;
+    if (uploadStartBtn) uploadStartBtn.disabled = false;
+  }
+}
+
+// #endregion
+
+// #region File management (menu/modal) helpers
+
+function openFilesModalForConversation(convId) {
+  filesModalMode = "conversation";
+  filesModalConversationId = convId;
+  filesModalProjectId = null;
+  loadFilesModal();
+}
+
+function openFilesModalForProject(pid) {
+  filesModalMode = "project";
+  filesModalProjectId = pid;
+  filesModalConversationId = null;
+  loadFilesModal();
+}
+
+function openFilesModalGlobal() {
+  filesModalMode = "global";
+  filesModalConversationId = null;
+  filesModalProjectId = null;
+  loadFilesModal();
+}
+
+function openFilesModalAll() {
+  filesModalMode = "all";
+  filesModalConversationId = null;
+  filesModalProjectId = null;
+  loadFilesModal();
+}
+
+async function loadFilesModal() {
+  if (!filesModal || !filesListEl) return;
+
+  let url;
+  if (filesModalMode === "conversation") {
+    if (!filesModalConversationId) return;
+    url = `/api/conversations/${encodeURIComponent(filesModalConversationId)}/files`;
+  } else if (filesModalMode === "project") {
+    if (filesModalProjectId == null) return;
+    url = `/api/projects/${encodeURIComponent(filesModalProjectId)}/files`;
+  } else if (filesModalMode === "all") {
+    url = "/api/files";
+  } else {
+    return;
+  }
+  // TODO change above branches to also support "global" and sandbox+id
+
+  filesListEl.textContent = "Loading…";
+  filesModal.classList.remove("hidden");
+
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      console.error("files list error", res.status, txt);
+      filesListEl.textContent = "Failed to load files.";
+      return;
+    }
+    const data = await res.json();
+    const files = data.files || [];
+
+    if (!files.length) {
+      filesListEl.textContent = "No files yet.";
+      return;
+    }
+
+    const container = document.createElement("div");
+    container.className = "filesListTable";
+
+    files.forEach(file => {
+      const row = document.createElement("div");
+      row.className = "filesRow";
+
+      const nameSpan = document.createElement("span");
+      nameSpan.className = "filesName";
+      nameSpan.textContent = file.name || file.path || file.id;
+
+      const descInput = document.createElement("input");
+      descInput.className = "filesDescInput";
+      descInput.type = "text";
+      descInput.placeholder = "Description / what this file is for…";
+      descInput.value = file.description || "";
+      descInput.addEventListener("change", () => {
+        saveFileDescription(file.id, descInput.value);
+      });
+
+      row.appendChild(nameSpan);
+      row.appendChild(descInput);
+      container.appendChild(row);
+    });
+
+    filesListEl.innerHTML = "";
+    filesListEl.appendChild(container);
+  } catch (err) {
+    console.error("files list error", err);
+    filesListEl.textContent = "Failed to load files.";
+  }
+}
+
+function closeFilesModal(save = true) {
+  if (!filesModal) return;
+  if (save) {
+    // explicitly save all descriptions on close, in case user edited but didn’t blur the input (which triggers change event)
+    for (const input of filesListEl.querySelectorAll("input.filesDescInput")) {
+      const fileId = input.dataset.fileId;
+      saveFileDescription(fileId, input.value);
+    }
+  }
+  filesModal.classList.add("hidden");
+  filesModalMode = null;
+  filesModalConversationId = null;
+  filesModalProjectId = null;
+}
+
+async function saveFileDescription(fileId, description) {
+  try {
+    const res = await fetch(`/api/files/${encodeURIComponent(fileId)}/description`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ description }),
+    });
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      console.error("save description failed", res.status, txt);
+    }
+  } catch (err) {
+    console.error("save description error", err);
+  }
+}
+
+function setFilesButtonEnabled(btn, enabled) {
+  if (!btn) return;
+  if (enabled) {
+    btn.classList.remove("files-disabled");
+    btn.disabled = false;
+  } else {
+    btn.classList.add("files-disabled");
+    btn.disabled = true;
+  }
+}
+
+async function refreshGlobalFilesState() {
+  // Uses the new /api/files/summary endpoint (we'll add it below)
+  if (!manageFilesTopBtn) return;
+  try {
+    const data = await fetchJsonDebug("/api/files/summary");
+    const total = data?.total ?? 0;
+    hasAnyFiles = total > 0;
+    setFilesButtonEnabled(manageFilesTopBtn, hasAnyFiles);
+  } catch (err) {
+    console.error("files summary error", err);
+    // On error, don't hard-disable the button
+    setFilesButtonEnabled(manageFilesTopBtn, true);
+  }
+}
+
+async function refreshConversationFilesState(convId) {
+  if (!convViewFilesBtn || !convId) return;
+  try {
+    const res = await fetch(`/api/conversations/${encodeURIComponent(convId)}/files`);
+    if (!res.ok) throw new Error("status " + res.status);
+    const data = await res.json();
+    const hasFiles = (data.files || []).length > 0;
+    setFilesButtonEnabled(convViewFilesBtn, hasFiles);
+  } catch (err) {
+    console.error("conv files state error", err);
+    setFilesButtonEnabled(convViewFilesBtn, false);
+  }
+}
+
+async function refreshProjectFilesState(projectId) {
+  if (!projFilesBtn || projectId == null) return;
+  try {
+    const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/files`);
+    if (!res.ok) throw new Error("status " + res.status);
+    const data = await res.json();
+    const hasFiles = (data.files || []).length > 0;
+    setFilesButtonEnabled(projFilesBtn, hasFiles);
+  } catch (err) {
+    console.error("project files state error", err);
+    setFilesButtonEnabled(projFilesBtn, false);
+  }
+}
+
+// #endregion
+
+// ----------------------------------
+// Event bindings and UI initialization
+// ----------------------------------
+
+// #region Event bindings
+
+// #region File upload event bindings
+
+if (attachBtn && uploadModal) {
+  attachBtn.addEventListener("click", () => {
+    if (!conversationId) {
+      alert("Start a chat first, then attach files.");
+      return;
+    }
+    openUploadModal(null, null);
+  });
+}
+
+if (uploadCancelBtn) {
+  uploadCancelBtn.addEventListener("click", () => {
+    closeUploadModal();
+  });
+}
+if (uploadCloseBtn) {
+  uploadCloseBtn.addEventListener("click", () => {
+    closeUploadModal();
+  });
+}
+if (uploadBackdrop) {
+  uploadBackdrop.addEventListener("click", () => {
+    closeUploadModal();
+  });
+}
+if (uploadStartBtn) {
+  uploadStartBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    startUpload().catch(err => {
+      console.error("startUpload error", err);
+    });
+  });
+}
+
+// Project right-click: always project scoped
+if (projUploadBtn) {
+  projUploadBtn.addEventListener("click", () => {
+    const pid = menuTargetProjectId;
+    projMenuEl.classList.add("hidden");
+    if (!pid) return;
+    openUploadModal("project", pid);
+  });
+}
+
+// #endregion
+
+// #region File management event bindings
+
+if (convViewFilesBtn) {
+  convViewFilesBtn.addEventListener("click", () => {
+    convMenuEl.classList.add("hidden");
+    const cid = menuTargetConversationId || conversationId;
+    if (!cid) {
+      alert("No conversation selected.");
+      return;
+    }
+    openFilesModalForConversation(cid);
+  });
+}
+
+if (projFilesBtn) {
+  projFilesBtn.addEventListener("click", () => {
+    projMenuEl.classList.add("hidden");
+    const pid = menuTargetProjectId;
+    if (!pid) {
+      alert("No project selected.");
+      return;
+    }
+    openFilesModalForProject(pid);
+  });
+}
+
+if (manageFilesTopBtn) {
+  manageFilesTopBtn.addEventListener("click", () => {
+    if (manageFilesTopBtn.classList.contains("files-disabled")) {
+      return;
+    }
+    openFilesModalAll();
+  });
+}
+
+// All of these do the same thing (close the modal, saving descriptions)
+// TODO filesCloseBtn and maybe filesCloseBottomBtn should maybe send False since the button says "Cancel"?
+if (filesCloseBtn) {
+  filesCloseBtn.addEventListener("click", () => closeFilesModal(false));
+}
+if (filesCloseBottomBtn) {
+  filesCloseBottomBtn.addEventListener("click", () => closeFilesModal(false));
+}
+if (filesSaveBtn) {
+  filesSaveBtn.addEventListener("click", closeFilesModal);
+}
+if (filesBackdrop) {
+  filesBackdrop.addEventListener("click", closeFilesModal);
+}
+
+// #endregion
+
+// #region Conversation & chat menu event bindings
+
+if (chatMenuButton) {
+  chatMenuButton.addEventListener("click", (e) => {
+    e.stopPropagation();
+    toggleChatMenu();
+  });
+}
+if (chatMenu) {
+  chatMenu.addEventListener("click", (e) => {
+    // don't let clicks inside menu bubble up and close it
+    e.stopPropagation();
+  });
 }
 
 sendBtn.addEventListener("click", send);
 newBtn.addEventListener("click", newChat);
-addPinBtn.addEventListener("click", addPin);
+
+// #endregion
+
+// #region Memory and Pin event bindings
+
+if (addPinBtn) {
+  addPinBtn.addEventListener("click", addPin);
+}
 if (saveMemoryBtn) {
   saveMemoryBtn.addEventListener("click", () => {
     createMemoryFromUi().catch(e => console.error("createMemoryFromUi error", e));
   });
 }
-renameBtn.addEventListener("click", renameChat);
-suggestBtn.addEventListener("click", suggestChatTitle);
-if (modelSelectA) {
-  modelSelectA.addEventListener("change", () =>
-    updateModelInfo("A")
-  );
+
+if (openMemoryBtn) {
+  openMemoryBtn.addEventListener("click", () => {
+    openMemoryModal();
+    // hide the chat menu when opening modal, so it doesn't float over
+    toggleChatMenu(false);
+  });
 }
-if (modelSelectB) {
-  modelSelectB.addEventListener("change", () =>
-    updateModelInfo("B")
-  );
+if (closeMemoryBtn) {
+  closeMemoryBtn.addEventListener("click", closeMemoryModal);
+}
+if (memoryBackdrop) {
+  memoryBackdrop.addEventListener("click", closeMemoryModal);
 }
 
-function getMenuCid() {
-  return menuTargetConversationId;
+// #endregion
+
+// #region Chat buttons in the top panel (now hidden)
+if (renameBtn) {
+  renameBtn.addEventListener("click", renameChat);
 }
-function getMenuTitle(cid) {
-  return conversationMap.get(cid)?.title || "New chat";
+if (suggestBtn) {
+  suggestBtn.addEventListener("click", suggestChatTitle);
+}
+// #endregion
+
+// #region Conversation context menu event bindings
+
+if (menuRenameBtn) {
+  menuRenameBtn.addEventListener("click", async () => {
+    const cid = menuTargetConversationId;
+    if (!cid) return;
+
+    const current = conversationMap.get(cid)?.title || "New chat";
+    const next = prompt("Rename chat:", current);
+    if (next === null) return;
+
+    await fetch(`/api/conversation/${cid}/title`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: next.trim() })
+    });
+
+    hideConvMenu();
+
+    const conversations = await fetchConversations();
+    renderConversations(conversations);
+
+    // only refresh top title/context if we're renaming the active chat
+    if (cid === conversationId) {
+      await refreshContext();
+    }
+  });
+}
+
+if (menuSuggestBtn) {
+  menuSuggestBtn.addEventListener("click", async () => {
+    const cid = menuTargetConversationId;
+    if (!cid) return;
+
+    menuSuggestBtn.disabled = true;
+    menuSuggestBtn.textContent = "Thinking…";
+    try {
+      await fetch(`/api/conversation/${cid}/suggest_title`, { method: "POST" });
+    } finally {
+      menuSuggestBtn.disabled = false;
+      menuSuggestBtn.textContent = "Suggest";
+    }
+
+    hideConvMenu();
+
+    const conversations = await fetchConversations();
+    renderConversations(conversations);
+
+    if (cid === conversationId) {
+      await refreshContext();
+    }
+  });
 }
 
 if (menuSummarizeBtn) {
@@ -1676,72 +2195,36 @@ if (toggleContextBtn) {
   });
 }
 
-document.addEventListener("click", (e) => {
-  if (!convMenuEl.classList.contains("hidden") && !convMenuEl.contains(e.target)) hideConvMenu();
-    // if click is outside menu, hide it
-  if (projMenuEl && !projMenuEl.classList.contains("hidden") && !projMenuEl.contains(e.target)) projMenuEl.classList.add("hidden");
-  // clicking anywhere else closes the menu
-  toggleChatMenu(false);
-});
+// #endregion
 
-inputEl.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) {
-    e.preventDefault();
-    send();
-  }
-});
+// #region Model select event bindings
 
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") hideConvMenu();
-});
+if (advancedCheckbox) {
+  // restore saved setting
+  advancedMode = localStorage.getItem("chatoss.advanced") === "1";
+  advancedCheckbox.checked = advancedMode;
 
-menuRenameBtn.addEventListener("click", async () => {
-  const cid = menuTargetConversationId;
-  if (!cid) return;
-
-  const current = conversationMap.get(cid)?.title || "New chat";
-  const next = prompt("Rename chat:", current);
-  if (next === null) return;
-
-  await fetch(`/api/conversation/${cid}/title`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title: next.trim() })
+  advancedCheckbox.addEventListener("change", () => {
+    advancedMode = advancedCheckbox.checked;
+    localStorage.setItem("chatoss.advanced", advancedMode ? "1" : "0");
+    applyAdvancedVisibility();
   });
+}
 
-  hideConvMenu();
+if (modelSelectA) {
+  modelSelectA.addEventListener("change", () =>
+    updateModelInfo("A")
+  );
+}
+if (modelSelectB) {
+  modelSelectB.addEventListener("change", () =>
+    updateModelInfo("B")
+  );
+}
 
-  const conversations = await fetchConversations();
-  renderConversations(conversations);
+// #endregion
 
-  // only refresh top title/context if we're renaming the active chat
-  if (cid === conversationId) {
-    await refreshContext();
-  }
-});
-
-menuSuggestBtn.addEventListener("click", async () => {
-  const cid = menuTargetConversationId;
-  if (!cid) return;
-
-  menuSuggestBtn.disabled = true;
-  menuSuggestBtn.textContent = "Thinking…";
-  try {
-    await fetch(`/api/conversation/${cid}/suggest_title`, { method: "POST" });
-  } finally {
-    menuSuggestBtn.disabled = false;
-    menuSuggestBtn.textContent = "Suggest";
-  }
-
-  hideConvMenu();
-
-  const conversations = await fetchConversations();
-  renderConversations(conversations);
-
-  if (cid === conversationId) {
-    await refreshContext();
-  }
-});
+// #region Project management menu event bindings
 
 if (newProjectBtn) {
   newProjectBtn.addEventListener("click", async () => {
@@ -1769,27 +2252,6 @@ if (newProjectBtn) {
     }
   });
 }
-
-if (openMemoryBtn) {
-  openMemoryBtn.addEventListener("click", () => {
-    openMemoryModal();
-    // hide the chat menu when opening modal, so it doesn't float over
-    toggleChatMenu(false);
-  });
-}
-if (closeMemoryBtn) {
-  closeMemoryBtn.addEventListener("click", closeMemoryModal);
-}
-if (memoryBackdrop) {
-  memoryBackdrop.addEventListener("click", closeMemoryModal);
-}
-
-// optional: Esc closes modal
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && memoryModal && !memoryModal.classList.contains("hidden")) {
-    closeMemoryModal();
-  }
-});
 
 if (projRenameBtn) {
   projRenameBtn.addEventListener("click", async () => {
@@ -1826,6 +2288,36 @@ if (projDescBtn) {
     }
   });
 }
+
+// #endregion
+
+// bind send to enter when chat input is focused, but allow shift+enter for newlines
+inputEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    send();
+  }
+});
+
+document.addEventListener("click", (e) => {
+  if (!convMenuEl.classList.contains("hidden") && !convMenuEl.contains(e.target))
+    hideConvMenu();
+  // if click is outside menu, hide it
+  if (projMenuEl && !projMenuEl.classList.contains("hidden") && !projMenuEl.contains(e.target))
+    projMenuEl.classList.add("hidden");
+  // clicking anywhere else closes the menu
+  toggleChatMenu(false);
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") hideConvMenu();
+  // optional: Esc closes modal
+  if (e.key === "Escape" && memoryModal && !memoryModal.classList.contains("hidden")) {
+    closeMemoryModal();
+  }
+});
+
+// #endregion
 
 (async function boot() {
   bootLog("[boot] start");
@@ -1877,6 +2369,9 @@ if (projDescBtn) {
 
     bootLog("[boot] refreshContext");
     await refreshContext();
+
+    bootLog("[boot] refreshGlobalFilesState");
+    await refreshGlobalFilesState();
 
     bootLog("[boot] done");
   } catch (e) {

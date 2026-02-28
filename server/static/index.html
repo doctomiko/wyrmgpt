@@ -12,7 +12,10 @@
     <aside id="sidebar">
       <div class="sideHeader">
         <div class="title">WyrmGPT</div>
-        <button id="newChat">New</button>
+        <div class="sideHeaderButtons">
+          <button id="manageFilesTop">Files</button>
+          <button id="newChat">New</button>
+        </div>
       </div>
       <div id="projectHeader">
         <span>Projects</span>
@@ -55,9 +58,9 @@
       <main id="chat"></main>
 
       <footer>
+        <button id="attachButton" class="iconButton" title="Add files">+</button>
         <textarea id="input" rows="2" placeholder="Message…"></textarea>
         <button id="send">Send</button>
-        <!--button id="sendAB" title="Send and compare models A/B">Send A/B</button-->
       </footer>
     </section>
 
@@ -129,17 +132,67 @@
       </div>
     </div>
   </div>  
+  <div id="uploadModal" class="modal hidden">
+    <div class="modalBackdrop"></div>
+    <div class="modalPanel" style="max-width: 480px;">
+      <div class="modalHeader">
+        <div class="modalTitle">Add files</div>
+        <button id="uploadClose" class="iconButton" title="Close">&times;</button>
+      </div>
+      <div class="modalBody">
+        <label style="display:block; margin-bottom:8px;">
+          Scope
+          <select id="uploadScope">
+            <option value="conversation">Conversation</option>
+            <option value="project">Project</option>
+            <option value="global">Global</option>
+          </select>
+        </label>
+        <div class="uploadRow" style="margin-bottom:8px;">
+          <input id="uploadFiles" type="file" multiple />
+        </div>
+        <div id="uploadStatus" class="uploadStatus" style="min-height:1.2em; font-size:0.9em;"></div>
+        <div class="modalActions">
+          <button id="uploadCancel">Cancel</button>
+          <button id="uploadStart">Upload</button>
+        </div>
+      </div>
+    </div>
+  </div>  
+  <div id="filesModal" class="modal hidden">
+    <div class="modalBackdrop"></div>
+    <div class="modalPanel" style="max-width: 640px;">
+      <div class="modalHeader">
+        <div class="modalTitle">Files</div>
+        <button id="filesClose" class="iconButton" title="Close">&times;</button>
+      </div>
+      <div class="modalBody">
+        <div id="filesList"></div>
+      </div>
+      <div class="modalActions">
+          <button id="filesSave">Save</button>
+          <button id="filesCloseBottom">Cancel</button>
+      </div>
+    </div>
+  </div>
   <div id="convMenu" class="convMenu hidden">
     <button id="menuRename">Rename</button>
     <button id="menuSuggest">Suggest Title</button>
-    <button id="menuMoveTo">Move To…</button>
     <button id="menuSummarize">Summarize</button>
+    <button id="menuMoveTo">Move To…</button>
+    <!-- TODO normalize the naming conventions so all start with "menuConvViewFiles" between here and app.js -->
+    <button id="menuConvViewFiles">Manage files…</button>
     <button id="menuArchive">Archive</button>
     <button id="menuDelete">Delete</button>
   </div>
   <div id="projMenu" class="convMenu hidden">
-    <button id="projRename">Rename</button>
+    <button id="projNewChat" class="not-implemented">New Chat in Project</button>
+    <button id="projRename">Rename Project</button>
     <button id="projDesc">Edit description…</button>
+    <button id="projUpload">Add files…</button>
+    <button id="projFiles">Manage files…</button>
+    <button id="projArchive" class="not-implemented">Archive</button>
+    <button id="projDelete" class="not-implemented">Delete</button>
   </div>
   <script src="/static/app.js"></script>
 </body>

@@ -22,15 +22,31 @@ Prereqs:
 - Python 3.10+ recommended
 - An OpenAI API key
 
-1) Create a virtualenv and install deps:
+1) Create a virtualenv and install deps.
+
+In PowerShell from the project root folder:
+
+```powershell
+python -m venv .venv
+. .venv\Scripts\Activate.ps1
+
+# Update PIP
+pip install -U pip
+#.\.venv\Scripts\pip.exe install -U pip
+
+# Use the included PowerShell to and requirements.txt to install requirements to the venv:
+. Install-Requirements.ps1
+```
+
+Or in Linux style container:
 
 ```bash
 python -m venv .venv
-# Windows PowerShell: .venv\Scripts\activate
 source .venv/bin/activate
 
+# Update PIP
 pip install -U pip
-pip install fastapi uvicorn python-dotenv openai pydantic
+pip install `<insert requires.txt here separated by spaces`>
 ```
 
 Create a .env in the repo root:
@@ -49,13 +65,23 @@ SYSTEM_PROMPT_FILE=system_prompt.txt
 DEBUG_ERRORS=1
 ```
 
-Run the server:
+Use the included PowerShell to start the server:
+
+```powershell
+. ./Start-Service.ps1
+```
+
+This activates the venv and runs the server like below in one step.
+
+The relevant comment in Linux is:
 
 ```bash
 uvicorn server.main:app --reload --port 8000
 ```
 
 Open the UI:
+
+In a browser on the same machine, go to the website.
 
 [http://127.0.0.1:8000](http://127.0.0.1:8000)
 

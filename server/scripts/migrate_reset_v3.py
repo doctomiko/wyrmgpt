@@ -12,7 +12,8 @@ def main():
     conn.close()
 
     init_schema()
-    print("DB schema reset/migrated to v2 successfully.")
+    # print is handled inside init_schema now, so we can remove this line.
+    #print("DB schema reset/migrated to v2 successfully.")
 
 if __name__ == "__main__":
     main()

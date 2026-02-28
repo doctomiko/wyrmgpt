@@ -3,9 +3,10 @@ import uuid
 from pathlib import Path
 from typing import Optional, cast, Any
 from dotenv import load_dotenv
-from fastapi import Request, FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response, status, UploadFile, File
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+
 import traceback
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
@@ -56,20 +57,32 @@ from .db import (
     get_or_create_project as db_get_or_create_project,  # optional convenience endpoint
     project_add_conversation as db_project_add_conversation,
     project_import as db_project_import,
-    set_conversation_project, # assign_conversation_project,
+    set_conversation_project,  # assign_conversation_project,
     update_project,
     # Files and Artifacts
     register_file as db_register_file,
     project_add_file as db_project_add_file,
     create_artifact as db_create_artifact,
-    # Memory 
+    register_scoped_file,
+    update_file_description,
+    conversation_link_file,
+    list_files_for_conversation,
+    list_files_for_project,
+    list_all_files,
+    get_files_summary,
+    # Context cache
+    invalidate_context_cache_for_conversation,
+    invalidate_context_cache_for_project,
+    # Memory Pins
     add_memory_pin,
     list_memory_pins,
     delete_memory_pin,
     # Memories
     create_memory as db_create_memory,
     memory_link_project as db_memory_link_project,
-    memory_link_conversation as db_memory_link_conversation,
+    memory_link_conversation as db_memory_link_conversation,# Shared paths
+    # Shared data dir
+    DATA_DIR,
 )
 
 # endregion
@@ -108,6 +121,10 @@ client = OpenAI()
 
 HERE = Path(__file__).resolve().parent
 STATIC_DIR = HERE / "static"
+# This is where uploaded files are stored; you can change this or add subdirs as needed
+SOURCES_ROOT = DATA_DIR / "sources"
+# This is where APIs for supported toools (retrievers, file parsers, etc.) would live; you can add subdirs as needed
+TOOLS_DIR = HERE / "tools"
 
 # Support checking for models
 _MODELS_CACHE: dict[str, Any] | None = None
@@ -115,6 +132,9 @@ _MODELS_CACHE_TS: float = 0.0
 _MODELS_TTL_SECONDS = 300  # 5 minutes
 
 # region API Contracts (class definitions)
+
+class FileDescriptionUpdate(BaseModel):
+    description: str | None = None
 
 class ProjectUpdateRequest(BaseModel):
     name: Optional[str] = None
@@ -164,15 +184,6 @@ class ImportRule(BaseModel):
 
 class NewChatResponse(BaseModel):
     conversation_id: str
-
-"""
-class ProjectCreate(BaseModel):
-    name: str
-    description: str | None = None
-    system_prompt: str | None = None
-    override_core_prompt: bool = False
-    default_advanced_mode: bool = False
-"""
 
 class ProjectCreateRequest(BaseModel):
     name: str
@@ -504,184 +515,6 @@ def api_conversation_context(conversation_id: str, preview_limit: int = 20):
         return JSONResponse(build_context(conversation_id, preview_limit=preview_limit))
     except KeyError:
         raise HTTPException(status_code=404, detail="Not Found")
-    
-"""
-@app.get("/api/conversations")
-def api_conversations():
-    return JSONResponse(list_conversations(limit=200))
-
-@app.get("/api/conversation/{conversation_id}/messages")
-def api_conversation_messages(conversation_id: str):
-    # Full raw history with metadata for UI (A/B pairs, timestamps, etc.)
-    # Raw rows: id, role, content, created_at, meta (parsed JSON or None)
-    return JSONResponse(get_messages_raw(conversation_id, limit=500))
-
-@app.get("/api/conversation/{conversation_id}/context")
-def api_conversation_context(conversation_id: str, preview_limit: int = 20):
-    return JSONResponse(build_context(conversation_id, preview_limit=preview_limit))
-
-@app.put("/api/conversation/{conversation_id}/title")
-def api_set_title(conversation_id: str, req: TitleRequest):
-    title = (req.title or "").strip()
-    if not title:
-        title = "New chat"
-    update_conversation_title(conversation_id, title)
-    return JSONResponse({"ok": True, "title": title})
-
-@app.post("/api/conversation/{conversation_id}/suggest_title")
-def api_suggest_title(conversation_id: str):
-    msgs = get_messages(conversation_id, limit=80)
-
-    # Flatten convo for a title prompt (keeps the model from “continuing” the chat)
-    flat = []
-    for m in msgs:
-        role = m["role"]
-        if role not in ("user", "assistant"):
-            continue
-        flat.append(f"{role.upper()}: {m['content']}")
-    convo_text = "\n\n".join(flat)
-    if len(convo_text) > 6000:
-        convo_text = convo_text[-6000:]  # keep the tail
-
-    instruction = (
-        "Generate a short, specific chat title (3–8 words). "
-        "No quotes. No punctuation unless necessary. "
-        "Return ONLY the title."
-    )
-
-    resp = client.responses.create(
-        model=TITLE_MODEL,
-        input=[
-            {"role": "system", "content": instruction},
-            {"role": "user", "content": "Conversation:\n\n" + convo_text},
-        ],
-        max_output_tokens=30,
-    )
-
-    title = _extract_output_text(resp).strip()
-    title = title.replace("\n", " ").strip().strip('"').strip("'")
-    if len(title) > 80:
-        title = title[:77] + "…"
-    if not title:
-        title = "New chat"
-
-    update_conversation_title(conversation_id, title)
-    return JSONResponse({"ok": True, "title": title})
-
-@app.post("/api/conversations/{conversation_id}/project")
-def api_move_conversation_project(conversation_id: str, req: MoveProjectRequest):
-    conn = get_conn()
-
-    project_id = None
-    if req.project_id is not None:
-        project_id = req.project_id
-    elif req.project_name:
-        project_id = get_or_create_project(conn, req.project_name)
-
-    assign_conversation_project(conn, conversation_id, project_id)
-    return {"conversation_id": conversation_id, "project_id": project_id}
-
-@app.post("/api/conversations/{conversation_id}/archive")
-def api_archive_conversation(conversation_id: str, req: ArchiveRequest):
-    conn = get_conn()
-    set_conversation_archived(conn, conversation_id, req.archived)
-    return {"conversation_id": conversation_id, "archived": req.archived}
-
-@app.delete("/api/conversations/{conversation_id}")
-def api_delete_conversation(conversation_id: str):
-    conn = get_conn()
-    delete_conversation(conn, conversation_id)
-    return {"deleted": True, "conversation_id": conversation_id}
-
-@app.post("/api/conversations/{conversation_id}/summarize")
-def api_summarize_conversation(conversation_id: str):
-    conn = get_conn()
-
-    cur = conn.execute(
-        "SELECT title FROM conversations WHERE id = ?",
-        (conversation_id,),
-    )
-    row = cur.fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Conversation not found.")
-    title = row["title"]
-
-    cur = conn.execute(
-        "SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id ASC",
-        (conversation_id,),
-    )
-    msgs = cur.fetchall()
-    if not msgs:
-        raise HTTPException(status_code=400, detail="Conversation is empty.")
-
-    # crude transcript; you can refine later
-    transcript_lines = []
-    for m in msgs:
-        transcript_lines.append(f"{m['role']}: {m['content']}")
-    transcript = "\n\n".join(transcript_lines)
-
-    system_prompt = (
-        "You are a helpful assistant that summarizes chat conversations for later review. "
-        "Write a concise summary (1–3 short paragraphs) capturing key decisions, questions, and outcomes. "
-        "Do NOT add new advice – only summarize what was actually said."
-    )
-
-    # use your default model or a specific summary model
-    model = MODEL  # or SUMMARY_MODEL if you define one
-
-    try:
-        resp = client.responses.create(
-            model=model,
-            input=[
-                {"role": "system", "content": system_prompt},
-                {
-                    "role": "user",
-                    "content": f"Title: {title}\n\nFull transcript:\n\n{transcript}",
-                },
-            ],
-            max_output_tokens=400,
-        )
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to summarize: {e}")
-
-    # Safely extract text from varied SDK response shapes
-    summary_text = _extract_output_text(resp)
-    if not summary_text:
-        # guarded fallback for unexpected structures
-        try:
-            out = getattr(resp, "output", None)
-            if isinstance(out, list) and out:
-                first = out[0]
-                content = getattr(first, "content", None)
-                if isinstance(content, list) and content:
-                    text = getattr(content[0], "text", None)
-                    if isinstance(text, str):
-                        summary_text = text
-        except Exception:
-            pass
-    if not summary_text:
-        summary_text = ""
-
-    # message content
-    summary_message = f"Summary of “{title}”:\n\n{summary_text}"
-
-    from .db import add_message  # assuming you already have this
-
-    add_message(
-        conversation_id,
-        "assistant",
-        summary_message,
-        meta={"summary": True, "model": model},
-    )
-
-    save_conversation_summary(conn, conversation_id, summary_text, model)
-
-    return {
-        "conversation_id": conversation_id,
-        "summary": summary_text,
-        "model": model,
-    }
-"""
 
 # endregion
 
@@ -734,27 +567,8 @@ def api_memory_link_conversation(memory_id: str, conversation_id: str):
     except ValueError as e:
         _http_from_value_error(e)
 
-"""
-@app.post("/api/memories")
-def create_memory(req: MemoryCreate):
-    mid = str(uuid.uuid4())
-    db_write("" "
-        INSERT INTO memories (id, content, importance, tags)
-        VALUES (?, ?, ?, ?)
-    "" ", (mid, req.content, req.importance, req.tags))
-    return {"id": mid}
-
-@app.post("/api/memories/{memory_id}/link_project/{project_id}")
-def memory_link_project(memory_id: str, project_id: str):
-    db_write("INSERT OR IGNORE INTO memory_projects VALUES (?,?)", (memory_id, project_id))
-    return {"ok": True}
-
-@app.post("/api/memories/{memory_id}/link_conversation/{conversation_id}")
-def memory_link_conversation(memory_id: str, conversation_id: str):
-    db_write("INSERT OR IGNORE INTO memory_conversations VALUES (?,?)", (memory_id, conversation_id))
-    return {"ok": True}
-"""        
 # endregion
+
 # region Memory Pin Endpoints
 
 @app.get("/api/memory/pins")
@@ -834,78 +648,147 @@ def api_project_add_file(project_id: int, file_id: str):
         return JSONResponse({"ok": True})
     except ValueError as e:
         _http_from_value_error(e)
-
-"""
-@app.get("/api/projects")
-def api_get_projects():
-    # rows = db_read("SELECT * FROM projects")
-    # return [dict(r) for r in rows]
-    conn = get_conn()
-    projects = get_projects(conn)
-    return {"projects": projects}
-
-@app.post("/api/projects")
-def api_create_project(req: ProjectCreateRequest):
-    # pid = str(uuid.uuid4())
-    # db_write("" "
-    #    INSERT INTO projects (id, name, description, system_prompt, override_core_prompt, default_advanced_mode)
-    #    VALUES (?, ?, ?, ?, ?, ?)
-    #"" ", (pid, req.name, req.description, req.system_prompt, int(req.override_core_prompt), int(req.default_advanced_mode)))
-    #return {"id": pid}
-    conn = get_conn()
-    try:
-        pid = get_or_create_project(conn, req.name)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    # TODO move to db.py
-    cur = conn.execute(
-        "SELECT id, name, description, system_prompt, override_core_prompt, default_advanced_mode, created_at, updated_at FROM projects WHERE id = ?",
-        (pid,),
-    )
-    row = cur.fetchone()
-    return {
-        "id": row["id"],
-        "name": row["name"],
-        "description": row["description"] if "description" in row else None,
-        "system_prompt": row["system_prompt"] if "system_prompt" in row else None,
-        "override_core_prompt": bool(row["override_core_prompt"]) if "override_core_prompt" in row else False,
-        "default_advanced_mode": bool(row["default_advanced_mode"]) if "default_advanced_mode" in row else False,
-        "created_at": row["created_at"],
-        "updated_at": row["updated_at"],
-    }
-
-@app.post("/api/projects/{project_id}/assign_conversation/{conversation_id}")
-def project_add_conversation(project_id: str, conversation_id: str):
-    db_write("INSERT OR IGNORE INTO project_conversations VALUES (?,?)", (project_id, conversation_id))
-    return {"ok": True}
-
-@app.post("/api/projects/{project_id}/files/{file_id}")
-def project_add_file(project_id: str, file_id: str):
-    db_write("INSERT OR IGNORE INTO project_files VALUES (?,?)", (project_id, file_id))
-    return {"ok": True}
-
-@app.post("/api/projects/{project_id}/artifacts")
-def create_artifact(project_id: str, req: ArtifactCreate):
-    aid = str(uuid.uuid4())
-    db_write("" "
-        INSERT INTO artifacts (id, project_id, name, content, tags)
-        VALUES (?, ?, ?, ?, ?)
-    "" ", (aid, project_id, req.name, req.content, req.tags))
-    return {"id": aid}
-
-@app.post("/api/projects/{project_id}/import_from/{source_id}")
-def project_import(project_id: str, source_id: str, req: ImportRule):
-    db_write("" "
-        INSERT OR REPLACE INTO project_imports
-        (project_id, source_project_id, include_tags, exclude_tags, include_artifact_ids)
-        VALUES (?, ?, ?, ?, ?)
-    " "", (project_id, source_id, req.include_tags, req.exclude_tags, req.include_artifact_ids))
-    return {"ok": True}
-"""
     
 # endregion
 
 # region File Endpoints
+
+# region Upload Endpoints
+
+@app.post("/api/upload_file")
+async def api_upload_file(
+    scope_type: str,
+    conversation_id: str | None = None,
+    project_id: int | None = None,
+    files: list[UploadFile] = File(...),
+):
+    """
+    Handle file uploads and register them with scoped metadata.
+
+    scope_type: conversation / project / global
+    conversation_id: required for conversation scope
+    project_id: required for project scope
+    """
+    scope_type_norm = (scope_type or "").strip().lower()
+    if not scope_type_norm:
+        raise HTTPException(status_code=400, detail="scope_type is required")
+    if scope_type_norm not in ("conversation", "project", "global"):
+        raise HTTPException(status_code=400, detail=f"Invalid scope_type: {scope_type}")
+
+    if not files:
+        raise HTTPException(status_code=400, detail="No files uploaded")
+
+    conv_id = (conversation_id or "").strip() or None
+    proj_id = None
+    if project_id not in (None, ""):
+        try:
+            proj_id = int(project_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="project_id must be an integer")
+
+    if scope_type_norm == "conversation" and not conv_id:
+        raise HTTPException(
+            status_code=400,
+            detail="conversation_id is required for conversation scope",
+        )
+    if scope_type_norm == "project" and proj_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="project_id is required for project scope",
+        )
+
+    base_sources = SOURCES_ROOT
+    if scope_type_norm == "conversation":
+        dest_root = base_sources / "chats" / (conv_id or "unknown_conversation")
+    elif scope_type_norm == "project":
+        dest_root = base_sources / "projects" / str(proj_id or "unknown_project")
+    else:
+        dest_root = base_sources / "global"
+
+    dest_root.mkdir(parents=True, exist_ok=True)
+
+    results: list[dict] = []
+
+    for upload in files:
+        if not upload.filename:
+            continue
+        orig_name = Path(upload.filename).name
+
+        # avoid overwriting existing files
+        dest_path = dest_root / orig_name
+        counter = 1
+        while dest_path.exists():
+            dest_path = dest_root / f"{dest_path.stem}_{counter}{dest_path.suffix}"
+            counter += 1
+
+        # stream the file to disk
+        with dest_path.open("wb") as out_f:
+            while True:
+                chunk = await upload.read(1024 * 1024)
+                if not chunk:
+                    break
+                out_f.write(chunk)
+        await upload.close()
+
+        # register in DB with scoped metadata
+        file_row = register_scoped_file(
+            name=orig_name,
+            path=str(dest_path),
+            mime_type=upload.content_type,
+            scope_type=scope_type_norm,
+            scope_id=proj_id if scope_type_norm == "project" else None,
+            scope_uuid=conv_id if scope_type_norm == "conversation" else None,
+            source_kind="upload",
+            url=None,
+            provenance=f"upload:{scope_type_norm}",
+        )
+        fid = file_row["id"]
+
+        if scope_type_norm == "conversation" and conv_id:
+            conversation_link_file(conv_id, fid)
+            invalidate_context_cache_for_conversation(conv_id)
+        elif scope_type_norm == "project" and proj_id is not None:
+            db_project_add_file(proj_id, fid)
+            invalidate_context_cache_for_project(proj_id)
+
+        results.append({"id": fid, "name": orig_name, "path": str(dest_path)})
+
+    return {"files": results}
+
+# endregion
+
+@app.get("/api/files")
+def api_list_files():
+    """
+    List all non-deleted files in the system.
+    Used by the top-level Manage Files button for the 'all' view.
+    """
+    files = list_all_files()
+    return JSONResponse({"files": files})
+
+
+@app.get("/api/files/summary")
+def api_files_summary():
+    """
+    Return counts of files by scope, plus total.
+    Used to enable/disable Manage Files buttons.
+    """
+    summary = get_files_summary()
+    return JSONResponse(summary)
+
+@app.post("/api/files/{file_id}/description")
+def api_update_file_description(file_id: str, body: FileDescriptionUpdate):
+    try:
+        update_file_description(file_id, body.description)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return JSONResponse(
+        {
+            "id": file_id,
+            "description": body.description or "",
+        }
+    )
 
 @app.post("/api/files")
 def api_register_file(req: FileRegister):
@@ -915,16 +798,183 @@ def api_register_file(req: FileRegister):
     except ValueError as e:
         _http_from_value_error(e)
 
-"""
-@app.post("/api/files")
-def register_file(req: FileRegister):
-    fid = str(uuid.uuid4())
-    db_write("" "
-        INSERT INTO files (id, name, path, mime_type)
-        VALUES (?, ?, ?, ?)
-    "" ", (fid, req.name, req.path, req.mime_type))
-    return {"id": fid}
-"""
+@app.post("/api/conversations/{conversation_id}/files/upload")
+async def api_upload_conversation_file(conversation_id: str, file: UploadFile = File(...)):
+    """
+    Upload a file scoped to a conversation.
+
+    - Stored under DATA_DIR / "sources" / "chats" / {conversation_id} / {filename}
+    - Registered in files with scope_type="chat", scope_uuid={conversation_id}
+    - Linked to the conversation (conversation_files)
+    - Linked to the project via project_files if the conversation has a project_id
+    - Invalidates the context cache for this conversation
+    """
+    conversation_id = (conversation_id or "").strip()
+    if not conversation_id:
+        raise HTTPException(status_code=400, detail="conversation_id is required")
+
+    # Ensure conversation exists and grab its project
+    try:
+        ctx = get_conversation_context(conversation_id, preview_limit=0)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    project_id = ctx.get("project_id")
+
+    if not file.filename or not file.filename.strip():
+        raise HTTPException(status_code=400, detail="Uploaded file must have a name")
+
+    # Target path on disk
+    chat_root = SOURCES_ROOT / "chats" / conversation_id
+    chat_root.mkdir(parents=True, exist_ok=True)
+    dest_path = chat_root / file.filename
+
+    # Stream upload to disk
+    try:
+        with dest_path.open("wb") as out_f:
+            while True:
+                chunk = await file.read(8192)
+                if not chunk:
+                    break
+                out_f.write(chunk)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to store upload: {e}")
+
+    # Register and link
+    try:
+        file_row = register_scoped_file(
+            name=file.filename,
+            path=str(dest_path),
+            mime_type=file.content_type,
+            scope_type="chat",
+            scope_id=None,
+            scope_uuid=conversation_id,
+            source_kind="upload",
+            url=None,
+            provenance=f"uploaded via chat {conversation_id}",
+        )
+        file_id = file_row["id"]
+
+        conversation_link_file(conversation_id, file_id)
+        if project_id is not None:
+            db_project_add_file(project_id, file_id)
+
+        invalidate_context_cache_for_conversation(conversation_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to register upload: {e}")
+
+    return JSONResponse(
+        {
+            "conversation_id": conversation_id,
+            "project_id": project_id,
+            "file": {
+                "id": file_id,
+                "name": file.filename,
+                "path": str(dest_path),
+                "mime_type": file.content_type,
+            },
+        }
+    )
+
+@app.get("/api/conversations/{conversation_id}/files")
+def api_list_conversation_files(conversation_id: str):
+    """
+    List files attached to a conversation via conversation_files.
+    """
+    conversation_id = (conversation_id or "").strip()
+    if not conversation_id:
+        raise HTTPException(status_code=400, detail="conversation_id is required")
+
+    try:
+        files = list_files_for_conversation(conversation_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return JSONResponse({"conversation_id": conversation_id, "files": files})
+
+
+@app.post("/api/projects/{project_id}/files/upload")
+async def api_upload_project_file(project_id: int, file: UploadFile = File(...)):
+    """
+    Upload a file scoped to a project.
+
+    - Stored under DATA_DIR / "sources" / "projects" / {project_id} / {filename}
+    - Registered in files with scope_type="project", scope_id={project_id}
+    - Linked to the project via project_files
+    - Invalidates context cache for all conversations in this project
+    """
+    # Make sure the project exists
+    projects = list_projects()
+    if not any(int(p["id"]) == int(project_id) for p in projects):
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if not file.filename or not file.filename.strip():
+        raise HTTPException(status_code=400, detail="Uploaded file must have a name")
+
+    proj_root = SOURCES_ROOT / "projects" / str(project_id)
+    proj_root.mkdir(parents=True, exist_ok=True)
+    dest_path = proj_root / file.filename
+
+    # Stream upload to disk
+    try:
+        with dest_path.open("wb") as out_f:
+            while True:
+                chunk = await file.read(8192)
+                if not chunk:
+                    break
+                out_f.write(chunk)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to store upload: {e}")
+
+    # Register and link
+    try:
+        file_row = register_scoped_file(
+            name=file.filename,
+            path=str(dest_path),
+            mime_type=file.content_type,
+            scope_type="project",
+            scope_id=int(project_id),
+            scope_uuid=None,
+            source_kind="upload",
+            url=None,
+            provenance=f"uploaded via project {project_id}",
+        )
+        file_id = file_row["id"]
+
+        db_project_add_file(project_id, file_id)
+
+        invalidate_context_cache_for_project(project_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to register upload: {e}")
+
+    return JSONResponse(
+        {
+            "project_id": project_id,
+            "file": {
+                "id": file_id,
+                "name": file.filename,
+                "path": str(dest_path),
+                "mime_type": file.content_type,
+            },
+        }
+    )
+
+
+@app.get("/api/projects/{project_id}/files")
+def api_list_project_files(project_id: int):
+    """
+    List files attached to a project via project_files.
+    """
+    try:
+        files = list_files_for_project(project_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return JSONResponse({"project_id": project_id, "files": files})
 
 # endregion
 
