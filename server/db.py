@@ -8,16 +8,14 @@ from pathlib import Path
 from pydantic.dataclasses import dataclass
 from datetime import datetime, timezone
 from contextlib import contextmanager
-from typing import Any, Iterator
-from typing import Iterable
-
+from typing import Any, Iterable, Iterator
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "callie_mvp.sqlite3"
 _VALID_TABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-SCHEMA_VERSION = 5  
+SCHEMA_VERSION = 7  
 
 # near the top of db.py, alongside other imports or type helpers:
 @dataclass
@@ -376,6 +374,20 @@ def migrate_schema_v4(conn: sqlite3.Connection) -> None:
     if _table_exists(conn, "artifacts"):
         _add_column_if_missing(conn, "artifacts", "chunk_index", "INTEGER")
 
+def migrate_schema_v5_messages(conn: sqlite3.Connection) -> None:
+    """
+    Make sure messages have created_at and author_meta columns.
+    """
+    _add_column_if_missing(conn, "messages", "created_at", "TEXT")
+    _add_column_if_missing(conn, "messages", "author_meta", "TEXT")
+
+def migrate_schema_v6_projects(conn: sqlite3.Connection) -> None:
+    """
+    Add is_global and is_hidden flags to projects.
+    """
+    _add_column_if_missing(conn, "projects", "is_global", "INTEGER DEFAULT 0")
+    _add_column_if_missing(conn, "projects", "is_hidden", "INTEGER DEFAULT 0")
+
 def db_debug_info(conn: sqlite3.Connection | None = None) -> dict:
     if conn is None:
         with db_session() as sconn:
@@ -421,6 +433,9 @@ def init_schema() -> None:
         ).fetchone()
         current = int(row["value"]) if row and str(row["value"]).isdigit() else 0
 
+        # Comment the next line after cached artifacts are cleared
+        # You should not need to do this very often. We'll work on a button later.
+        # reset_all_artifacts()
         if current < SCHEMA_VERSION:
             # Destructive changes - commented unless needed
             """
@@ -440,6 +455,8 @@ def init_schema() -> None:
             migrate_schema_minimal(conn)
             migrate_schema_v3(conn)
             migrate_schema_v4(conn)
+            migrate_schema_v5_messages(conn)
+            migrate_schema_v6_projects(conn)
 
         conn.execute("PRAGMA foreign_keys = ON;")
         print(f"DB initialized with schema version {SCHEMA_VERSION} (was {current})")
@@ -478,8 +495,9 @@ def _ensure_project_exists(conn: sqlite3.Connection, project_id: int) -> None:
 def list_projects() -> list[dict]:
     with db_session() as conn:
         rows = conn.execute(
-            "SELECT id, name, description, created_at, updated_at FROM projects ORDER BY name COLLATE NOCASE"
+            "SELECT * FROM projects WHERE (is_hidden IS NULL OR is_hidden = 0) AND (is_global IS NULL OR is_global = 0) ORDER BY name COLLATE NOCASE"
         ).fetchall()
+        #"SELECT id, name, description, created_at, updated_at FROM projects ORDER BY name COLLATE NOCASE"
         return [
             {
                 "id": int(r["id"]),
@@ -490,6 +508,31 @@ def list_projects() -> list[dict]:
             }
             for r in rows
         ]
+
+def get_global_project_id() -> int:
+    """
+    Return the id of the synthetic 'Global' project, creating it if needed.
+
+    This project is for shared/global resources and should be hidden in UI.
+    """
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT id FROM projects WHERE is_global = 1 LIMIT 1"
+        ).fetchone()
+        if row is not None:
+            return int(row["id"])
+
+        # Create it
+        now = _utcnow_iso()
+        cur = conn.execute(
+            """
+            INSERT INTO projects (name, description, is_global, is_hidden, created_at, updated_at)
+            VALUES (?, ?, 1, 1, ?, ?)
+            """,
+            ("Global", "Global shared resources", now, now),
+        )
+        newid: int = cur.lastrowid # type: ignore[union-attr]
+        return newid
 
 def get_or_create_project(name: str) -> dict:
     name = (name or "").strip()
@@ -929,15 +972,23 @@ def _message_count(conn: sqlite3.Connection, conversation_id: str) -> int:
     ).fetchone()
     return int(row["c"])
 
-def add_message(conversation_id: str, role: str, content: str, meta: dict | None = None) -> None:
+def add_message(
+        conversation_id: str,
+        role: str,
+        content: str,
+        meta: dict | None = None,
+        author_meta: dict | None = None,
+        ) -> None:
     now = _utcnow_iso()
+    meta_json = json.dumps(meta) if meta is not None else None
+    author_meta_json = json.dumps(author_meta) if author_meta is not None else None
     with db_session() as conn:
         conn.execute(
             """
-            INSERT INTO messages(conversation_id, role, content, created_at, meta)
-            VALUES(?, ?, ?, ?, ?)
+            INSERT INTO messages(conversation_id, role, content, created_at, meta, author_meta)
+            VALUES(?, ?, ?, ?, ?, ?)
             """,
-            (conversation_id, role, content, now, json.dumps(meta) if meta is not None else None),
+            (conversation_id, role, content, now, meta_json, author_meta_json),
         )
 
         if role == "user":
@@ -962,7 +1013,7 @@ def get_messages_raw(conversation_id: str, limit: int = 200) -> list[dict]:
     with db_session() as conn:
         rows = conn.execute(
             """
-            SELECT id, role, content, created_at, meta
+            SELECT id, role, content, created_at, meta, author_meta
             FROM messages
             WHERE conversation_id = ?
             ORDER BY id ASC
@@ -980,6 +1031,14 @@ def get_messages_raw(conversation_id: str, limit: int = 200) -> list[dict]:
                 meta_obj = json.loads(raw_meta)
             except Exception:
                 meta_obj = None
+        raw_author_meta = r["author_meta"]
+        author_meta_obj = None
+        if raw_author_meta is not None:
+            try:
+                author_meta_obj = json.loads(raw_author_meta)
+            except Exception:
+                author_meta_obj = None
+
         results.append(
             {
                 "id": int(r["id"]),
@@ -987,6 +1046,7 @@ def get_messages_raw(conversation_id: str, limit: int = 200) -> list[dict]:
                 "content": r["content"],
                 "created_at": r["created_at"],
                 "meta": meta_obj,
+                "author_meta": author_meta_obj,
             }
         )
     return results
@@ -1001,7 +1061,6 @@ def get_messages(conversation_id: str, limit: int = 200) -> list[dict]:
         meta = r.get("meta") or {}
         ab_group = meta.get("ab_group")
         canonical = meta.get("canonical", True)
-
         if ab_group:
             if ab_group in seen_groups:
                 continue
@@ -1009,7 +1068,7 @@ def get_messages(conversation_id: str, limit: int = 200) -> list[dict]:
                 continue
             seen_groups.add(ab_group)
 
-        result.append({"role": r["role"], "content": r["content"]})
+        result.append({"role": r["role"], "created_at": r["created_at"], "content": r["content"], "author_meta": r["author_meta"]})
     return result
 
 
@@ -1178,11 +1237,14 @@ def delete_memory_pin(pin_id: int) -> None:
 
 # region Files
 
-def _ensure_file_exists(conn: sqlite3.Connection, file_id: str) -> None:
-    row = conn.execute("SELECT 1 FROM files WHERE id = ?", (file_id,)).fetchone()
-    if not row:
-        raise ValueError(f"File not found: {file_id}")
-
+def _ensure_file_exists(conn: sqlite3.Connection, file_id: int | str) -> None:
+    file_id_str = str(file_id).strip()
+    if not file_id_str:
+        raise ValueError("file_id is required.")
+    row = conn.execute("SELECT 1 FROM files WHERE id = ?", (file_id_str,)).fetchone()
+    if row is None:
+        raise ValueError(f"File not found: {file_id_str}")
+    
 def register_file(name: str, path: str, mime_type: str | None = None) -> dict:
     name = (name or "").strip()
     path = (path or "").strip()
@@ -1268,6 +1330,8 @@ def list_files_for_conversation(
         if not include_deleted:
             sql += " AND (f.is_deleted IS NULL OR f.is_deleted = 0)"
         rows = conn.execute(sql, params).fetchall()
+    
+    print(f"[db] list_files_for_conversation({conversation_id!r}, include_deleted={include_deleted}) -> {len(rows)} rows")
     return [dict(r) for r in rows]
 
 def list_files_for_project(
@@ -1291,6 +1355,8 @@ def list_files_for_project(
         if not include_deleted:
             sql += " AND (f.is_deleted IS NULL OR f.is_deleted = 0)"
         rows = conn.execute(sql, params).fetchall()
+    
+    print(f"[db] list_files_for_project({project_id}, include_deleted={include_deleted}) -> {len(rows)} rows")
     return [dict(r) for r in rows]
 
 def list_all_files(include_deleted: bool = False) -> list[dict]:
@@ -1303,6 +1369,7 @@ def list_all_files(include_deleted: bool = False) -> list[dict]:
         if not include_deleted:
             sql += " WHERE is_deleted IS NULL OR is_deleted = 0"
         rows = conn.execute(sql, params).fetchall()
+    print(f"[db] list_all_files(include_deleted={include_deleted}) -> {len(rows)} rows")
     return [dict(r) for r in rows]
 
 def get_files_summary() -> dict:
@@ -1447,14 +1514,11 @@ def get_file_by_id(file_id: str) -> dict:
 def resolve_scope_for_file(file_row: dict) -> FileScope:
     """
     Decide project_id / scope_type / scope_id / scope_uuid for a file row.
-
-    For now we only support:
+    Supports:
       - project-scoped files, where scope_id is the project_id
       - conversation-scoped files, where we derive project_id from the conversation
         (if the conversation is attached to a project).
-
-    Global/unassigned conversations are skipped until we have a dedicated
-    'inbox/global' project row.
+      - global/unscoped files, which we treat as belonging to the synthetic Global project.
     """
     scope_type = (file_row.get("scope_type") or "").strip() or None
     scope_id = file_row.get("scope_id")
@@ -1475,7 +1539,9 @@ def resolve_scope_for_file(file_row: dict) -> FileScope:
         else:
             project_id = None
     else:
-        project_id = None
+        # Treat explicit 'global' or NULL scope as belonging to the synthetic Global project.
+        project_id = get_global_project_id()
+        scope_type = "global"
 
     return FileScope(
         project_id=project_id,
@@ -1689,34 +1755,35 @@ def list_artifacts_for_project(
     return [dict(r) for r in rows]
 
 def list_artifacts_for_file(
-    file_id: str,
+    file_id: int | str,
     include_deleted: bool = False,
 ) -> list[dict]:
     """
     Return all artifacts associated with a given file_id,
     ordered by chunk_index (if present) and updated_at.
     """
-    file_id = (file_id or "").strip()
-    if not file_id:
+    file_id_str = str(file_id).strip()
+    if not file_id_str:
         raise ValueError("file_id is required.")
 
     with db_session() as conn:
-        _ensure_file_exists(conn, file_id)
+        _ensure_file_exists(conn, file_id_str)
         sql = """
             SELECT *
             FROM artifacts
             WHERE file_id = ?
         """
-        params: list[object] = [file_id]
+        params: list[object] = [file_id_str]
         if not include_deleted:
             sql += " AND (is_deleted IS NULL OR is_deleted = 0)"
         sql += " ORDER BY chunk_index ASC, updated_at ASC"
         rows = conn.execute(sql, params).fetchall()
 
+    print(f"[db] list_artifacts_for_file({file_id_str!r}, include_deleted={include_deleted}) -> {len(rows)} rows")
     return [dict(r) for r in rows]
 
 def soft_delete_artifacts_for_file(
-    file_id: str,
+    file_id: int | str,
     deleted_by_user_id: str | None = None,
 ) -> int:
     """
@@ -1724,15 +1791,15 @@ def soft_delete_artifacts_for_file(
 
     Returns the number of rows affected.
     """
-    file_id = (file_id or "").strip()
-    if not file_id:
+    file_id_str = str(file_id).strip()
+    if not file_id_str:
         raise ValueError("file_id is required.")
 
     deleted_by_user_id = (deleted_by_user_id or "").strip() or None
     now = _utcnow_iso()
 
     with db_session() as conn:
-        _ensure_file_exists(conn, file_id)
+        _ensure_file_exists(conn, file_id_str)
         cur = conn.execute(
             """
             UPDATE artifacts
@@ -1742,7 +1809,7 @@ def soft_delete_artifacts_for_file(
             WHERE file_id = ?
               AND (is_deleted IS NULL OR is_deleted = 0)
             """,
-            (now, deleted_by_user_id, file_id),
+            (now, deleted_by_user_id, file_id_str),
         )
         return cur.rowcount
 
@@ -1835,5 +1902,34 @@ def create_scoped_artifact(
         )
 
     return {"id": aid}
+
+def reset_all_artifacts() -> None:
+    """
+    Hard-reset the artifacts table. Intended for use during development
+    or after changing artifact semantics; artifacts will be lazily
+    rebuilt by _ensure_artifacts_for_files().
+
+    Hard-reset the artifact graph:
+      - delete all conversation_artifacts rows
+      - delete all artifacts rows
+
+    Safe because artifacts are derived from files and can be rebuilt lazily.
+    """
+    with db_session() as conn:
+        print("[db] reset_all_artifacts: deleting conversation_artifacts and artifacts")
+
+        # First, clear the child table that references artifacts.id
+        if _table_exists(conn, "conversation_artifacts"):
+            conn.execute("DELETE FROM conversation_artifacts")
+
+        if _table_exists(conn, "project_artifacts"):
+            conn.execute("DELETE FROM project_artifacts")
+
+        # Now it's safe to delete from artifacts
+        if _table_exists(conn, "artifacts"):
+            conn.execute("DELETE FROM artifacts")
+
+        conn.commit()
+        print("[db] reset_all_artifacts: done")
 
 # endregion

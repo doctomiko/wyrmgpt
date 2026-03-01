@@ -111,10 +111,22 @@ let filesModalMode = null; // "conversation" | "project" | "global" | "all"
 let filesModalConversationId = null;
 let filesModalProjectId = null;
 let hasAnyFiles = false;
+let UI_TIMEZONE = null; // TZ for display
+const ZEIT_PREFIX_RE = /^\s*(?:⟂ts=\d+|⟂t=\d{8}T\d{6}Z(?:\s+⟂age=\d+)?)\s*\n/;
+const LEGACY_PREFIX_RE = /^\s*\[20\d\d-[^\]]+\]\s*\n/;
 
 // ----------------------------------
 // Helpers for UI state management and updates. 
 // ----------------------------------
+
+async function fetchUiConfig() {
+  try {
+    const cfg = await fetchJsonDebug("/api/ui_config");
+    UI_TIMEZONE = (cfg && cfg.timezone) ? String(cfg.timezone) : null;
+  } catch {
+    UI_TIMEZONE = null;
+  }
+}
 
 // These are usually called by event handlers or after API calls to update the screen based on the current app state.
 
@@ -127,9 +139,64 @@ function formatDate(iso) {
   }
 }
 
-function convMetaText(c) {
-  // You can swap created_at for updated_at later if you add it to the API.
-  return formatDate(c.created_at);
+function formatReadableDateTime(iso) {
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso || "";
+
+    const opts = {
+      year: "numeric",
+      month: "short",
+      day: "2-digit",
+      hour: "numeric",
+      minute: "2-digit",
+    };
+
+    if (UI_TIMEZONE) {
+      return new Intl.DateTimeFormat(undefined, { ...opts, timeZone: UI_TIMEZONE }).format(d);
+    }
+    return new Intl.DateTimeFormat(undefined, opts).format(d);
+  } catch {
+    return iso || "";
+  }
+}
+
+function stripZeit(text) {
+  if (!text) return text;
+  return text.replace(ZEIT_PREFIX_RE, "").replace(LEGACY_PREFIX_RE, "");
+}
+
+// A consistent look/feel for headers above chat messages, with optional timestamps and buttons.
+function buildMetaBar({ labelText = null, timeIso = null, includeButton = false }) {
+  const metaBar = document.createElement("div");
+  metaBar.className = "abMeta singleMeta";
+
+  const left = document.createElement("div");
+  left.className = "abMetaLeft";
+
+  if (labelText) {
+    const labelSpan = document.createElement("span");
+    labelSpan.className = "abLabel";
+    labelSpan.textContent = labelText;
+    left.appendChild(labelSpan);
+  }
+
+  const timeSpan = document.createElement("span");
+  timeSpan.className = "msgTime";
+  timeSpan.textContent = timeIso ? formatReadableDateTime(timeIso) : "";
+  left.appendChild(timeSpan);
+
+  metaBar.appendChild(left);
+
+  let btn = null;
+  if (includeButton) {
+    btn = document.createElement("button");
+    btn.className = "abChoose";
+    btn.textContent = "Use";
+    metaBar.appendChild(btn);
+  }
+
+  return { metaBar, timeSpan, btn };
 }
 
 async function loadMessages(cid) {
@@ -262,7 +329,7 @@ function escapeHtml(s) {
     .replace(/>/g, "&gt;");
 }
 
-function addAssistantMsgWithModel(modelId, initialText) {
+function addAssistantMsgWithModel(modelId, initialText, createdAtIso) {
   let labelText = "Unknown model";
   if (modelId) {
     const m = findModelById(modelId);
@@ -271,17 +338,16 @@ function addAssistantMsgWithModel(modelId, initialText) {
 
   // Outer wrapper just groups label + bubble
   const wrapper = document.createElement("div");
-  wrapper.className = "msgWithModel";
-
+  wrapper.className = "msgWithModel assistantWrap";
   // Label bar above the bubble
-  const metaBar = document.createElement("div");
-  metaBar.className = "abMeta singleMeta";
-
-  const labelSpan = document.createElement("span");
-  labelSpan.className = "abLabel";
-  labelSpan.textContent = labelText;
-
-  metaBar.appendChild(labelSpan);
+  const { metaBar } = buildMetaBar({ labelText, timeIso: createdAtIso || null, includeButton: false });
+  // This is now handled in buildMetaBar
+  // const metaBar = document.createElement("div");
+  //metaBar.className = "abMeta singleMeta";
+  //const labelSpan = document.createElement("span");
+  //labelSpan.className = "abLabel";
+  //labelSpan.textContent = labelText;
+  //metaBar.appendChild(labelSpan);
   wrapper.appendChild(metaBar);
 
   // Actual chat bubble
@@ -290,7 +356,7 @@ function addAssistantMsgWithModel(modelId, initialText) {
 
   const body = document.createElement("div");
   body.className = "msgBody";
-  body.innerHTML = renderMarkdown(initialText || "");
+  body.innerHTML = renderMarkdown(stripZeit(initialText) || "");
 
   bubble.appendChild(body);
   wrapper.appendChild(bubble);
@@ -302,10 +368,28 @@ function addAssistantMsgWithModel(modelId, initialText) {
   return body;
 }
 
+function addUserMsgWithTime(text, createdAtIso) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "msgWithModel userWrap";
+
+  const { metaBar } = buildMetaBar({ labelText: null, timeIso: createdAtIso || null, includeButton: false });
+  wrapper.appendChild(metaBar);
+
+  const bubble = document.createElement("div");
+  bubble.className = "msg user";
+  bubble.innerHTML = renderMarkdown(stripZeit(text));
+
+  wrapper.appendChild(bubble);
+  chatEl.appendChild(wrapper);
+  chatEl.scrollTop = chatEl.scrollHeight;
+  return bubble;
+}
+
 function addMsg(role, text) {
   const div = document.createElement("div");
   div.className = `msg ${role}`;
-  div.innerHTML = renderMarkdown(text);
+  div.innerHTML = renderMarkdown(stripZeit(text));
+
   chatEl.appendChild(div);
   chatEl.scrollTop = chatEl.scrollHeight;
   return div;
@@ -367,7 +451,9 @@ function renderMessagesWithAB(rows) {
     if (msg.role === "assistant") {
       const meta = msg.meta || {};
       const modelId = meta.model || null;
-      addAssistantMsgWithModel(modelId, msg.content || "");
+      addAssistantMsgWithModel(modelId, msg.content || "", msg.created_at || null);
+    } else if (msg.role === "user") {
+      addUserMsgWithTime(msg.content || "", msg.created_at || null);
     } else {
       addMsg(msg.role, msg.content || "");
     }
@@ -380,10 +466,13 @@ function renderABRow(msgA, msgB, canonicalA, canonicalB) {
   const modelA = (msgA.meta && msgA.meta.model) || "model A";
   const modelB = (msgB.meta && msgB.meta.model) || "model B";
   // Reuse the same builder used for live A/B sends
-  const { rowEl, msgAEl, msgBEl } = addABRow(modelA, modelB);
+  const { rowEl, msgAEl, msgBEl } = addABRow(
+    modelA, modelB,
+    msgA.created_at || null, msgB.created_at || null
+  );
   // Fill in the content
-  msgAEl.innerHTML = renderMarkdown(msgA.content);
-  msgBEl.innerHTML = renderMarkdown(msgB.content);
+  msgAEl.innerHTML = renderMarkdown(stripZeit(msgA.content));
+  msgBEl.innerHTML = renderMarkdown(stripZeit(msgB.content));
   // Restore canonical choice if we know it
   if (canonicalA) {
     markCanonical(rowEl, "A");
@@ -392,25 +481,37 @@ function renderABRow(msgA, msgB, canonicalA, canonicalB) {
   }
 }
 
-function addABRow(modelA, modelB) {
+function addABRow(modelA, modelB,  createdAtIsoA = null, createdAtIsoB = null) {
   const row = document.createElement("div");
   row.className = "abRow";
 
-  const makeCol = (labelText) => {
-    const col = document.createElement("div");
-    col.className = "abCol";
-
+  const makeCol = (labelText, timeIso) => {
     const meta = document.createElement("div");
     meta.className = "abMeta";
+  
+    const left = document.createElement("div");
+    left.className = "abMetaLeft";
+
+    const col = document.createElement("div");
+    col.className = "abCol";
 
     const label = document.createElement("span");
     label.className = "abLabel";
     label.textContent = labelText;
 
+    const timeEl = document.createElement("span");
+    timeEl.className = "msgTime";
+    timeEl.textContent = timeIso ? formatReadableDateTime(timeIso) : "";
+
     const btn = document.createElement("button");
     btn.className = "abChoose";
     btn.textContent = "Use";
-    meta.appendChild(label);
+
+    left.appendChild(label);
+    left.appendChild(timeEl);
+
+    meta.appendChild(left); // left now contains both label and time
+    //meta.appendChild(label);
     meta.appendChild(btn);
 
     const msg = document.createElement("div");
@@ -420,17 +521,17 @@ function addABRow(modelA, modelB) {
     col.appendChild(meta);
     col.appendChild(msg);
 
-    return { col, meta, label, btn, msg };
+    return { col, meta, label, btn, msg, timeEl };
   };
 
   let safeLabelA = modelA && modelA.trim() ? modelA : "Unknown Model A";
   if (safeLabelA == "model A") safeLabelA = "Unknown Model A";
-  const { col: colA, label: labelA, btn: btnA, msg: msgA } =
-    makeCol(`A · ${safeLabelA}`);
+  const { col: colA, label: labelA, btn: btnA, msg: msgA, timeEl: timeElA } =
+    makeCol(`A · ${safeLabelA}`, createdAtIsoA);
   let safeLabelB = modelB && modelB.trim() ? modelB : "Unknown Model B";
   if (safeLabelB == "model B") safeLabelB = "Unknown Model B";
-  const { col: colB, label: labelB, btn: btnB, msg: msgB } =
-    makeCol(`B · ${safeLabelB}`);
+  const { col: colB, label: labelB, btn: btnB, msg: msgB, timeEl: timeElB } =
+    makeCol(`B · ${safeLabelB}`, createdAtIsoB);
 
   row.appendChild(colA);
   row.appendChild(colB);
@@ -440,7 +541,7 @@ function addABRow(modelA, modelB) {
   btnA.addEventListener("click", () => chooseCanonical(row, "A"));
   btnB.addEventListener("click", () => chooseCanonical(row, "B"));
 
-  return { rowEl: row, msgAEl: msgA, msgBEl: msgB, labelAEl: labelA, labelBEl: labelB };
+  return { rowEl: row, msgAEl: msgA, msgBEl: msgB, labelAEl: labelA, labelBEl: labelB, timeAEl: timeElA, timeBEl: timeElB };
 }
 
 // #endregion
@@ -660,6 +761,9 @@ function renderMarkdown(text) {
 
 // #region Conversation list helpers
 
+function nowIso() { return new Date().toISOString(); }
+
+// Create a conversation list item element to be used in the sidebar, with click and context menu handlers.
 function makeConversationItem(c) {
   const item = document.createElement("div");
   item.className = "convItem" + (c.id === conversationId ? " active" : "");
@@ -671,7 +775,8 @@ function makeConversationItem(c) {
 
   const m = document.createElement("div");
   m.className = "convMeta";
-  m.textContent = convMetaText(c);
+  m.textContent = formatReadableDateTime(c.created_at); //convMetaText(c);
+  // You can swap created_at for updated_at later if you add it to the API.
 
   item.appendChild(t);
   item.appendChild(m);
@@ -811,6 +916,11 @@ function renderContext(ctx) {
   const previewLimit = ctx.assembled_input_preview_limit ?? 20;
   const truncated = !!ctx.assembled_input_preview_truncated;
 
+  const stats = ctx.token_stats || {};
+  const approxTokens = stats.approx_text_tokens;
+  const numImages = stats.num_images;
+  const totalChars = stats.total_chars;
+
   let previewNote;
   if (truncated) {
     previewNote = `showing last ${previewLimit} in preview`;
@@ -819,8 +929,11 @@ function renderContext(ctx) {
   }
 
   lines.push(`Conversation: ${ctx.conversation_id}`);
-  lines.push(`Assembled messages: ${total} (${previewNote})`);
-  //lines.push(`Assembled messages: ${ctx.assembled_input_count} (showing last 20 in preview)`);
+  lines.push("");
+  lines.push("CONTEXT STATS:");
+  lines.push(`Token and character counts are approximate and may not reflect the exact input to the model, but can be used for rough estimation and debugging.`);
+  lines.push(`  Assembled messages: ${total} (${previewNote})`);
+  lines.push(`  Context load: ~${approxTokens} text tokens; ${totalChars} characters; ${numImages} images;`);
   lines.push("");
 
   lines.push("SYSTEM:");
@@ -911,9 +1024,10 @@ async function send() {
 }
 
 async function sendSingle(text, model) {
-  addMsg("user", text);
+  const now = nowIso();
+  addUserMsgWithTime(text, now); //addMsg("user", text);
   // build an assistant message shell with model label
-  const assistantBody = addAssistantMsgWithModel(model, "");
+  const assistantBody = addAssistantMsgWithModel(model, "Thinking…", now);
 
   const request_body = JSON.stringify({
     conversation_id: conversationId,
@@ -941,7 +1055,7 @@ async function sendSingle(text, model) {
     const { value, done } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
-    assistantBody.innerHTML = renderMarkdown(buffer);
+    assistantBody.innerHTML = renderMarkdown(stripZeit(buffer));
     chatEl.scrollTop = chatEl.scrollHeight;
   }
 
@@ -952,9 +1066,10 @@ async function sendSingle(text, model) {
 }
 
 async function sendAB(text, modelA, modelB) {
-  addMsg("user", text);
+  const now = nowIso();
+  addUserMsgWithTime(text, now); //addMsg("user", text);
 
-  const { rowEl, msgAEl, msgBEl, labelAEl, labelBEl } = addABRow(modelA, modelB);
+  const { rowEl, msgAEl, msgBEl, labelAEl, labelBEl, timeAEl, timeBEl } = addABRow(modelA, modelB, now, now);
 
   const payload = {
     conversation_id: conversationId,
@@ -981,9 +1096,9 @@ async function sendAB(text, modelA, modelB) {
 
     // Support rendering as Markdown, but fallback to plain text if it fails for some reason (e.g. malicious content that causes our markdown renderer to throw)
     //msgAEl.textContent = data.a || "(empty)";
-    msgAEl.innerHTML = renderMarkdown(data.a || "(empty)");
+    msgAEl.innerHTML = renderMarkdown(stripZeit(data.a) || "(empty)");
     //msgBEl.textContent = data.b || "(empty)";
-    msgBEl.innerHTML = renderMarkdown(data.b || "(empty)");
+    msgBEl.innerHTML = renderMarkdown(stripZeit(data.b) || "(empty)");
 
     if (data.model_a) labelAEl.textContent = `A · ${data.model_a}`;
     if (data.model_b) labelBEl.textContent = `B · ${data.model_b}`;
@@ -2322,6 +2437,9 @@ document.addEventListener("keydown", (e) => {
 (async function boot() {
   bootLog("[boot] start");
   try {
+    bootLog("[boot] fetchUiConfig");
+    await fetchUiConfig();
+
     bootLog("[boot] initABUI");
     initABUI();
 

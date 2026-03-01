@@ -539,16 +539,32 @@ textarea {
   opacity: 0.7;
 }
 
-.singleMeta {
-  margin-bottom: 2px;
-}
 .msgWithModel .singleMeta {
   margin-bottom: 2px;
 }
-
 .msgWithModel {
-  margin: 6px 0;           /* similar to .msg margin */
+  margin: 6px 0; /* similar to .msg margin */
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
 }
+.msgWithModel.userWrap {
+  align-items: flex-end;
+}
+
+.abMetaLeft {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.msgTime {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
 
 .mdTable {
   border-collapse: collapse;

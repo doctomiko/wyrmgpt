@@ -330,7 +330,8 @@ def artifact_file(file_row: dict) -> list[str]:
                 scope_id=scope.scope_id,
                 scope_uuid=scope.scope_uuid,
                 chunks=chunks,
-                source_kind=file_row.get("source_kind") or "file:image",
+                # TODO cleanup the data if the file_row source_kind is something else (e.g. "file:zip")? For now we just preserve it if present since it may be useful for debugging, but we want to make sure it's always set to some image-specific value for image files at least.
+                source_kind="file:image", # file_row.get("source_kind") or
                 provenance=file_row.get("provenance") or "artifact:file_upload",
             )
             return artifact_ids
@@ -354,7 +355,7 @@ def artifact_file(file_row: dict) -> list[str]:
                 scope_id=scope.scope_id,
                 scope_uuid=scope.scope_uuid,
                 chunks=chunks,
-                source_kind=file_row.get("source_kind") or "file:zip",
+                source_kind="file:zip", # file_row.get("source_kind") or
                 provenance=file_row.get("provenance") or "artifact:file_upload",
             )
             return artifact_ids
@@ -392,7 +393,7 @@ def artifact_file(file_row: dict) -> list[str]:
             scope_id=scope.scope_id,
             scope_uuid=scope.scope_uuid,
             chunks=chunks,
-            source_kind=file_row.get("source_kind") or "file:upload",
+            source_kind="file:upload", # file_row.get("source_kind") or
             provenance=file_row.get("provenance") or "artifact:file_upload",
         )
         return artifact_ids

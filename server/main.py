@@ -1,4 +1,5 @@
 import os
+import re
 import uuid
 from pathlib import Path
 from typing import Optional, cast, Any
@@ -77,9 +78,13 @@ from .db import (
 # endregion
 
 from .artifactor import artifact_file
-from .context import build_context, build_model_input
+from .context import build_context, build_model_input, estimate_context_tokens
 
 DEBUG_ERRORS = os.getenv("DEBUG_ERRORS", "1") == "1"
+
+load_dotenv()
+
+# region Model Catalog and Caching
 
 MODEL_CATALOG: dict[str, dict] = {}
 
@@ -90,10 +95,35 @@ _MODELS_TTL_SECONDS = 300  # 5 minutes
 
 _ALLOWED_MODEL_PREFIXES = ("gpt-", "o1", "o3", "o4")
 
-load_dotenv()
-
 MODEL = os.getenv("OPENAI_MODEL", "gpt-5.1")
 TITLE_MODEL = os.getenv("OPENAI_TITLE_MODEL", MODEL)
+
+# endregion
+
+# UI helpers
+UI_TIMEZONE = (
+    os.getenv("UI_TIMEZONE")
+    or os.getenv("APP_TIMEZONE")
+    or os.getenv("TZ")
+    or "America/New_York"
+)
+
+ZEIT_PREFIX_RE = re.compile(r"^\s*⟂ts=\d+\s*\n")
+ZEIT_PREFIX_RE = re.compile(
+    r"^\s*(?:"
+    r"⟂ts=\d+"                                # old: ⟂ts=1709...
+    r"|⟂t=\d{8}T\d{6}Z(?:\s+⟂age=\d+)?"       # new: ⟂t=20260228T231512Z ⟂age=37
+    r")\s*\n",
+    re.UNICODE
+)
+LEGACY_BRACKET_RE = re.compile(r"^\s*\[20\d\d-[^\]]+\]\s*\n")
+
+def strip_zeitgeber_prefix(text: str) -> str:
+    if not text:
+        return text
+    text = ZEIT_PREFIX_RE.sub("", text, count=1)
+    text = LEGACY_BRACKET_RE.sub("", text, count=1)  # safety for old runs
+    return text.lstrip("\ufeff")  # optional: strip BOM weirdness
 
 # Replaces the old @app.on_event("startup") and @app.on_event("shutdown") handlers with a single async context manager that can do both setup and teardown.
 #@app.on_event("startup")
@@ -284,6 +314,11 @@ def api_debug_db():
 def health():
     return JSONResponse({"ok": True, "model": MODEL})
 
+@app.get("/api/ui_config")
+def api_ui_config():
+    """Small UI config surface so the static frontend can format timestamps."""
+    return JSONResponse({"timezone": UI_TIMEZONE})
+
 # region Chat Endpoints
 
 @app.post("/api/new", response_model=NewChatResponse)
@@ -302,6 +337,7 @@ def chat(req: ChatRequest, model: str | None = None):
 
     raw_input = build_model_input(cid, history_limit=200)
     model_input = cast(ResponseInputParam, raw_input)
+    print("[debug] model_input:", json.dumps(model_input, indent=2)[:5000])
     model = (req.model or model or MODEL).strip()
 
     def gen():
@@ -321,6 +357,7 @@ def chat(req: ChatRequest, model: str | None = None):
                     elif event.type == "response.error":
                         yield "\n[error]\n"
                 full = "".join(parts).strip()
+                full = strip_zeitgeber_prefix(full)
                 if full:
                     add_message(cid, "assistant", full, meta={"model": model})
         except Exception as e:
@@ -347,16 +384,16 @@ def chat_ab(req: ABChatRequest):
 
     raw_input = build_model_input(cid, history_limit=200)
     model_input = cast(ResponseInputParam, raw_input)
+    print("[debug] model_input:", json.dumps(model_input, indent=2)[:5000])
 
     model_a = (req.model_a or MODEL).strip()
     model_b = (req.model_b or model_a).strip()
 
     # Run the two models sequentially; simple but robust
     resp_a = client.responses.create(model=model_a, input=model_input)
-    text_a = _extract_output_text(resp_a)
-
     resp_b = client.responses.create(model=model_b, input=model_input)
-    text_b = _extract_output_text(resp_b)
+    text_a = strip_zeitgeber_prefix(_extract_output_text(resp_a) or "")
+    text_b = strip_zeitgeber_prefix(_extract_output_text(resp_b) or "")
 
     # Tag both variants as part of the same A/B group
     ab_group = str(uuid.uuid4())
@@ -402,6 +439,25 @@ def api_ab_canonical(req: ABCanonicalRequest):
     return JSONResponse({"ok": True})
 
 # endregion
+
+def _preview_content(c):
+    if c is None:
+        return ""
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        parts = []
+        for p in c:
+            t = (p.get("type") or "").strip()
+            if t == "input_text":
+                parts.append(p.get("text") or "")
+            elif t == "input_image":
+                url = p.get("image_url") or ""
+                parts.append(f"[input_image data_url len={len(url)}]")
+            else:
+                parts.append(json.dumps(p, ensure_ascii=False))
+        return "\n".join(parts)
+    return str(c)
 
 # region Conversation Endpoints
 
@@ -510,8 +566,24 @@ def api_get_title(conversation_id: str):
 
 @app.get("/api/conversation/{conversation_id}/context")
 def api_conversation_context(conversation_id: str, preview_limit: int = 20):
+    # TODO Stop using a second version of the truth to show the UI what we're sending to the LLM
+    ctx = build_context(conversation_id,  preview_limit=preview_limit)
+    model_input = build_model_input(conversation_id, history_limit=200)
+
+    assembled = [{"role": m.get("role"), "content": _preview_content(m.get("content"))} for m in model_input]
+
+    preview = assembled[-preview_limit:] if preview_limit > 0 else assembled
+    ctx["assembled_input_preview"] = preview
+    ctx["assembled_input_count"] = len(assembled)
+    ctx["assembled_input_preview_limit"] = preview_limit
+    ctx["assembled_input_preview_truncated"] = len(preview) < len(assembled)
+
+    # Get the estimated token count for this context; useful for cost management, debugging, and deciding when to trim or summarize.
+    token_stats = estimate_context_tokens(conversation_id, history_limit=200, model="gpt-4.1-mini")
+    # You can either embed into ctx or return a wrapper. I’d embed; it’s simpler.
+    ctx["token_stats"] = token_stats
     try:
-        return JSONResponse(build_context(conversation_id, preview_limit=preview_limit))
+        return JSONResponse(ctx)
     except KeyError:
         raise HTTPException(status_code=404, detail="Not Found")
 
