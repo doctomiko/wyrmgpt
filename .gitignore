@@ -18,5 +18,8 @@ _bak/
 .venv/
 .venv-bak/
 
+# Server pycache
+server/__pycache__
+
 # Local DB / runtime data
 data/
