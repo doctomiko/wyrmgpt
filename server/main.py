@@ -261,6 +261,12 @@ class MemoryLinkProjectRequest(BaseModel):
 class ArchiveRequest(BaseModel):
     archived: bool = True
 
+class CorpusSearchRequest(BaseModel):
+    conversation_id: str
+    query: str
+    limit: int = 10
+    include_global: bool = False
+
 # endregion
 
 # region Helper functions
@@ -1546,3 +1552,25 @@ def api_models():
         raise HTTPException(status_code=502, detail=f"Failed to list models: {e}")
 
 # endregion
+
+# region Search Endpoints
+
+@app.post("/api/corpus/search")
+def corpus_search(req: CorpusSearchRequest):
+    from .db import ensure_files_artifacted_for_conversation, search_corpus_for_conversation
+
+    cid = (req.conversation_id or "").strip()
+    q = (req.query or "").strip()
+
+    # Optional: self-heal missing artifacts before searching
+    ensure_files_artifacted_for_conversation(conversation_id=cid, limit_per_scope=5, include_global=req.include_global)
+
+    rows = search_corpus_for_conversation(
+        conversation_id=cid,
+        query=q,
+        limit=req.limit,
+        include_global=req.include_global,
+    )
+    return {"ok": True, "results": rows}
+
+# region

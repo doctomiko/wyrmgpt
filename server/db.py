@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from typing import Any, Iterable, Iterator
 
 from .markdown_helper import autolink_text, apply_house_markdown_normalization
+from .chunking import chunk_text_with_hints
 # Support legacy migrations from v1-v7. You can remove this after a few releases once most users have migrated or started fresh.
 from .db_migrate import migrate_schema_legacy
 
@@ -22,7 +23,7 @@ DB_PATH = DATA_DIR / "callie_mvp.sqlite3"
 _VALID_TABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
-SCHEMA_VERSION = 8  
+SCHEMA_VERSION = 9
 
 SIDECAR_THRESHOLD_BYTES = 500 * 1024 # 500KB default threshold for when to use sidecar files for artifact content
 
@@ -533,6 +534,92 @@ def _apply_schema_v8(conn: sqlite3.Connection) -> None:
         (str(SCHEMA_VERSION),),
     )
 
+# Basically just makes new tables, but we'll call it a migration regardless
+def _migrate_schema_v9(conn) -> None:
+    """
+    Adds corpus_chunks + FTS index for retrieval.
+    Non-destructive: only creates new tables/triggers.
+    """
+    # corpus_chunks: one row per chunk
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS corpus_chunks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            -- provenance
+            artifact_id TEXT NOT NULL,
+            artifact_content_hash TEXT,
+            source_kind TEXT,
+            source_id TEXT,
+
+            -- optional file hints (if the artifact came from a file)
+            file_id TEXT,
+            filename TEXT,
+            mime_type TEXT,
+
+            -- scoping (strings keep it simple: "conversation:<cid>", "project:<pid>", "global")
+            scope_key TEXT NOT NULL,
+
+            chunk_index INTEGER NOT NULL,
+            start_char INTEGER,
+            end_char INTEGER,
+
+            text TEXT NOT NULL,
+
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+
+            UNIQUE(artifact_id, chunk_index)
+        )
+        """
+    )
+
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_corpus_chunks_scope ON corpus_chunks(scope_key)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_corpus_chunks_artifact ON corpus_chunks(artifact_id)")
+
+    # FTS virtual table linked to corpus_chunks
+    conn.execute(
+        """
+        CREATE VIRTUAL TABLE IF NOT EXISTS corpus_fts
+        USING fts5(
+            text,
+            content='corpus_chunks',
+            content_rowid='id',
+            tokenize='porter'
+        )
+        """
+    )
+
+    # Triggers to keep FTS in sync
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS corpus_chunks_ai
+        AFTER INSERT ON corpus_chunks
+        BEGIN
+          INSERT INTO corpus_fts(rowid, text) VALUES (new.id, new.text);
+        END
+        """
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS corpus_chunks_ad
+        AFTER DELETE ON corpus_chunks
+        BEGIN
+          INSERT INTO corpus_fts(corpus_fts, rowid, text) VALUES('delete', old.id, old.text);
+        END
+        """
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS corpus_chunks_au
+        AFTER UPDATE OF text ON corpus_chunks
+        BEGIN
+          INSERT INTO corpus_fts(corpus_fts, rowid, text) VALUES('delete', old.id, old.text);
+          INSERT INTO corpus_fts(rowid, text) VALUES (new.id, new.text);
+        END
+        """
+    )
+
 # endregion
 
 # region Clean builds for new databases
@@ -569,10 +656,11 @@ def init_schema() -> None:
         if current == 0:
             # Clean slate - create all tables
             _apply_schema_v8(conn)
+            _migrate_schema_v9(conn)
             init_schema_end(conn, current)
             return
 
-        if current < SCHEMA_VERSION - 1:
+        if current < 7:
             # Destructive changes - commented unless needed
             if (False):
                 dropped = drop_empty_satellite_tables(conn)
@@ -599,8 +687,11 @@ def init_schema() -> None:
             migrate_schema_legacy(conn)
             migrate_schema_v8(conn)
         else:
-            if current == SCHEMA_VERSION - 1:
+            if current == 7:
                 migrate_schema_v8(conn)
+            else:
+                # doens't do anything if you are on v9
+                _migrate_schema_v9(conn)
 
         init_schema_end(conn, current)
 
@@ -1357,6 +1448,277 @@ def delete_memory_pin(pin_id: int) -> None:
     with db_session() as conn:
         conn.execute("DELETE FROM memory_pins WHERE id = ?", (pin_id,))
 
+# endregion
+
+# ----------------------------
+# Corpus / Indexing / Search
+# ----------------------------
+
+# region Corpus / Indexing
+
+def _scope_keys_for_conversation(conn, conversation_id: str, include_global: bool = False) -> list[str]:
+    cid = (conversation_id or "").strip()
+    keys = [f"conversation:{cid}"]
+
+    row = conn.execute("SELECT project_id FROM conversations WHERE id = ?", (cid,)).fetchone()
+    if row and row["project_id"] is not None:
+        keys.append(f"project:{int(row['project_id'])}")
+
+    if include_global:
+        keys.append("global")
+
+    return keys
+
+
+def _artifact_scope_key_for_row(conn, artifact_row: dict) -> str:
+    """
+    Map your artifact scope fields to scope_key.
+    Adjust this if your artifacts table uses different columns.
+    """
+    # Common patterns in your project:
+    # - scope_type in ("conversation","project","global")
+    # - scope_id is conversation_id or project_id as string
+    st = (artifact_row.get("scope_type") or "").strip().lower()
+    sid = artifact_row.get("scope_id")
+
+    if st == "conversation" and sid:
+        return f"conversation:{sid}"
+    if st == "project" and sid:
+        return f"project:{sid}"
+    return "global"
+
+
+def iter_artifacts_with_file_hints_for_scope_keys(conn, scope_keys: list[str]) -> list[dict]:
+    """
+    Returns artifact rows in those scope_keys, with optional file hints
+    when artifact source_kind is file:* and source_id matches files.id.
+    """
+    # Break scope_keys into scope_type/scope_id pairs for SQL
+    convo_ids = [k.split(":", 1)[1] for k in scope_keys if k.startswith("conversation:")]
+    proj_ids = [k.split(":", 1)[1] for k in scope_keys if k.startswith("project:")]
+    include_global = any(k == "global" for k in scope_keys)
+
+    clauses = []
+    params: list = []
+
+    if convo_ids:
+        clauses.append("(a.scope_type = 'conversation' AND a.scope_id IN (" + ",".join("?" * len(convo_ids)) + "))")
+        params.extend(convo_ids)
+
+    if proj_ids:
+        clauses.append("(a.scope_type = 'project' AND a.scope_id IN (" + ",".join("?" * len(proj_ids)) + "))")
+        params.extend(proj_ids)
+
+    if include_global:
+        clauses.append("(a.scope_type = 'global' OR a.scope_type IS NULL)")
+
+    if not clauses:
+        return []
+
+    where_scope = " OR ".join(clauses)
+
+    rows = conn.execute(
+        f"""
+        SELECT
+          a.*,
+          f.id AS file_id,
+          f.name AS filename,
+          f.mime_type AS file_mime_type,
+          f.path AS file_path
+        FROM artifacts a
+        LEFT JOIN files f
+          ON a.source_kind LIKE 'file:%'
+         AND a.source_id = f.id
+         AND f.is_deleted = 0
+        WHERE a.is_deleted = 0
+          AND ({where_scope})
+        ORDER BY a.updated_at DESC
+        """,
+        tuple(params),
+    ).fetchall()
+
+    return [dict(r) for r in rows]
+
+
+def delete_corpus_chunks_for_artifact(conn, artifact_id: str) -> None:
+    conn.execute("DELETE FROM corpus_chunks WHERE artifact_id = ?", (artifact_id,))
+
+
+def upsert_corpus_chunks_for_artifact_row(conn, artifact_row: dict, *, chunks: list[str]) -> int:
+    """
+    Writes chunks for this artifact. Assumes you already deleted previous chunks if reindexing.
+    """
+    artifact_id = artifact_row["id"]
+    artifact_hash = artifact_row.get("content_hash") or artifact_row.get("artifact_content_hash")
+    source_kind = artifact_row.get("source_kind")
+    source_id = artifact_row.get("source_id")
+    file_id = artifact_row.get("file_id")
+    filename = artifact_row.get("filename")
+    mime_type = artifact_row.get("file_mime_type") or artifact_row.get("mime_type")
+    scope_key = _artifact_scope_key_for_row(conn, artifact_row)
+
+    n = 0
+    for i, text in enumerate(chunks):
+        if not text or not text.strip():
+            continue
+        conn.execute(
+            """
+            INSERT INTO corpus_chunks(
+              artifact_id, artifact_content_hash, source_kind, source_id,
+              file_id, filename, mime_type, scope_key,
+              chunk_index, start_char, end_char, text
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+            """,
+            (
+                artifact_id, artifact_hash, source_kind, source_id,
+                file_id, filename, mime_type, scope_key,
+                int(i), text,
+            ),
+        )
+        n += 1
+    return n
+
+
+def reindex_corpus_for_conversation(
+    *,
+    conversation_id: str,
+    force: bool = False,
+    include_global: bool = False,
+    limit_artifacts: int | None = None,
+) -> dict:
+    """
+    Builds/refreshes corpus_chunks for artifacts visible to this conversation (conversation + project [+global]).
+    Uses artifact content_hash to skip unchanged artifacts unless force=True.
+    """
+    cid = (conversation_id or "").strip()
+    if not cid:
+        return {"ok": False, "error": "missing conversation_id"}
+
+    with db_session() as conn:
+        # It is better not to do this stuff here rn
+        # Make sure schema exists before we touch corpus_chunks/corpus_fts
+        """
+        _migrate_schema_v9(conn)
+        conn.commit()  # sqlite + DDL: be explicit
+        """
+        # do self-heal / queries / chunk writes
+        ensure_files_artifacted_for_conversation(
+            conversation_id=cid,
+            limit_per_scope=10,
+            include_global=include_global,
+        )
+
+        # Ensure missing file artifacts are created (cheap now that it’s capped)
+        ensure_files_artifacted_for_conversation(conversation_id=cid, limit_per_scope=10, include_global=include_global)
+
+        #migrate_schema_v9(conn)  # safe to call repeatedly
+
+        scope_keys = _scope_keys_for_conversation(conn, cid, include_global=include_global)
+        artifact_rows = iter_artifacts_with_file_hints_for_scope_keys(conn, scope_keys)
+
+        if limit_artifacts is not None:
+            artifact_rows = artifact_rows[: int(limit_artifacts)]
+
+        indexed = 0
+        skipped = 0
+        total_chunks = 0
+
+        for a in artifact_rows:
+            artifact_id = a["id"]
+            a_hash = a.get("content_hash") or ""
+
+            if not force and a_hash:
+                row = conn.execute(
+                    "SELECT artifact_content_hash FROM corpus_chunks WHERE artifact_id = ? LIMIT 1",
+                    (artifact_id,),
+                ).fetchone()
+                if row and row["artifact_content_hash"] == a_hash:
+                    skipped += 1
+                    continue
+
+            # Hydrate artifact text (sidecar-aware) if you have that helper
+            try:
+                text = hydrate_artifact_content_text(conn, artifact_id)  # type: ignore
+            except Exception:
+                # fallback if your artifacts table has a text field
+                text = a.get("text") or a.get("content_text") or ""
+
+            if not text or not text.strip():
+                skipped += 1
+                continue
+
+            # Chunk with hints
+            chunks = chunk_text_with_hints(
+                text,
+                source_kind=a.get("source_kind"),
+                filename=a.get("filename") or a.get("file_path"),
+                mime_type=a.get("file_mime_type"),
+            )
+
+            # Rebuild chunks for this artifact
+            delete_corpus_chunks_for_artifact(conn, artifact_id)
+            n_chunks = upsert_corpus_chunks_for_artifact_row(conn, a, chunks=chunks)
+            total_chunks += n_chunks
+            indexed += 1
+
+        return {
+            "ok": True,
+            "conversation_id": cid,
+            "scope_keys": scope_keys,
+            "indexed_artifacts": indexed,
+            "skipped_artifacts": skipped,
+            "total_chunks_written": total_chunks,
+        }
+    
+def search_corpus_for_conversation(
+    *,
+    conversation_id: str,
+    query: str,
+    limit: int = 10,
+    include_global: bool = False,
+) -> list[dict]:
+    """
+    FTS search across chunks visible to conversation (conversation + project [+global]).
+    Returns best matches with provenance.
+    """
+    cid = (conversation_id or "").strip()
+    q = (query or "").strip()
+    if not cid or not q:
+        return []
+
+    with db_session() as conn:
+        scope_keys = _scope_keys_for_conversation(conn, cid, include_global=include_global)
+
+        # FTS scope filter
+        placeholders = ",".join("?" * len(scope_keys))
+        params = [q] + scope_keys + [int(limit)]
+
+        rows = conn.execute(
+            f"""
+            SELECT
+              c.id AS chunk_id,
+              c.scope_key,
+              c.artifact_id,
+              c.chunk_index,
+              c.source_kind,
+              c.source_id,
+              c.file_id,
+              c.filename,
+              c.mime_type,
+              c.text,
+              bm25(corpus_fts) AS score
+            FROM corpus_fts
+            JOIN corpus_chunks c ON corpus_fts.rowid = c.id
+            WHERE corpus_fts MATCH ?
+              AND c.scope_key IN ({placeholders})
+            ORDER BY score ASC
+            LIMIT ?
+            """,
+            tuple(params),
+        ).fetchall()
+
+        return [dict(r) for r in rows]
+        
 # endregion
 
 # ----------------------------
@@ -2133,7 +2495,6 @@ def _hydrate_artifact_content_text(art: dict) -> dict:
             print(f"[db] sidecar read failed for artifact {art.get('id')} path={sidecar_path}: {exc}")
             art["content_text"] = ""
     return art
-
     # Legacy fallback until you fully remove artifacts.content
     # legacy = art.get("content")
     #if legacy is not None and str(legacy).strip() != "":
@@ -2142,7 +2503,27 @@ def _hydrate_artifact_content_text(art: dict) -> dict:
     # art["content_text"] = ""
     # return art
 
+def hydrate_artifact_content_text(conn, artifact_id: str) -> str:
+    """
+    Return the artifact's content_text, reading sidecar if necessary.
+    """
+    artifact_id = (artifact_id or "").strip()
+    if not artifact_id:
+        return ""
+
+    row = conn.execute(
+        "SELECT * FROM artifacts WHERE id = ? AND is_deleted = 0",
+        (artifact_id,),
+    ).fetchone()
+    if not row:
+        return ""
+
+    art = dict(row)
+    _hydrate_artifact_content_text(art)
+    return (art.get("content_text") or "")
+
 # endregion
+
 
 def conversation_link_artifact(conversation_id: str, artifact_id: str) -> None:
     """
