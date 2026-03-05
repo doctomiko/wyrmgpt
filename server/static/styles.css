@@ -230,7 +230,8 @@ main#chat {
 .abMeta {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: space-between; /* left stays left, right stays right */
+  gap: 12px;
   font-size: 12px;
   color: var(--muted);
 }
@@ -565,6 +566,33 @@ textarea {
   white-space: nowrap;
 }
 
+.bubble-error,
+.msg.error,
+.abMsg.error {
+  background: rgba(255, 0, 0, 0.10);
+  border: 1px solid rgba(255, 0, 0, 0.30);
+}
+
+.abInfo {
+  padding: 0 8px;
+  height: 26px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.18);
+  background: rgba(255,255,255,0.06);
+  color: var(--text);
+  cursor: pointer;
+}
+.abInfo:hover {
+  background: rgba(255,255,255,0.10);
+}
+
+.abMetaRight {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap:10px; /* big enough to not misclick */
+  margin-left: auto;    /* THIS is the “hug to the right” anchor - pushes the cluster to the far right */
+}
 
 .mdTable {
   border-collapse: collapse;

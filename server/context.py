@@ -5,14 +5,18 @@ import os
 from pathlib import Path
 from .db import (
     get_messages,
-    list_memory_pins,
     get_context_sources,
-    list_files_for_conversation,
-    list_files_for_project,
-    list_all_files,
+    list_memory_pins,
+    # list_files_for_conversation,
+    # list_files_for_project,
+    # list_all_files,
     list_artifacts_for_file,
+    ensure_artifacts_for_files,
+    gather_scoped_files
 )
-from .artifactor import artifact_file
+# TODO untagle dependencies later if needed
+# Now artifactor is used entirely from the database layer
+# from .artifactor import artifact_file
 from .image_helpers import load_image_bytes, image_bytes_to_base64
 try:
     import tiktoken
@@ -224,6 +228,66 @@ def build_context(conversation_id: str, history_limit: int = 200, preview_limit:
         "assembled_input_preview_truncated": truncated,
     }
 
+def build_model_input(conversation_id: str, history_limit: int = 200) -> list[dict]:
+    """
+    Build a Responses-API compatible input.
+    Use string `content` for all text messages (max compatibility).
+    Keep file/image messages as typed parts ONLY when needed.
+    """
+    ctx = build_context(conversation_id, history_limit=history_limit)
+    history_rows = get_messages(conversation_id, limit=history_limit)
+
+    pinned = ctx["pinned_memories"]
+    summary = ctx["summary"]
+    retrieved = ctx["retrieved_memories"]
+
+    system_blocks = [ctx["system_prompt"]]
+    if pinned:
+        system_blocks.append(
+            "Pinned memories (user-curated, treat as true):\n"
+            + "\n".join(f"- {t}" for t in pinned)
+        )
+    if summary.strip():
+        system_blocks.append("Conversation summary:\n" + summary.strip())
+    if retrieved:
+        system_blocks.append(
+            "Retrieved memories (machine-selected; verify if uncertain):\n"
+            + "\n".join(f"- {t}" for t in retrieved)
+        )
+
+    system_text = "\n\n".join(system_blocks)
+
+    system_message = {"role": "system", "content": system_text}
+
+    if not history_rows:
+        return [system_message]
+
+    typed_history: list[dict] = []
+    for r in history_rows:
+        created_at = (r.get("created_at") or "").strip() if r.get("created_at") else ""
+        raw_content = r.get("content") or ""
+        text = zeitgeber_prefix(created_at, raw_content) if created_at else raw_content
+        typed_history.append({"role": r["role"], "content": text})
+
+    *prior_msgs, last_msg = typed_history
+
+    # These file messages MUST already be in a format your app uses.
+    # If they currently use [{"type":"input_text",...}] convert that to plain text.
+    file_messages = _build_file_messages_for_conversation(conversation_id)
+
+    # Normalize any file_messages that are purely text parts
+    normalized_file_messages = []
+    for m in file_messages:
+        c = m.get("content")
+        if isinstance(c, list) and c and isinstance(c[0], dict):
+            # If it's your old "input_text" wrapper, collapse to string
+            if all(p.get("type") in ("input_text", "text") and "text" in p for p in c):
+                normalized_file_messages.append({"role": m.get("role", "user"), "content": "\n".join(p["text"] for p in c)})
+                continue
+        normalized_file_messages.append(m)
+
+    return [system_message] + prior_msgs + normalized_file_messages + [last_msg]
+
 def _build_file_messages_for_conversation(conversation_id: str) -> list[dict]:
     """
     Build extra user messages representing file and image artifacts that should
@@ -231,15 +295,15 @@ def _build_file_messages_for_conversation(conversation_id: str) -> list[dict]:
 
     Returns a list of message dicts:
     [
-      {"role": "user", "content": [ { "type": "input_text", "text": "..." }, ... ]},
-      ...
+    {"role": "user", "content": [ { "type": "input_text", "text": "..." }, ... ]},
+    ...
     ]
     """
-    files_by_id: dict[str, dict] = _gather_scoped_files(conversation_id)
+    files_by_id: dict[str, dict] = gather_scoped_files(conversation_id)
     if not files_by_id:
         return []
 
-    _ensure_artifacts_for_files(files_by_id)
+    ensure_artifacts_for_files(files_by_id)
 
     file_messages: list[dict] = []
 
@@ -259,7 +323,8 @@ def _build_file_messages_for_conversation(conversation_id: str) -> list[dict]:
 
         for art in artifacts:
             source_kind = art.get("source_kind") or ""
-            content = art.get("content") or ""
+            # As of v8 schema, this is the only thing in this file calling this field by this particular name
+            content = art.get("content_text") or ""
 
             # Image artifacts: content is a JSON blob created by build_image_reference_json
             if source_kind.startswith("file:image"):
@@ -322,181 +387,185 @@ def _build_file_messages_for_conversation(conversation_id: str) -> list[dict]:
 
     return file_messages
 
-def _ensure_artifacts_for_files(files_by_id: dict[str, dict]) -> None:
-    """
-    For each file, if there are no (non-deleted) artifacts, call artifact_file(file_row).
-    Swallow errors per-file so one broken file doesn't kill the context build.
-    """
+if(False):
+    def build_model_input(conversation_id: str, history_limit: int = 200) -> list[dict]:
+        """
+        Build a Responses-API compliant input where EVERY message.content is a list of typed parts.
+        This avoids mixed formats (string content vs list-of-parts), which some models reject.
+        """
+        ctx = build_context(conversation_id, history_limit=history_limit)
+        history_rows = get_messages(conversation_id, limit=history_limit)
 
-    print(f"[context] _ensure_artifacts_for_files: checking {len(files_by_id)} files")     
-    for file_id, file_row in files_by_id.items():
-        try:
-            existing = list_artifacts_for_file(file_id, include_deleted=False)
-            print(f"[context] file {file_id}: {len(existing)} existing artifacts")
-        except Exception as exc:
-            print(f"[context] list_artifacts_for_file failed for file {file_id}: {exc}")
-            continue
+        pinned = ctx["pinned_memories"]
+        summary = ctx["summary"]
+        retrieved = ctx["retrieved_memories"]
 
-        if existing:
-            continue  # already artifacted
+        system_blocks = [ctx["system_prompt"]]
+        if pinned:
+            system_blocks.append(
+                "Pinned memories (user-curated, treat as true):\n"
+                + "\n".join(f"- {t}" for t in pinned)
+            )
+        if summary.strip():
+            system_blocks.append("Conversation summary:\n" + summary.strip())
+        if retrieved:
+            system_blocks.append(
+                "Retrieved memories (machine-selected; verify if uncertain):\n"
+                + "\n".join(f"- {t}" for t in retrieved)
+            )
 
-        try:
-            artifact_file(file_row)
-        except Exception as exc:
-            # This might be "no project_id for global file" or a decode error; just log and move on.
-            print(f"[context] artifact_file failed for file {file_id}: {exc}")
-            continue
+        system_text = "\n\n".join(system_blocks)
 
-def _gather_scoped_files(conversation_id: str) -> dict[str, dict]:
-    """
-    Collect all files that should be considered for this conversation:
-    - conversation-scoped
-    - project-scoped (if any)
-    - global/unassigned
-    Returns a dict keyed by file id -> file row, to dedupe across scopes.
-    """
-    sources = get_context_sources(conversation_id)
-    project_id = sources.get("project_id")
+        system_message = {
+            "role": "system",
+            "content": [{"type": "input_text", "text": system_text}],
+        }
 
-    files_by_id: dict[str, dict] = {}
+        if not history_rows:
+            return [system_message]
 
-    # Conversation-scoped files
-    for f in list_files_for_conversation(conversation_id, include_deleted=False):
-        files_by_id[f["id"]] = f
+        # Build typed history (assistant+user as input_text parts)
+        typed_history: list[dict] = []
+        for r in history_rows:
+            created_at = (r.get("created_at") or "").strip() if r.get("created_at") else ""
+            raw_content = r.get("content") or ""
 
-    # Project-scoped files, if any
-    if project_id:
-        for f in list_files_for_project(project_id, include_deleted=False):
-            files_by_id[f["id"]] = f
+            if created_at:
+                text = zeitgeber_prefix(created_at, raw_content)
+            else:
+                text = raw_content
 
-    # Global / unscoped files
-    for f in list_all_files(include_deleted=False):
-        scope_type = f.get("scope_type")
-        # Treat explicit "global" or completely unscoped files as global.
-        if not scope_type or scope_type == "global":
-            files_by_id[f["id"]] = f
+            typed_history.append(
+                {
+                    "role": r["role"],
+                    "content": [{"type": "input_text", "text": text}],
+                }
+            )
 
-    print(f"[context] _gather_scoped_files({conversation_id!r}) -> {len(files_by_id)} files")
-    return files_by_id
+        # Split last message so we can insert file context before it
+        *prior_msgs, last_msg = typed_history
 
-def build_model_input(conversation_id: str, history_limit: int = 200) -> list[dict]:
-    ctx = build_context(conversation_id, history_limit=history_limit)
-    history_rows = get_messages(conversation_id, limit=history_limit)
+        # File messages already return typed parts including input_image for image files
+        file_messages = _build_file_messages_for_conversation(conversation_id)
 
-    pinned = ctx["pinned_memories"]
-    summary = ctx["summary"]
-    retrieved = ctx["retrieved_memories"]
+        return [system_message] + prior_msgs + file_messages + [last_msg]
 
-    system_blocks = [ctx["system_prompt"]]
-    if pinned:
-        system_blocks.append(
-            "Pinned memories (user-curated, treat as true):\n"
-            + "\n".join(f"- {t}" for t in pinned)
-        )
-    if summary.strip():
-        system_blocks.append("Conversation summary:\n" + summary.strip())
-    if retrieved:
-        system_blocks.append(
-            "Retrieved memories (machine-selected; verify if uncertain):\n"
-            + "\n".join(f"- {t}" for t in retrieved)
-        )
+if (False): # improved error handling
+    def build_model_input(conversation_id: str, history_limit: int = 200) -> list[dict]:
+        ctx = build_context(conversation_id, history_limit=history_limit)
+        history_rows = get_messages(conversation_id, limit=history_limit)
 
-    system_message = {
-        "role": "system",
-        "content": "\n\n".join(system_blocks),
-    }
+        pinned = ctx["pinned_memories"]
+        summary = ctx["summary"]
+        retrieved = ctx["retrieved_memories"]
 
-    # No history yet: just the system prompt.
-    if not history_rows:
-        return [system_message]
+        system_blocks = [ctx["system_prompt"]]
+        if pinned:
+            system_blocks.append(
+                "Pinned memories (user-curated, treat as true):\n"
+                + "\n".join(f"- {t}" for t in pinned)
+            )
+        if summary.strip():
+            system_blocks.append("Conversation summary:\n" + summary.strip())
+        if retrieved:
+            system_blocks.append(
+                "Retrieved memories (machine-selected; verify if uncertain):\n"
+                + "\n".join(f"- {t}" for t in retrieved)
+            )
 
-    # Rebuild history so we ONLY pass role + content to OpenAI.
-    annotated_history: list[dict] = []
-    for r in history_rows:
-        created_at = (r.get("created_at") or "").strip() if r.get("created_at") else ""
-        raw_content = r.get("content") or ""
+        system_message = {
+            "role": "system",
+            "content": "\n\n".join(system_blocks),
+        }
 
-        # If you want timestamps visible to the model, keep this prefix.
-        # If not, just set `text = raw_content`.
-        if created_at:
-            text = zeitgeber_prefix(created_at, raw_content)
-        else:
-            text = raw_content
+        # No history yet: just the system prompt.
+        if not history_rows:
+            return [system_message]
 
-        annotated_history.append(
-            {
-                "role": r["role"],
-                "content": text,
-            }
-        )
+        # Rebuild history so we ONLY pass role + content to OpenAI.
+        annotated_history: list[dict] = []
+        for r in history_rows:
+            created_at = (r.get("created_at") or "").strip() if r.get("created_at") else ""
+            raw_content = r.get("content") or ""
 
-    # Split out the last message so we can insert file context before it.
-    *prior_msgs, last_msg = annotated_history
+            # If you want timestamps visible to the model, keep this prefix.
+            # If not, just set `text = raw_content`.
+            if created_at:
+                text = zeitgeber_prefix(created_at, raw_content)
+            else:
+                text = raw_content
 
-    # Build file-derived messages (text + images) for this conversation.
-    file_messages = _build_file_messages_for_conversation(conversation_id)
+            annotated_history.append(
+                {
+                    "role": r["role"],
+                    "content": text,
+                }
+            )
 
-    # Final input: system prompt, prior conversation, file context, then the latest user turn.
-    return [system_message] + prior_msgs + file_messages + [last_msg]
+        # Split out the last message so we can insert file context before it.
+        *prior_msgs, last_msg = annotated_history
 
-"""
-def build_model_input(conversation_id: str, history_limit: int = 200) -> list[dict]:
-    ctx = build_context(conversation_id, history_limit=history_limit)
-    history = get_messages(conversation_id, limit=history_limit)
+        # Build file-derived messages (text + images) for this conversation.
+        file_messages = _build_file_messages_for_conversation(conversation_id)
 
-    pinned = ctx["pinned_memories"]
-    summary = ctx["summary"]
-    retrieved = ctx["retrieved_memories"]
+        # Final input: system prompt, prior conversation, file context, then the latest user turn.
+        return [system_message] + prior_msgs + file_messages + [last_msg]
 
-    system_blocks = [ctx["system_prompt"]]
-    if pinned:
-        system_blocks.append(
-            "Pinned memories (user-curated, treat as true):\n"
-            + "\n".join(f"- {t}" for t in pinned)
-        )
-    if summary.strip():
-        system_blocks.append("Conversation summary:\n" + summary.strip())
-    if retrieved:
-        system_blocks.append(
-            "Retrieved memories (machine-selected; verify if uncertain):\n"
-            + "\n".join(f"- {t}" for t in retrieved)
-        )
+if (False):  # legacy version without zeitgeber prefix and with raw DB content in history
+    def build_model_input(conversation_id: str, history_limit: int = 200) -> list[dict]:
+        ctx = build_context(conversation_id, history_limit=history_limit)
+        history = get_messages(conversation_id, limit=history_limit)
 
-    system_message = {
-        "role": "system",
-        "content": "\n\n".join(system_blocks),
-    }
+        pinned = ctx["pinned_memories"]
+        summary = ctx["summary"]
+        retrieved = ctx["retrieved_memories"]
 
-    # If there's no message history yet, just return the system message.
-    if not history:
-        return [system_message]
+        system_blocks = [ctx["system_prompt"]]
+        if pinned:
+            system_blocks.append(
+                "Pinned memories (user-curated, treat as true):\n"
+                + "\n".join(f"- {t}" for t in pinned)
+            )
+        if summary.strip():
+            system_blocks.append("Conversation summary:\n" + summary.strip())
+        if retrieved:
+            system_blocks.append(
+                "Retrieved memories (machine-selected; verify if uncertain):\n"
+                + "\n".join(f"- {t}" for t in retrieved)
+            )
 
-    # Split out the last message so we can insert file context right before it.
-    *prior_msgs, last_msg = history
+        system_message = {
+            "role": "system",
+            "content": "\n\n".join(system_blocks),
+        }
 
-    # Build file-derived messages (text + images) for this conversation.
-    file_messages = _build_file_messages_for_conversation(conversation_id)
+        # If there's no message history yet, just return the system message.
+        if not history:
+            return [system_message]
 
-    # Final input: system prompt, prior conversation, file context, then the latest user turn.
-    return [system_message] + prior_msgs + file_messages + [last_msg]
-"""
+        # Split out the last message so we can insert file context right before it.
+        *prior_msgs, last_msg = history
+
+        # Build file-derived messages (text + images) for this conversation.
+        file_messages = _build_file_messages_for_conversation(conversation_id)
+
+        # Final input: system prompt, prior conversation, file context, then the latest user turn.
+        return [system_message] + prior_msgs + file_messages + [last_msg]
     
-"""
-def build_model_input(conversation_id: str, history_limit: int = 200) -> list[dict]:
-    ctx = build_context(conversation_id, history_limit=history_limit)
-    # Rebuild full input without truncating to preview
-    history = get_messages(conversation_id, limit=history_limit)
-    
-    pinned = ctx["pinned_memories"]
-    summary = ctx["summary"]
-    retrieved = ctx["retrieved_memories"]
-    system_blocks = [ctx["system_prompt"]]
-    if pinned:
-        system_blocks.append("Pinned memories (user-curated, treat as true):\n" + "\n".join(f"- {t}" for t in pinned))
-    if summary.strip():
-        system_blocks.append("Conversation summary:\n" + summary.strip())
-    if retrieved:
-        system_blocks.append("Retrieved memories (machine-selected, verify if uncertain):\n" + "\n".join(f"- {t}" for t in retrieved))
+    def build_model_input(conversation_id: str, history_limit: int = 200) -> list[dict]:
+        ctx = build_context(conversation_id, history_limit=history_limit)
+        # Rebuild full input without truncating to preview
+        history = get_messages(conversation_id, limit=history_limit)
+        
+        pinned = ctx["pinned_memories"]
+        summary = ctx["summary"]
+        retrieved = ctx["retrieved_memories"]
+        system_blocks = [ctx["system_prompt"]]
+        if pinned:
+            system_blocks.append("Pinned memories (user-curated, treat as true):\n" + "\n".join(f"- {t}" for t in pinned))
+        if summary.strip():
+            system_blocks.append("Conversation summary:\n" + summary.strip())
+        if retrieved:
+            system_blocks.append("Retrieved memories (machine-selected, verify if uncertain):\n" + "\n".join(f"- {t}" for t in retrieved))
 
-    return [{"role": "system", "content": "\n\n".join(system_blocks)}] + history
-"""
+        return [{"role": "system", "content": "\n\n".join(system_blocks)}] + history

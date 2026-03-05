@@ -104,6 +104,10 @@ let hideSendInAdvanced = true; // This is likely no longer useful // if true, "S
 // Project modal state:
 let menuTargetProjectId = null; // which project the context menu is currently targeting (for rename/desc/upload actions)
 let projectsCache = []; // cache of projects for quick lookup when showing the "move to project" list in conversation menu
+// Chat message meta info state:
+let metaInfoModal = null;
+let metaInfoTitleEl = null;
+let metaInfoPreEl = null;
 // Upload modal state:
 let uploadProjectIdForced = null;
 // Files modal state:
@@ -112,7 +116,8 @@ let filesModalConversationId = null;
 let filesModalProjectId = null;
 let hasAnyFiles = false;
 let UI_TIMEZONE = null; // TZ for display
-const ZEIT_PREFIX_RE = /^\s*(?:⟂ts=\d+|⟂t=\d{8}T\d{6}Z(?:\s+⟂age=\d+)?)\s*\n/;
+const ZEIT_PREFIX_RE = /^\s*(?:⟂ts=\d+|⟂t=\d{8}T\d{6}Z(?:\s+⟂age=-?\d+)?)\s*\n/;
+//const ZEIT_PREFIX_RE = /^\s*(?:⟂ts=\d+|⟂t=\d{8}T\d{6}Z(?:\s+⟂age=\d+)?)\s*\n/;
 const LEGACY_PREFIX_RE = /^\s*\[20\d\d-[^\]]+\]\s*\n/;
 
 // ----------------------------------
@@ -167,6 +172,60 @@ function stripZeit(text) {
 }
 
 // A consistent look/feel for headers above chat messages, with optional timestamps and buttons.
+function buildMetaBar({ labelText = null, timeIso = null, includeButton = false, metaObj = null }) {
+  const metaBar = document.createElement("div");
+  metaBar.className = "abMeta singleMeta";
+
+  const left = document.createElement("div");
+  left.className = "abMetaLeft";
+
+  if (labelText) {
+    const labelSpan = document.createElement("span");
+    labelSpan.className = "abLabel";
+    labelSpan.textContent = labelText;
+    left.appendChild(labelSpan);
+  }
+
+  const timeSpan = document.createElement("span");
+  timeSpan.className = "msgTime";
+  timeSpan.textContent = timeIso ? formatReadableDateTime(timeIso) : "";
+  left.appendChild(timeSpan);
+
+  let useBtn = null;
+  if (includeButton) {
+    useBtn = document.createElement("button");
+    useBtn.className = "abChoose";
+    useBtn.textContent = "Use";
+    metaBar.appendChild(useBtn);
+  }
+
+  let infoBtn = null;
+  if (metaObj) {
+    infoBtn = document.createElement("button");
+    infoBtn.className = "abInfo";
+    infoBtn.textContent = "i";
+    infoBtn.title = "Details";
+    infoBtn.addEventListener("click", () => {
+      openMetaInfo(labelText || "Details", metaObj);
+    });
+    metaBar.appendChild(infoBtn);
+  }
+
+  // now stuff in the right bar
+  const right = document.createElement("div");
+  right.className = "abMetaRight";
+  if (useBtn)
+    right.appendChild(useBtn);
+  if (infoBtn)
+    right.appendChild(infoBtn);
+
+  metaBar.appendChild(left);
+  metaBar.appendChild(right);
+
+  return { metaBar, timeSpan, useBtn, infoBtn };
+}
+
+/*
 function buildMetaBar({ labelText = null, timeIso = null, includeButton = false }) {
   const metaBar = document.createElement("div");
   metaBar.className = "abMeta singleMeta";
@@ -198,6 +257,7 @@ function buildMetaBar({ labelText = null, timeIso = null, includeButton = false 
 
   return { metaBar, timeSpan, btn };
 }
+*/
 
 async function loadMessages(cid) {
   return await fetchJsonDebug(`/api/conversation/${cid}/messages`);
@@ -262,6 +322,66 @@ function positionMenu(menuEl, x, y) {
   menuEl.style.top = top + "px";
 }
 
+// #region Chat Meta-Info Helpers
+
+function ensureMetaInfoModal() {
+  if (metaInfoModal) return;
+
+  const modal = document.createElement("div");
+  modal.id = "metaInfoModal";
+  modal.className = "modal hidden";
+
+  modal.innerHTML = `
+    <div class="modalBackdrop"></div>
+    <div class="modalPanel" style="max-width: 760px;">
+      <div class="modalHeader">
+        <div class="modalTitle" id="metaInfoTitle">Details</div>
+        <button class="btn" id="metaInfoClose">Close</button>
+      </div>
+      <div class="modalBody">
+        <pre id="metaInfoPre" style="white-space: pre-wrap; word-break: break-word; margin: 0;"></pre>
+      </div>
+      <div class="modalActions">
+        <button class="btn" id="metaInfoCopy">Copy JSON</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(modal);
+
+  metaInfoModal = modal;
+  metaInfoTitleEl = modal.querySelector("#metaInfoTitle");
+  metaInfoPreEl = modal.querySelector("#metaInfoPre");
+
+  const closeBtn = modal.querySelector("#metaInfoClose");
+  const copyBtn = modal.querySelector("#metaInfoCopy");
+  const backdrop = modal.querySelector(".modalBackdrop");
+
+  function close() {
+    metaInfoModal.classList.add("hidden");
+  }
+
+  closeBtn.addEventListener("click", close);
+  backdrop.addEventListener("click", close);
+
+  copyBtn.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(metaInfoPreEl.textContent || "");
+    } catch (e) {
+      console.warn("copy failed", e);
+    }
+  });
+}
+
+function openMetaInfo(title, obj) {
+  ensureMetaInfoModal();
+  metaInfoTitleEl.textContent = title || "Details";
+  metaInfoPreEl.textContent = JSON.stringify(obj || {}, null, 2);
+  metaInfoModal.classList.remove("hidden");
+}
+
+// #endregion
+
 // #region Debug Helpers
 
 const DEBUG_BOOT = true;
@@ -310,6 +430,37 @@ function closeMemoryModal() {
 
 // #endregion
 
+// #region Error handling helpers
+
+function isErrorBubble(msg) {
+  return (
+    (msg && msg.meta && msg.meta.kind === "error") ||
+    msg?.kind === "error" ||
+    msg?.is_error === true ||
+    (typeof msg?.content === "string" && msg.content.startsWith("[Model ") && msg.content.includes(" error]"))
+  );
+}
+
+function errorDetailsFromMsg(msg) {
+  const meta = (msg && msg.meta) ? msg.meta : {};
+  const status = meta.status_code ?? meta.http_status ?? meta.status ?? null;
+  const requestId = meta.request_id ?? meta.requestId ?? null;
+  const body = meta.body ?? meta.error_body ?? null;
+  const message =
+    (body && body.error && body.error.message) ||
+    meta.message ||
+    meta.error_message ||
+    null;
+
+  return { status, requestId, message, body };
+}
+
+function bubbleClassName(msg) {
+  return isErrorBubble(msg) ? "bubble bubble-error" : "bubble";
+}
+
+// #endregion
+
 // #region Message rendering helpers
 
 function addMsgTextOnly(role, text) {
@@ -329,7 +480,7 @@ function escapeHtml(s) {
     .replace(/>/g, "&gt;");
 }
 
-function addAssistantMsgWithModel(modelId, initialText, createdAtIso) {
+function addAssistantMsgWithModel(modelId, initialText, createdAtIso, metaObj = null) {
   let labelText = "Unknown model";
   if (modelId) {
     const m = findModelById(modelId);
@@ -340,7 +491,7 @@ function addAssistantMsgWithModel(modelId, initialText, createdAtIso) {
   const wrapper = document.createElement("div");
   wrapper.className = "msgWithModel assistantWrap";
   // Label bar above the bubble
-  const { metaBar } = buildMetaBar({ labelText, timeIso: createdAtIso || null, includeButton: false });
+  const { metaBar } = buildMetaBar({ labelText, timeIso: createdAtIso || null, includeButton: false, metaObj });
   // This is now handled in buildMetaBar
   // const metaBar = document.createElement("div");
   //metaBar.className = "abMeta singleMeta";
@@ -353,6 +504,8 @@ function addAssistantMsgWithModel(modelId, initialText, createdAtIso) {
   // Actual chat bubble
   const bubble = document.createElement("div");
   bubble.className = "msg assistant";
+  // preserve error color coding
+  if (metaObj && metaObj.kind === "error") bubble.classList.add("error");
 
   const body = document.createElement("div");
   body.className = "msgBody";
@@ -451,7 +604,7 @@ function renderMessagesWithAB(rows) {
     if (msg.role === "assistant") {
       const meta = msg.meta || {};
       const modelId = meta.model || null;
-      addAssistantMsgWithModel(modelId, msg.content || "", msg.created_at || null);
+      addAssistantMsgWithModel(modelId, msg.content || "", msg.created_at || null, msg.meta || null);
     } else if (msg.role === "user") {
       addUserMsgWithTime(msg.content || "", msg.created_at || null);
     } else {
@@ -461,6 +614,30 @@ function renderMessagesWithAB(rows) {
   }
 }
 
+function renderABRow(msgA, msgB, canonicalA, canonicalB) {
+  const modelA = (msgA.meta && msgA.meta.model) || "model A";
+  const modelB = (msgB.meta && msgB.meta.model) || "model B";
+
+  const { rowEl, msgAEl, msgBEl, labelAEl, labelBEl, infoAEl, infoBEl } = addABRow(
+    modelA, modelB,
+    msgA.created_at || null, msgB.created_at || null
+  );
+
+  msgAEl.innerHTML = renderMarkdown(stripZeit(msgA.content));
+  msgBEl.innerHTML = renderMarkdown(stripZeit(msgB.content));
+
+  if (msgA.meta && msgA.meta.kind === "error") msgAEl.classList.add("error");
+  if (msgB.meta && msgB.meta.kind === "error") msgBEl.classList.add("error");
+
+  // Wire info buttons for reload/history
+  infoAEl.onclick = () => openMetaInfo(labelAEl.textContent || "A", msgA.meta || {});
+  infoBEl.onclick = () => openMetaInfo(labelBEl.textContent || "B", msgB.meta || {});
+
+  if (canonicalA) markCanonical(rowEl, "A");
+  else if (canonicalB) markCanonical(rowEl, "B");
+}
+
+/*
 function renderABRow(msgA, msgB, canonicalA, canonicalB) {
   // Try to get model labels if you’re storing them in meta; otherwise fall back.
   const modelA = (msgA.meta && msgA.meta.model) || "model A";
@@ -473,6 +650,9 @@ function renderABRow(msgA, msgB, canonicalA, canonicalB) {
   // Fill in the content
   msgAEl.innerHTML = renderMarkdown(stripZeit(msgA.content));
   msgBEl.innerHTML = renderMarkdown(stripZeit(msgB.content));
+  // Paint stored error rows red (persist across reload)
+  if (msgA.meta && msgA.meta.kind === "error") msgAEl.classList.add("error");
+  if (msgB.meta && msgB.meta.kind === "error") msgBEl.classList.add("error");
   // Restore canonical choice if we know it
   if (canonicalA) {
     markCanonical(rowEl, "A");
@@ -480,8 +660,94 @@ function renderABRow(msgA, msgB, canonicalA, canonicalB) {
     markCanonical(rowEl, "B");
   }
 }
+*/
 
-function addABRow(modelA, modelB,  createdAtIsoA = null, createdAtIsoB = null) {
+function addABRow(modelA, modelB, createdAtIsoA = null, createdAtIsoB = null) {
+  const row = document.createElement("div");
+  row.className = "abRow";
+
+  const makeCol = (labelText, timeIso) => {
+    const meta = document.createElement("div");
+    meta.className = "abMeta";
+
+    const left = document.createElement("div");
+    left.className = "abMetaLeft";
+
+    const right = document.createElement("div");
+    right.className = "abMetaRight";
+
+    const col = document.createElement("div");
+    col.className = "abCol";
+
+    const label = document.createElement("span");
+    label.className = "abLabel";
+    label.textContent = labelText;
+
+    const timeEl = document.createElement("span");
+    timeEl.className = "msgTime";
+    timeEl.textContent = timeIso ? formatReadableDateTime(timeIso) : "";
+
+    const btn = document.createElement("button");
+    btn.className = "abChoose";
+    btn.textContent = "Use";
+
+    const info = document.createElement("button");
+    info.className = "abInfo";
+    info.textContent = "i";
+    info.title = "Details";
+
+    left.appendChild(label);
+    left.appendChild(timeEl);
+
+    // ✅ cluster buttons together on the right
+    right.appendChild(btn);
+    right.appendChild(info);
+
+    meta.appendChild(left);
+    meta.appendChild(right);
+
+    const msg = document.createElement("div");
+    msg.className = "msg assistant abMsg";
+    msg.textContent = "Thinking…";
+
+    col.appendChild(meta);
+    col.appendChild(msg);
+
+    return { col, meta, label, btn, info, msg, timeEl };
+  };
+
+  let safeLabelA = modelA && modelA.trim() ? modelA : "Unknown Model A";
+  if (safeLabelA == "model A") safeLabelA = "Unknown Model A";
+
+  let safeLabelB = modelB && modelB.trim() ? modelB : "Unknown Model B";
+  if (safeLabelB == "model B") safeLabelB = "Unknown Model B";
+
+  const A = makeCol(safeLabelA, createdAtIsoA);
+  const B = makeCol(safeLabelB, createdAtIsoB);
+
+  row.appendChild(A.col);
+  row.appendChild(B.col);
+
+  chatEl.appendChild(row);
+  chatEl.scrollTop = chatEl.scrollHeight;
+
+  return {
+    rowEl: row,
+    msgAEl: A.msg,
+    msgBEl: B.msg,
+    labelAEl: A.label,
+    labelBEl: B.label,
+    timeAEl: A.timeEl,
+    timeBEl: B.timeEl,
+    btnAEl: A.btn,
+    btnBEl: B.btn,
+    infoAEl: A.info,
+    infoBEl: B.info,
+  };
+}
+
+/*
+function addABRow(modelA, modelB, createdAtIsoA = null, createdAtIsoB = null) {
   const row = document.createElement("div");
   row.className = "abRow";
 
@@ -507,11 +773,17 @@ function addABRow(modelA, modelB,  createdAtIsoA = null, createdAtIsoB = null) {
     btn.className = "abChoose";
     btn.textContent = "Use";
 
+    const info = document.createElement("button");
+    info.className = "abInfo";
+    info.textContent = "i";
+    info.title = "Details";
+
     left.appendChild(label);
     left.appendChild(timeEl);
 
     meta.appendChild(left); // left now contains both label and time
     //meta.appendChild(label);
+    meta.appendChild(info);
     meta.appendChild(btn);
 
     const msg = document.createElement("div");
@@ -521,16 +793,16 @@ function addABRow(modelA, modelB,  createdAtIsoA = null, createdAtIsoB = null) {
     col.appendChild(meta);
     col.appendChild(msg);
 
-    return { col, meta, label, btn, msg, timeEl };
+    return { col, meta, label, btn, info, msg, timeEl };
   };
 
   let safeLabelA = modelA && modelA.trim() ? modelA : "Unknown Model A";
   if (safeLabelA == "model A") safeLabelA = "Unknown Model A";
-  const { col: colA, label: labelA, btn: btnA, msg: msgA, timeEl: timeElA } =
+  const { col: colA, label: labelA, btn: btnA, info: infoA, msg: msgA, timeEl: timeElA } =
     makeCol(`A · ${safeLabelA}`, createdAtIsoA);
   let safeLabelB = modelB && modelB.trim() ? modelB : "Unknown Model B";
   if (safeLabelB == "model B") safeLabelB = "Unknown Model B";
-  const { col: colB, label: labelB, btn: btnB, msg: msgB, timeEl: timeElB } =
+  const { col: colB, label: labelB, btn: btnB, info: infoB, msg: msgB, timeEl: timeElB } =
     makeCol(`B · ${safeLabelB}`, createdAtIsoB);
 
   row.appendChild(colA);
@@ -541,8 +813,9 @@ function addABRow(modelA, modelB,  createdAtIsoA = null, createdAtIsoB = null) {
   btnA.addEventListener("click", () => chooseCanonical(row, "A"));
   btnB.addEventListener("click", () => chooseCanonical(row, "B"));
 
-  return { rowEl: row, msgAEl: msgA, msgBEl: msgB, labelAEl: labelA, labelBEl: labelB, timeAEl: timeElA, timeBEl: timeElB };
+  return { rowEl: row, msgAEl: msgA, msgBEl: msgB, labelAEl: labelA, labelBEl: labelB, timeAEl: timeElA, timeBEl: timeElB, infoAEl: infoA, infoBEl: infoB };
 }
+*/
 
 // #endregion
 
@@ -1067,6 +1340,197 @@ async function sendSingle(text, model) {
 
 async function sendAB(text, modelA, modelB) {
   const now = nowIso();
+  addUserMsgWithTime(text, now);
+
+  const { rowEl, msgAEl, msgBEl, labelAEl, labelBEl, infoAEl, infoBEl } = addABRow(
+    modelA, modelB, now, now
+  );
+
+  // These will be updated after the server returns.
+  let detailsA = { pending: true, slot: "A", model: modelA };
+  let detailsB = { pending: true, slot: "B", model: modelB };
+
+  infoAEl.onclick = () => openMetaInfo(labelAEl.textContent || "A", detailsA);
+  infoBEl.onclick = () => openMetaInfo(labelBEl.textContent || "B", detailsB);
+
+  function renderSlot(msgEl, slotLabelEl, slotName, slotModel, slotData) {
+    msgEl.classList.remove("error");
+
+    if (!slotData) {
+      msgEl.textContent = "(empty)";
+      return;
+    }
+
+    if (slotData.ok) {
+      const t = stripZeit(slotData.text || "") || "(empty)";
+      msgEl.innerHTML = renderMarkdown(t);
+      if (slotModel) slotLabelEl.textContent = `${slotName} · ${slotModel}`;
+      return;
+    }
+
+    msgEl.classList.add("error");
+
+    const err = slotData.error || {};
+    const status = err.status_code || "";
+    const reqId = err.request_id || "";
+    const body = err.body || {};
+    const msg =
+      (body.error && body.error.message) ||
+      body.message ||
+      "OpenAI API error";
+
+    const lines = [];
+    lines.push(`**${slotName} error** (HTTP ${status || "?"})`);
+    if (reqId) lines.push(`request_id: \`${reqId}\``);
+    lines.push(msg);
+
+    msgEl.innerHTML = renderMarkdown(lines.join("\n\n"));
+    if (slotModel) slotLabelEl.textContent = `${slotName} · ${slotModel}`;
+  }
+
+  const payload = {
+    conversation_id: conversationId,
+    model_a: modelA,
+    model_b: modelB,
+    message: text
+  };
+
+  try {
+    const res = await fetch("/api/chat_ab", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+
+    const data = await res.json();
+
+    if (data.conversation_id) {
+      conversationId = data.conversation_id;
+      localStorage.setItem("callie_mvp_conversation_id", conversationId);
+    }
+
+    rowEl.dataset.abGroup = data.ab_group || "";
+
+    renderSlot(msgAEl, labelAEl, "A", data.model_a || modelA, data.a);
+    renderSlot(msgBEl, labelBEl, "B", data.model_b || modelB, data.b);
+
+    // Update the info payloads AFTER we have data
+    detailsA = { slot: "A", model: data.model_a || modelA, ab_group: data.ab_group || null, result: data.a };
+    detailsB = { slot: "B", model: data.model_b || modelB, ab_group: data.ab_group || null, result: data.b };
+
+    markCanonical(rowEl, data.canonical_slot || "A");
+
+    await refreshConversationLists();
+    await refreshContext();
+  } catch (e) {
+    console.error("Failed A/B send", e);
+    msgAEl.classList.add("error");
+    msgBEl.classList.add("error");
+    msgAEl.textContent = "[A] error during A/B call";
+    msgBEl.textContent = "[B] error during A/B call";
+  }
+}
+
+/*
+async function sendAB(text, modelA, modelB) {
+  const now = nowIso();
+  addUserMsgWithTime(text, now);
+
+  const { rowEl, msgAEl, msgBEl, labelAEl, labelBEl, timeAEl, timeBEl, infoAEl, infoBEl } = addABRow(
+    modelA,
+    modelB,
+    now,
+    now
+  );
+
+  infoAEl.onclick = () => openMetaInfo(`A · ${data.model_a || modelA}`, data.a);
+  infoBEl.onclick = () => openMetaInfo(`B · ${data.model_b || modelB}`, data.b);
+
+  // helper to render one slot (A or B)
+  function renderSlot(msgEl, slotLabelEl, slotName, slotModel, slotData) {
+    // Reset styles
+    msgEl.classList.remove("error");
+
+    if (!slotData) {
+      msgEl.textContent = "(empty)";
+      return;
+    }
+
+    // slotData shape: {ok:true,text:"..."} OR {ok:false,error:{status_code, request_id, body}}
+    if (slotData.ok) {
+      const t = stripZeit(slotData.text || "") || "(empty)";
+      msgEl.innerHTML = renderMarkdown(t);
+      if (slotModel) slotLabelEl.textContent = `${slotName} · ${slotModel}`;
+      return;
+    }
+
+    // Error case
+    msgEl.classList.add("error");
+
+    const err = slotData.error || {};
+    const status = err.status_code || "";
+    const reqId = err.request_id || "";
+    const body = err.body || {};
+    const msg =
+      (body.error && body.error.message) ||
+      body.message ||
+      "OpenAI API error";
+
+    // Render error text as markdown-safe plaintext
+    const lines = [];
+    lines.push(`**${slotName} error** (HTTP ${status || "?"})`);
+    if (reqId) lines.push(`request_id: \`${reqId}\``);
+    lines.push(msg);
+
+    msgEl.innerHTML = renderMarkdown(lines.join("\n\n"));
+    if (slotModel) slotLabelEl.textContent = `${slotName} · ${slotModel}`;
+  }
+
+  const payload = {
+    conversation_id: conversationId,
+    model_a: modelA,
+    model_b: modelB,
+    message: text
+  };
+
+  try {
+    const res = await fetch("/api/chat_ab", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+
+    const data = await res.json();
+
+    if (data.conversation_id) {
+      conversationId = data.conversation_id;
+      localStorage.setItem("callie_mvp_conversation_id", conversationId);
+    }
+
+    rowEl.dataset.abGroup = data.ab_group || "";
+
+    // Data now returns structured a/b objects
+    renderSlot(msgAEl, labelAEl, "A", data.model_a || modelA, data.a);
+    renderSlot(msgBEl, labelBEl, "B", data.model_b || modelB, data.b);
+
+    // canonical_slot might not exist anymore; keep old behavior defaulting to A
+    markCanonical(rowEl, data.canonical_slot || "A");
+
+    await refreshConversationLists();
+    await refreshContext();
+  } catch (e) {
+    console.error("Failed A/B send", e);
+    msgAEl.classList.add("error");
+    msgBEl.classList.add("error");
+    msgAEl.textContent = "[A] error during A/B call";
+    msgBEl.textContent = "[B] error during A/B call";
+  }
+}
+*/
+
+/*
+async function sendAB(text, modelA, modelB) {
+  const now = nowIso();
   addUserMsgWithTime(text, now); //addMsg("user", text);
 
   const { rowEl, msgAEl, msgBEl, labelAEl, labelBEl, timeAEl, timeBEl } = addABRow(modelA, modelB, now, now);
@@ -1115,6 +1579,7 @@ async function sendAB(text, modelA, modelB) {
     msgBEl.textContent = "[B] error during A/B call";
   }
 }
+*/
 
 // #endregion
 

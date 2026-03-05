@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import uuid
@@ -11,19 +12,24 @@ from fastapi.staticfiles import StaticFiles
 import traceback
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
-from openai import OpenAI
+from openai import OpenAI, APIStatusError
 # From openai/types/responses/response_create_params.py
 from openai.types.responses import ResponseInputParam
+
 # Support checking for models
 import time
 from typing import Any, Optional
 import json
 from pathlib import Path
 
+import anyio
+from functools import partial
+
 # region data layer imports
 
 from .db import (
     # Schema and connection
+    ensure_files_artifacted_for_conversation,
     init_schema,
     db_debug_info,
     # Chat Messages
@@ -52,7 +58,7 @@ from .db import (
     # Files and Artifacts
     register_file as db_register_file,
     project_add_file as db_project_add_file,
-    create_artifact as db_create_artifact,
+    artifact_file,
     register_scoped_file,
     update_file_description,
     conversation_link_file,
@@ -77,8 +83,8 @@ from .db import (
 
 # endregion
 
-from .artifactor import artifact_file
 from .context import build_context, build_model_input, estimate_context_tokens
+from .markdown_helper import apply_house_markdown_normalization, autolink_text
 
 DEBUG_ERRORS = os.getenv("DEBUG_ERRORS", "1") == "1"
 
@@ -108,14 +114,22 @@ UI_TIMEZONE = (
     or "America/New_York"
 )
 
-ZEIT_PREFIX_RE = re.compile(r"^\s*⟂ts=\d+\s*\n")
 ZEIT_PREFIX_RE = re.compile(
     r"^\s*(?:"
-    r"⟂ts=\d+"                                # old: ⟂ts=1709...
-    r"|⟂t=\d{8}T\d{6}Z(?:\s+⟂age=\d+)?"       # new: ⟂t=20260228T231512Z ⟂age=37
+    r"⟂ts=\d+"
+    r"|⟂t=\d{8}T\d{6}Z(?:\s+⟂age=-?\d+)?"
     r")\s*\n",
     re.UNICODE
 )
+if (False):
+    ZEIT_PREFIX_RE = re.compile(r"^\s*⟂ts=\d+\s*\n")
+    ZEIT_PREFIX_RE = re.compile(
+        r"^\s*(?:"
+        r"⟂ts=\d+"                                # old: ⟂ts=1709...
+        r"|⟂t=\d{8}T\d{6}Z(?:\s+⟂age=\d+)?"       # new: ⟂t=20260228T231512Z ⟂age=37
+        r")\s*\n",
+        re.UNICODE
+    )
 LEGACY_BRACKET_RE = re.compile(r"^\s*\[20\d\d-[^\]]+\]\s*\n")
 
 def strip_zeitgeber_prefix(text: str) -> str:
@@ -124,6 +138,21 @@ def strip_zeitgeber_prefix(text: str) -> str:
     text = ZEIT_PREFIX_RE.sub("", text, count=1)
     text = LEGACY_BRACKET_RE.sub("", text, count=1)  # safety for old runs
     return text.lstrip("\ufeff")  # optional: strip BOM weirdness
+
+def postprocess_text(text: str) -> str:
+    """
+    House normalization for output before storing in DB or displaying on screen.
+    - strip zeitgeber prefix
+    - normalize markdown dialect
+    - autolink URLs/domains
+    """
+    if not text:
+        return text
+    text = text.strip()
+    text = strip_zeitgeber_prefix(text)
+    text = apply_house_markdown_normalization(text)
+    text = autolink_text(text)
+    return text
 
 # Replaces the old @app.on_event("startup") and @app.on_event("shutdown") handlers with a single async context manager that can do both setup and teardown.
 #@app.on_event("startup")
@@ -333,8 +362,6 @@ def chat(req: ChatRequest, model: str | None = None):
     if req.conversation_id is None:
         create_conversation(cid)
 
-    add_message(cid, "user", req.message)
-
     raw_input = build_model_input(cid, history_limit=200)
     model_input = cast(ResponseInputParam, raw_input)
     print("[debug] model_input:", json.dumps(model_input, indent=2)[:5000])
@@ -356,8 +383,12 @@ def chat(req: ChatRequest, model: str | None = None):
                         yield event.delta
                     elif event.type == "response.error":
                         yield "\n[error]\n"
-                full = "".join(parts).strip()
-                full = strip_zeitgeber_prefix(full)
+
+                heal = ensure_files_artifacted_for_conversation(conversation_id=cid, limit_per_scope=5, include_global=False)
+                if heal["created"]:
+                    print("self-heal artifacts: cid=%s heal=%s", cid, heal)
+
+                full = postprocess_text("".join(parts))
                 if full:
                     add_message(cid, "assistant", full, meta={"model": model})
         except Exception as e:
@@ -367,64 +398,465 @@ def chat(req: ChatRequest, model: str | None = None):
     resp.headers["X-Conversation-Id"] = cid
     return resp
 
-@app.post("/api/chat_ab")
-def chat_ab(req: ABChatRequest):
+from openai import APIStatusError
+import json
+import uuid
+from fastapi.responses import JSONResponse
+
+def _openai_error_payload(e: APIStatusError) -> dict:
+    # Pull out useful fields safely
+    status = getattr(e, "status_code", None)
+    req_id = None
+    err_json = None
+    try:
+        err_json = e.response.json()
+        req_id = err_json.get("error", {}).get("request_id") or err_json.get("request_id")
+    except Exception:
+        try:
+            err_json = {"raw": e.response.text}
+        except Exception:
+            err_json = {"raw": repr(getattr(e, "response", None))}
+    return {
+        "status_code": status,
+        "request_id": req_id,
+        "body": err_json,
+    }
+
+if (False):
+    def _openai_error_payload(e: APIStatusError) -> dict:
+        status = getattr(e, "status_code", None)
+        req_id = None
+        body = None
+        try:
+            body = e.response.json()
+            req_id = (body.get("error") or {}).get("request_id") or body.get("request_id")
+        except Exception:
+            try:
+                body = {"raw": e.response.text}
+            except Exception:
+                body = {"raw": repr(getattr(e, "response", None))}
+        return {"status_code": status, "request_id": req_id, "body": body}
+
+def _extract_err_msg(payload: dict) -> str:
+    body = payload.get("body") or {}
+    if isinstance(body, dict):
+        return (body.get("error") or {}).get("message") or body.get("message") or "OpenAI API error"
+    return "OpenAI API error"
+
+if (False):
+    def _sync_call():
+        return client.responses.create(model=model_name, input=model_input)
+
+async def _call_model(model_name: str, model_input):
+    loop = asyncio.get_running_loop()
+    fn = partial(client.responses.create, model=model_name, input=model_input)
+    return await loop.run_in_executor(None, fn)
+
+if (False):
+    async def _call_model(model_name: str, model_input):
+        # OpenAI SDK call is blocking; run in worker thread
+        if (False): #older model of Anyio
+            return await anyio.to_thread.run_sync(
+                lambda: client.responses.create(model=model_name, input=model_input)
+            )
+        else:
+            return await anyio.to_thread.run_sync(_sync_call)
+
+import asyncio
+from typing import Any, Callable
+
+async def _sleep_ms(ms: int) -> None:
+    await asyncio.sleep(ms / 1000.0)
+
+def _strip_images(model_input: list[dict]) -> list[dict]:
+    out = []
+    for msg in model_input:
+        c = msg.get("content")
+        if isinstance(c, list):
+            c = [p for p in c if isinstance(p, dict) and p.get("type") != "input_image"]
+        out.append({**msg, "content": c})
+    return out
+
+def _strip_file_messages(model_input: list[dict]) -> list[dict]:
+    # Your file messages are user-role messages with big “FILES:” text or image parts.
+    # Easiest heuristic: drop any message whose content includes "FILES:" header,
+    # OR has any input_image part.
+    out = []
+    for msg in model_input:
+        c = msg.get("content")
+        if isinstance(c, str) and c.startswith("FILES:"):
+            continue
+        if isinstance(c, list) and any(isinstance(p, dict) and p.get("type") == "input_image" for p in c):
+            continue
+        out.append(msg)
+    return out
+
+def _trim_history(model_input: list[dict], keep_last_n: int = 30) -> list[dict]:
+    # Keep system message(s) at front, keep last N non-system messages.
+    system = [m for m in model_input if m.get("role") == "system"]
+    non_system = [m for m in model_input if m.get("role") != "system"]
+    return system + non_system[-keep_last_n:]
+
+async def call_model_with_recovery(model: str, model_input: list[dict]) -> dict:
     """
-    Non-streaming A/B chat endpoint:
-    - stores the user message once
-    - produces two assistant variants (A and B) using potentially different models
-    - stores both variants with A/B metadata
+    Returns either {"ok": True, "text": "..."} or {"ok": False, "error": {...}}.
+    """
+    attempts: list[tuple[str, list[dict], int]] = []
+
+    # 1) Original input, retry once
+    attempts.append(("original", model_input, 0))
+    attempts.append(("original_retry", model_input, 250))
+
+    # 2) Strip images, retry once
+    mi_noimg = _strip_images(model_input)
+    attempts.append(("no_images", mi_noimg, 0))
+    attempts.append(("no_images_retry", mi_noimg, 250))
+
+    # 3) Strip file messages (more aggressive)
+    mi_textonly = _strip_file_messages(mi_noimg)
+    attempts.append(("text_only", mi_textonly, 0))
+
+    # 4) Trim history hard
+    mi_trim = _trim_history(mi_textonly, keep_last_n=30)
+    attempts.append(("trim30", mi_trim, 0))
+
+    last_err_payload = None
+
+    for label, mi, backoff_ms in attempts:
+        if backoff_ms:
+            await _sleep_ms(backoff_ms)
+
+        try:
+            resp = await _call_model(model, mi)  # uses your run_in_executor helper
+            text = strip_zeitgeber_prefix(_extract_output_text(resp) or "")
+            return {"ok": True, "text": text, "recovery": label}
+        except APIStatusError as e:
+            payload = _openai_error_payload(e)
+            payload["recovery_step"] = label
+            last_err_payload = payload
+
+            # Only ladder on 500s. If it’s a 400/422, don’t spam retries—just return it.
+            if payload.get("status_code") and int(payload["status_code"]) < 500:
+                return {"ok": False, "error": last_err_payload}
+
+    return {"ok": False, "error": last_err_payload or {"status_code": 500, "body": {"error": {"message": "Unknown error"}}}}
+
+@app.post("/api/chat_ab")
+async def chat_ab(req: ABChatRequest):
+    """
+    A/B endpoint that:
+      - never breaks the UI on OpenAI errors
+      - runs A and B in parallel
+      - returns structured {a:{ok,text|error}, b:{ok,text|error}}
     """
     cid = req.conversation_id or str(uuid.uuid4())
     if req.conversation_id is None:
         create_conversation(cid)
 
-    # One user turn for both branches
-    add_message(cid, "user", req.message)
+    heal = ensure_files_artifacted_for_conversation(conversation_id=cid, limit_per_scope=5, include_global=False)
+    if heal["created"]:
+        print("self-heal artifacts: cid=%s heal=%s", cid, heal)
 
-    raw_input = build_model_input(cid, history_limit=200)
-    model_input = cast(ResponseInputParam, raw_input)
-    print("[debug] model_input:", json.dumps(model_input, indent=2)[:5000])
+    full = postprocess_text(req.message)
+    if full:
+        add_message(cid, "user", full)
 
+    model_input = build_model_input(cid, history_limit=200)
     model_a = (req.model_a or MODEL).strip()
     model_b = (req.model_b or model_a).strip()
 
-    # Run the two models sequentially; simple but robust
-    resp_a = client.responses.create(model=model_a, input=model_input)
-    resp_b = client.responses.create(model=model_b, input=model_input)
-    text_a = strip_zeitgeber_prefix(_extract_output_text(resp_a) or "")
-    text_b = strip_zeitgeber_prefix(_extract_output_text(resp_b) or "")
-
-    # Tag both variants as part of the same A/B group
     ab_group = str(uuid.uuid4())
-    meta_a = {
-        "ab_group": ab_group,
-        "slot": "A",
-        "canonical": True,
-        "model": model_a,
-    }
-    meta_b = {
-        "ab_group": ab_group,
-        "slot": "B",
-        "canonical": False,
-        "model": model_b,
-    }
 
-    if text_a:
-        add_message(cid, "assistant", text_a, meta=meta_a)
-    if text_b:
-        add_message(cid, "assistant", text_b, meta=meta_b)
+    async def run_one(slot: str, model_name: str):
+        try:
+            resp = await _call_model(model_name, model_input)
+            text = strip_zeitgeber_prefix(_extract_output_text(resp) or "")
+            return {"ok": True, "text": text}
+        except APIStatusError as e:
+            payload = _openai_error_payload(e)
+            return {"ok": False, "error": payload}
+
+    if (False):
+        # This is the different/older version of Anyio
+        a_res, b_res = await anyio.gather(
+            run_one("A", model_a),
+            run_one("B", model_b),
+        )
+    else:
+        a_res = None
+        b_res = None
+        async with anyio.create_task_group() as tg:
+            # tg.start_soon(lambda: None)  # harmless; avoids lint complaining about empty group in some editors
+            async def run_a():
+                nonlocal a_res
+                #a_res = await run_one("A", model_a)
+                a_res = await call_model_with_recovery(model_a, model_input)                
+            async def run_b():
+                nonlocal b_res
+                #b_res = await run_one("B", model_b)
+                b_res = await call_model_with_recovery(model_b, model_input)                
+            tg.start_soon(run_a)
+            tg.start_soon(run_b)
+        # At this point, both are done
+        assert a_res is not None and b_res is not None
+
+    # Store results as messages; store errors as assistant messages with meta.kind="error"
+    def store(slot: str, model_name: str, res: dict):
+        if res.get("ok"):
+            text = res.get("text") or ""
+            full = postprocess_text(text)
+            if full:
+                add_message(cid, "assistant", full, meta={"ab_group": ab_group, "slot": slot, "model": model_name, "kind": "ab", "recovery": res.get("recovery")})
+        else:
+            payload = res.get("error") or {}
+            msg = _extract_err_msg(payload)
+            status = payload.get("status_code")
+            req_id = payload.get("request_id")
+            bubble = f"[Model {slot} error] {status or ''} {msg}".strip()
+            full = postprocess_text(bubble)
+            if full:
+                add_message(
+                    cid,
+                    "assistant",
+                    full,
+                    meta={"ab_group": ab_group, "slot": slot, "model": model_name, "kind": "error", 
+                    "recovery_step": res["error"].get("recovery_step"),
+                    **payload},
+                )
+
+    store("A", model_a, a_res)
+    store("B", model_b, b_res)
 
     return JSONResponse(
         {
             "conversation_id": cid,
             "model_a": model_a,
             "model_b": model_b,
-            "a": text_a,
-            "b": text_b,
             "ab_group": ab_group,
+            "a": a_res,
+            "b": b_res,
         }
     )
+
+if (False):
+    @app.post("/api/chat_ab")
+    def chat_ab(req: ABChatRequest):
+        cid = req.conversation_id or str(uuid.uuid4())
+        if req.conversation_id is None:
+            create_conversation(cid)
+
+        add_message(cid, "user", req.message)
+
+        model_input = build_model_input(cid, history_limit=200)
+
+        model_a = (req.model_a or MODEL).strip()
+        model_b = (req.model_b or model_a).strip()
+
+        ab_group = str(uuid.uuid4())
+
+        result = {
+            "ok": True,
+            "conversation_id": cid,
+            "ab_group": ab_group,
+            "model_a": model_a,
+            "model_b": model_b,
+            "a": None,
+            "b": None,
+        }
+
+        # A
+        try:
+            resp_a = client.responses.create(model=model_a, input=model_input)
+            text_a = strip_zeitgeber_prefix(_extract_output_text(resp_a) or "")
+            result["a"] = {"ok": True, "text": text_a}
+            if text_a:
+                add_message(cid, "assistant", text_a, meta={"ab_group": ab_group, "slot": "A", "model": model_a})
+        except APIStatusError as e:
+            payload = _openai_error_payload(e)
+            result["a"] = {"ok": False, "error": payload}
+            # Optional: store an error bubble as an assistant message
+            add_message(
+                cid,
+                "assistant",
+                f"[Model A error] {payload.get('status_code')} {payload.get('body', {}).get('error', {}).get('message', '')}",
+                meta={"ab_group": ab_group, "slot": "A", "model": model_a, "kind": "error", **payload},
+            )
+
+        # B
+        try:
+            resp_b = client.responses.create(model=model_b, input=model_input)
+            text_b = strip_zeitgeber_prefix(_extract_output_text(resp_b) or "")
+            result["b"] = {"ok": True, "text": text_b}
+            if text_b:
+                add_message(cid, "assistant", text_b, meta={"ab_group": ab_group, "slot": "B", "model": model_b})
+        except APIStatusError as e:
+            payload = _openai_error_payload(e)
+            result["b"] = {"ok": False, "error": payload}
+            add_message(
+                cid,
+                "assistant",
+                f"[Model B error] {payload.get('status_code')} {payload.get('body', {}).get('error', {}).get('message', '')}",
+                meta={"ab_group": ab_group, "slot": "B", "model": model_b, "kind": "error", **payload},
+            )
+
+        return JSONResponse(result)
+
+if (False):
+    @app.post("/api/chat_ab")
+    def chat_ab(req: ABChatRequest):
+        """
+        Non-streaming A/B chat endpoint:
+        - stores the user message once
+        - produces two assistant variants (A and B)
+        - stores both variants with A/B metadata
+        """
+        from openai import APIStatusError
+        import json
+
+        def _strip_images_from_input(inp: list[dict]) -> list[dict]:
+            out: list[dict] = []
+            for msg in inp:
+                content = msg.get("content")
+                if isinstance(content, list):
+                    content = [p for p in content if (p.get("type") != "input_image")]
+                out.append({**msg, "content": content})
+            return out
+
+        def _log_openai_status_error(label: str, e: APIStatusError, model_name: str) -> None:
+            print(f"\n[openai] APIStatusError during chat_ab ({label}) model={model_name}")
+            print("status_code:", getattr(e, "status_code", None))
+            try:
+                print("response:", json.dumps(e.response.json(), indent=2))
+            except Exception:
+                try:
+                    print("response_text:", e.response.text)
+                except Exception:
+                    print("response_repr:", repr(getattr(e, "response", None)))
+
+        cid = req.conversation_id or str(uuid.uuid4())
+        if req.conversation_id is None:
+            create_conversation(cid)
+
+        add_message(cid, "user", req.message)
+
+        raw_input = build_model_input(cid, history_limit=200)
+        model_input = cast(ResponseInputParam, raw_input)
+
+        model_a = (req.model_a or MODEL).strip()
+        model_b = (req.model_b or model_a).strip()
+
+        # Run A
+        try:
+            resp_a = client.responses.create(model=model_a, input=model_input)
+        except APIStatusError as e:
+            _log_openai_status_error("A", e, model_a)
+            return JSONResponse(
+                {"ok": False, "where": "A", "model": model_a, "error": "OpenAI API error (see server log)"},
+                status_code=500,
+            )
+
+        # Run B (retry without images if needed)
+        try:
+            resp_b = client.responses.create(model=model_b, input=model_input)
+        except APIStatusError as e:
+            _log_openai_status_error("B", e, model_b)
+
+            # Common case: model B doesn't support vision / input_image parts.
+            # Retry with images stripped.
+            try:
+                model_input_b = cast(ResponseInputParam, _strip_images_from_input(raw_input))
+                resp_b = client.responses.create(model=model_b, input=model_input_b)
+                print("[openai] retry B without images: success")
+            except APIStatusError as e2:
+                _log_openai_status_error("B(retry_no_images)", e2, model_b)
+                return JSONResponse(
+                    {"ok": False, "where": "B", "model": model_b, "error": "OpenAI API error (see server log)"},
+                    status_code=500,
+                )
+
+        text_a = strip_zeitgeber_prefix(_extract_output_text(resp_a) or "")
+        text_b = strip_zeitgeber_prefix(_extract_output_text(resp_b) or "")
+
+        ab_group = str(uuid.uuid4())
+        meta_a = {"ab_group": ab_group, "slot": "A", "canonical": True, "model": model_a}
+        meta_b = {"ab_group": ab_group, "slot": "B", "canonical": False, "model": model_b}
+
+        if text_a:
+            add_message(cid, "assistant", text_a, meta=meta_a)
+        if text_b:
+            add_message(cid, "assistant", text_b, meta=meta_b)
+
+        return JSONResponse(
+            {
+                "ok": True,
+                "conversation_id": cid,
+                "model_a": model_a,
+                "model_b": model_b,
+                "a": text_a,
+                "b": text_b,
+                "ab_group": ab_group,
+            }
+        )
+
+if (False): # Better error handling
+    @app.post("/api/chat_ab")
+    def chat_ab(req: ABChatRequest):
+        """
+        Non-streaming A/B chat endpoint:
+        - stores the user message once
+        - produces two assistant variants (A and B) using potentially different models
+        - stores both variants with A/B metadata
+        """
+        cid = req.conversation_id or str(uuid.uuid4())
+        if req.conversation_id is None:
+            create_conversation(cid)
+
+        # One user turn for both branches
+        add_message(cid, "user", req.message)
+
+        raw_input = build_model_input(cid, history_limit=200)
+        model_input = cast(ResponseInputParam, raw_input)
+        print("[debug] model_input:", json.dumps(model_input, indent=2)[:5000])
+
+        model_a = (req.model_a or MODEL).strip()
+        model_b = (req.model_b or model_a).strip()
+
+        # Run the two models sequentially; simple but robust
+        resp_a = client.responses.create(model=model_a, input=model_input)
+        resp_b = client.responses.create(model=model_b, input=model_input)
+        text_a = strip_zeitgeber_prefix(_extract_output_text(resp_a) or "")
+        text_b = strip_zeitgeber_prefix(_extract_output_text(resp_b) or "")
+
+        # Tag both variants as part of the same A/B group
+        ab_group = str(uuid.uuid4())
+        meta_a = {
+            "ab_group": ab_group,
+            "slot": "A",
+            "canonical": True,
+            "model": model_a,
+        }
+        meta_b = {
+            "ab_group": ab_group,
+            "slot": "B",
+            "canonical": False,
+            "model": model_b,
+        }
+
+        if text_a:
+            add_message(cid, "assistant", text_a, meta=meta_a)
+        if text_b:
+            add_message(cid, "assistant", text_b, meta=meta_b)
+
+        return JSONResponse(
+            {
+                "conversation_id": cid,
+                "model_a": model_a,
+                "model_b": model_b,
+                "a": text_a,
+                "b": text_b,
+                "ab_group": ab_group,
+            }
+        )
 
 @app.post("/api/ab/canonical")
 def api_ab_canonical(req: ABCanonicalRequest):
@@ -535,13 +967,15 @@ def api_summarize_conversation(conversation_id: str):
     summary_text = _extract_output_text(resp) or ""
     summary_message = f"Summary of “{title}”:\n\n{summary_text}"
 
-    add_message(
-        conversation_id,
-        "assistant",
-        summary_message,
-        meta={"summary": True, "model": model},
-    )
-    save_conversation_summary(conversation_id, summary_text, model)
+    full = postprocess_text(summary_message)
+    if full:
+        add_message(
+            conversation_id,
+            "assistant",
+            full,
+            meta={"summary": True, "model": model},
+        )
+        save_conversation_summary(conversation_id, full, model)
 
     return {"conversation_id": conversation_id, "summary": summary_text, "model": model}
 
@@ -690,13 +1124,15 @@ def api_project_add_conversation(project_id: int, conversation_id: str):
     except ValueError as e:
         _http_from_value_error(e)
 
-@app.post("/api/projects/{project_id}/artifacts")
-def api_create_artifact(project_id: int, req: ArtifactCreate):
-    try:
-        out = db_create_artifact(project_id, req.name, req.content, req.tags)
-        return JSONResponse(out)
-    except ValueError as e:
-        _http_from_value_error(e)
+if (False):  # Disabled for now - was not in use
+    #@app.post("/api/projects/{project_id}/artifacts")
+    def api_create_artifact(project_id: int, req: ArtifactCreate):
+        try:
+            # had been removed in favor of upserts with data
+            out = create_artifact(project_id, req.name, req.content, req.tags)
+            return JSONResponse(out)
+        except ValueError as e:
+            _http_from_value_error(e)
 
 @app.post("/api/projects/{project_id}/import_from/{source_id}")
 def api_project_import(project_id: int, source_id: int, req: ImportRule):

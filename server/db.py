@@ -1,7 +1,9 @@
 # server/db.py
 from asyncio import log
+import hashlib
 import sqlite3
 import json
+import sys
 import uuid
 import re
 from pathlib import Path
@@ -10,12 +12,19 @@ from datetime import datetime, timezone
 from contextlib import contextmanager
 from typing import Any, Iterable, Iterator
 
+from .markdown_helper import autolink_text, apply_house_markdown_normalization
+# Support legacy migrations from v1-v7. You can remove this after a few releases once most users have migrated or started fresh.
+from .db_migrate import migrate_schema_legacy
+
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "callie_mvp.sqlite3"
 _VALID_TABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SAFE_ID_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
-SCHEMA_VERSION = 7  
+SCHEMA_VERSION = 8  
+
+SIDECAR_THRESHOLD_BYTES = 500 * 1024 # 500KB default threshold for when to use sidecar files for artifact content
 
 # near the top of db.py, alongside other imports or type helpers:
 @dataclass
@@ -25,8 +34,33 @@ class FileScope:
     scope_id: int | None
     scope_uuid: str | None
 
-def _utcnow_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+def _sha256_hex(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8", errors="strict")).hexdigest()
+
+def ensure_parent_dir(p: Path) -> None:
+    p.parent.mkdir(parents=True, exist_ok=True)
+
+def new_uuid() -> str:
+    return str(uuid.uuid4())
+
+def _normalize_tags(tags: Any) -> str | None:
+    """
+    Store tags as JSON text (recommended), but accept None/str/list.
+    """
+    if tags is None:
+        return None
+    if isinstance(tags, str):
+        t = tags.strip()
+        return t if t else None
+    if isinstance(tags, (list, tuple)):
+        cleaned = [str(x).strip() for x in tags if str(x).strip()]
+        return json.dumps(cleaned) if cleaned else None
+    # last resort: stringify
+    t = str(tags).strip()
+    return t if t else None
 
 @contextmanager
 def db_session() -> Iterator[sqlite3.Connection]:
@@ -48,6 +82,25 @@ def db_session() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 # region Schema Management and Migrations
+
+# region Migration helpers
+
+def db_debug_info(conn: sqlite3.Connection | None = None) -> dict:
+    if conn is None:
+        with db_session() as sconn:
+            return db_debug_info(sconn)
+    else:
+        tables = [
+            r["name"]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+            ).fetchall()
+        ]
+        # conn.close()
+        return {
+            "db_path": str(DB_PATH),
+            "tables": tables,
+        }
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     row = conn.execute(
@@ -92,6 +145,10 @@ def _drop_all_tables(conn: sqlite3.Connection) -> None:
     ):
         conn.execute(f"DROP TABLE IF EXISTS {t}")
 
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, col: str, coldef: str) -> None:
+    cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+    if col not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coldef}")
 
 def drop_empty_tables(tables: Iterable[str], conn: sqlite3.Connection | None = None) -> list[str]:
     """
@@ -147,7 +204,81 @@ def drop_empty_satellite_tables(conn: sqlite3.Connection | None = None) -> list[
         conn
     )
 
-def _apply_schema_v2(conn: sqlite3.Connection) -> None:
+# endregion
+
+# region Latest migrations
+
+def migrate_schema_v8(conn: sqlite3.Connection) -> None:
+    """
+    This migration makes changes to artifacts in support of future RAG implementation
+    """
+    conn.executescript(f"""
+    DROP TABLE IF EXISTS artifacts;
+
+    CREATE TABLE artifacts (
+        -- Primary key: TEXT uuid (you already do this)
+        id TEXT PRIMARY KEY,
+
+        -- Provenance (keep what you already use; add what you need)
+        source_kind TEXT NOT NULL,          -- e.g. 'file','web','memory','message','conversation_summary'
+        scope_type  TEXT,                   -- e.g. 'project','conversation','global'
+        scope_id    INTEGER,                -- links to tables with id as a int
+        scope_uuid  TEXT,                   -- links to tables with id as text/uuid -- project id / conversation id / etc (TEXT to stay flexible)
+        source_id   TEXT,                   -- e.g. file_id, memory_id, message_id (store as TEXT for uniformity)
+        title       TEXT,
+        provenance  TEXT,
+        tags        TEXT,                       
+
+        -- Canonical readable content: exactly one of these
+        content_text  TEXT,
+        sidecar_path  TEXT,
+
+        -- Invalidation + later policy knobs
+        content_hash  TEXT,                 -- sha256 hex of canonical text
+        content_bytes INTEGER,              -- bytes of canonical text (inline or sidecar)
+        updated_at    TEXT,                 -- ISO8601 UTC
+
+        -- Optional ranking metadata (if you already have these, keep them)
+        significance  REAL DEFAULT 0.0,
+        tags_json     TEXT,
+                       
+        project_id INTEGER,
+        is_deleted INTEGER NOT NULL DEFAULT 0,
+        deleted_at TEXT,
+        deleted_by_user_id TEXT
+    );
+    """)
+    conn.executescript(f"""
+    -- Enforce mutual exclusivity: content_text XOR sidecar_path (or both NULL allowed)
+    CREATE TRIGGER IF NOT EXISTS trg_artifacts_exclusive_ins
+    BEFORE INSERT ON artifacts
+    FOR EACH ROW
+    BEGIN
+        SELECT CASE
+            WHEN NEW.content_text IS NOT NULL AND NEW.sidecar_path IS NOT NULL
+            THEN RAISE(ABORT, 'artifacts: content_text and sidecar_path are mutually exclusive')
+        END;
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_artifacts_exclusive_upd
+    BEFORE UPDATE OF content_text, sidecar_path ON artifacts
+    FOR EACH ROW
+    BEGIN
+        SELECT CASE
+            WHEN NEW.content_text IS NOT NULL AND NEW.sidecar_path IS NOT NULL
+            THEN RAISE(ABORT, 'artifacts: content_text and sidecar_path are mutually exclusive')
+        END;
+    END;
+
+    CREATE INDEX IF NOT EXISTS idx_artifacts_scope ON artifacts(scope_type, scope_id);
+    CREATE INDEX IF NOT EXISTS idx_artifacts_source ON artifacts(source_kind, source_id);
+    CREATE INDEX IF NOT EXISTS idx_artifacts_hash ON artifacts(content_hash);
+    CREATE INDEX IF NOT EXISTS idx_artifacts_updated_at ON artifacts(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_artifacts_project_id ON artifacts(project_id);
+""")
+
+def _apply_schema_v8(conn: sqlite3.Connection) -> None:
+    # TODO add columns from past migrations
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS schema_meta (
@@ -163,6 +294,11 @@ def _apply_schema_v2(conn: sqlite3.Connection) -> None:
             system_prompt TEXT,
             override_core_prompt INTEGER DEFAULT 0,
             default_advanced_mode INTEGER DEFAULT 0,
+
+            -- v7 additions
+            is_global INTEGER DEFAULT 0,
+            is_hidden INTEGER DEFAULT 0,
+
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
@@ -183,6 +319,10 @@ def _apply_schema_v2(conn: sqlite3.Connection) -> None:
             conversation_id TEXT NOT NULL,
             role TEXT NOT NULL,
             content TEXT NOT NULL,
+
+            -- v6 additions
+            author_meta TEXT,
+
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             meta TEXT,
             FOREIGN KEY(conversation_id) REFERENCES conversations(id)
@@ -208,30 +348,141 @@ def _apply_schema_v2(conn: sqlite3.Connection) -> None:
             name TEXT NOT NULL,
             path TEXT NOT NULL,
             mime_type TEXT,
+
+            -- v4 additions (scope/provenance/url + soft delete)
+            scope_type TEXT,
+            scope_id INTEGER,
+            scope_uuid TEXT,
+            source_kind TEXT,
+            url TEXT,
+            description TEXT,
+            provenance TEXT,
+            is_deleted INTEGER NOT NULL DEFAULT 0,
+            deleted_at TEXT,
+            deleted_by_user_id TEXT,
+
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE INDEX IF NOT EXISTS idx_files_scope ON files(scope_type, scope_id, scope_uuid);
+        CREATE INDEX IF NOT EXISTS idx_files_url ON files(url);
 
         CREATE TABLE IF NOT EXISTS memories (
             id TEXT PRIMARY KEY,
             content TEXT NOT NULL,
             importance INTEGER DEFAULT 0,
             tags TEXT,
+
+            -- v4 soft delete additions
+            is_deleted INTEGER NOT NULL DEFAULT 0,
+            deleted_at TEXT,
+            deleted_by_user_id TEXT,
+
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
 
         CREATE TABLE IF NOT EXISTS artifacts (
+            -- Primary key
             id TEXT PRIMARY KEY,
-            project_id INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            content TEXT NOT NULL,
+
+            -- legacy/artifacting columns used by current code
+            project_id INTEGER,
+            -- name TEXT, -- no longer used in v8
+            -- content TEXT, -- no longer used in v8
             tags TEXT,
+
+            scope_type TEXT,
+            scope_id INTEGER,
+            scope_uuid TEXT,
+
+            -- file_id TEXT, -- this has been phased out in favor of source_id
+            source_kind TEXT,
+            provenance TEXT,
+
+            -- v4 soft delete columns
+            is_deleted INTEGER NOT NULL DEFAULT 0,
+            deleted_at TEXT,
+            deleted_by_user_id TEXT,
+
+            -- v5 chunking (you can stop using it, but code still references it)
+            -- chunk_index INTEGER,
+
+            -- v8 “article-ish cache” columns (can coexist with legacy content)
+            title TEXT,
+            source_id TEXT,
+            content_text TEXT,
+            sidecar_path TEXT,
+            content_hash TEXT,
+            content_bytes INTEGER,
+
+            -- optional ranking metadata
+            significance REAL DEFAULT 0.0,
+            tags_json TEXT,
+
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (project_id) REFERENCES projects(id)
+
+            FOREIGN KEY (project_id) REFERENCES projects(id),
+            -- instructed by Callie to leave this out.. for now. Makes sense to me if it refers to multiple types of sources, not just files. We can always add specific foreign keys for different source_kinds if we want later.
+            --FOREIGN KEY (source_id) REFERENCES files(id)
         );
 
-        -- Keep these for future use; types are now consistent.
+        -- v8 mutual exclusivity: content_text XOR sidecar_path
+        CREATE TRIGGER IF NOT EXISTS trg_artifacts_exclusive_ins
+        BEFORE INSERT ON artifacts
+        FOR EACH ROW
+        BEGIN
+            SELECT CASE
+                WHEN NEW.content_text IS NOT NULL AND NEW.sidecar_path IS NOT NULL
+                THEN RAISE(ABORT, 'artifacts: content_text and sidecar_path are mutually exclusive')
+            END;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_artifacts_exclusive_upd
+        BEFORE UPDATE OF content_text, sidecar_path ON artifacts
+        FOR EACH ROW
+        BEGIN
+            SELECT CASE
+                WHEN NEW.content_text IS NOT NULL AND NEW.sidecar_path IS NOT NULL
+                THEN RAISE(ABORT, 'artifacts: content_text and sidecar_path are mutually exclusive')
+            END;
+        END;
+
+        CREATE INDEX IF NOT EXISTS idx_artifacts_project_id ON artifacts(project_id);
+        CREATE INDEX IF NOT EXISTS idx_artifacts_source ON artifacts(source_kind, source_id);
+        CREATE INDEX IF NOT EXISTS idx_artifacts_scope ON artifacts(scope_type, scope_id, scope_uuid);
+        CREATE INDEX IF NOT EXISTS idx_artifacts_hash ON artifacts(content_hash);
+        CREATE INDEX IF NOT EXISTS idx_artifacts_updated_at ON artifacts(updated_at);
+
+        -- v4 context cache
+        CREATE TABLE IF NOT EXISTS context_cache (
+            conversation_id TEXT PRIMARY KEY,
+            project_id INTEGER,
+            cache_key TEXT NOT NULL DEFAULT 'default',
+            payload TEXT NOT NULL,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (project_id) REFERENCES projects(id),
+            FOREIGN KEY (conversation_id) REFERENCES conversations(id)
+        );
+
+        -- v4 conversation-scoped links
+        CREATE TABLE IF NOT EXISTS conversation_files (
+            conversation_id TEXT NOT NULL,
+            file_id TEXT NOT NULL,
+            PRIMARY KEY (conversation_id, file_id),
+            FOREIGN KEY (conversation_id) REFERENCES conversations(id),
+            FOREIGN KEY (file_id) REFERENCES files(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS conversation_artifacts (
+            conversation_id TEXT NOT NULL,
+            artifact_id TEXT NOT NULL,
+            PRIMARY KEY (conversation_id, artifact_id),
+            FOREIGN KEY (conversation_id) REFERENCES conversations(id),
+            FOREIGN KEY (artifact_id) REFERENCES artifacts(id)
+        );
+
+        -- join tables you already use
         CREATE TABLE IF NOT EXISTS project_conversations (
             project_id INTEGER NOT NULL,
             conversation_id TEXT NOT NULL,
@@ -282,204 +533,78 @@ def _apply_schema_v2(conn: sqlite3.Connection) -> None:
         (str(SCHEMA_VERSION),),
     )
 
-def migrate_schema_v3(conn: sqlite3.Connection) -> None:
-    """
-    Non-destructive migration for the file/url/artifact/context-cache design.
+# endregion
 
-    Adds:
-      - scope + provenance + soft-delete columns on files and artifacts
-      - soft-delete columns on memories
-      - context_cache, conversation_files, conversation_artifacts tables
-    """
-
-    # Extend files table if it exists
-    if _table_exists(conn, "files"):
-        _add_column_if_missing(conn, "files", "scope_type", "TEXT")
-        _add_column_if_missing(conn, "files", "scope_id", "INTEGER")
-        _add_column_if_missing(conn, "files", "scope_uuid", "TEXT")
-        _add_column_if_missing(conn, "files", "source_kind", "TEXT")
-        _add_column_if_missing(conn, "files", "url", "TEXT")
-        _add_column_if_missing(conn, "files", "description", "TEXT")
-        _add_column_if_missing(conn, "files", "provenance", "TEXT")
-        _add_column_if_missing(conn, "files", "is_deleted", "INTEGER NOT NULL DEFAULT 0")
-        _add_column_if_missing(conn, "files", "deleted_at", "TEXT")
-        _add_column_if_missing(conn, "files", "deleted_by_user_id", "TEXT")
-
-    # Extend artifacts table if it exists
-    if _table_exists(conn, "artifacts"):
-        _add_column_if_missing(conn, "artifacts", "scope_type", "TEXT")
-        _add_column_if_missing(conn, "artifacts", "scope_id", "INTEGER")
-        _add_column_if_missing(conn, "artifacts", "scope_uuid", "TEXT")
-        _add_column_if_missing(conn, "artifacts", "file_id", "TEXT")
-        _add_column_if_missing(conn, "artifacts", "source_kind", "TEXT")
-        _add_column_if_missing(conn, "artifacts", "provenance", "TEXT")
-        _add_column_if_missing(conn, "artifacts", "is_deleted", "INTEGER NOT NULL DEFAULT 0")
-        _add_column_if_missing(conn, "artifacts", "deleted_at", "TEXT")
-        _add_column_if_missing(conn, "artifacts", "deleted_by_user_id", "TEXT")
-
-    # Extend memories table with soft-delete markers
-    if _table_exists(conn, "memories"):
-        _add_column_if_missing(conn, "memories", "is_deleted", "INTEGER NOT NULL DEFAULT 0")
-        _add_column_if_missing(conn, "memories", "deleted_at", "TEXT")
-        _add_column_if_missing(conn, "memories", "deleted_by_user_id", "TEXT")
-
-    # Context cache for precomputed context payloads
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS context_cache (
-            conversation_id TEXT PRIMARY KEY,
-            project_id INTEGER,
-            cache_key TEXT NOT NULL DEFAULT 'default',
-            payload TEXT NOT NULL,
-            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (project_id) REFERENCES projects(id),
-            FOREIGN KEY (conversation_id) REFERENCES conversations(id)
-        )
-        """
-    )
-
-    # Optional many-to-many link between conversations and files
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS conversation_files (
-            conversation_id TEXT NOT NULL,
-            file_id TEXT NOT NULL,
-            PRIMARY KEY (conversation_id, file_id),
-            FOREIGN KEY (conversation_id) REFERENCES conversations(id),
-            FOREIGN KEY (file_id) REFERENCES files(id)
-        )
-        """
-    )
-
-    # Optional many-to-many link between conversations and artifacts
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS conversation_artifacts (
-            conversation_id TEXT NOT NULL,
-            artifact_id TEXT NOT NULL,
-            PRIMARY KEY (conversation_id, artifact_id),
-            FOREIGN KEY (conversation_id) REFERENCES conversations(id),
-            FOREIGN KEY (artifact_id) REFERENCES artifacts(id)
-        )
-        """
-    )
-
-def migrate_schema_v4(conn: sqlite3.Connection) -> None:
-    """
-    Non-destructive migration for artifact chunking.
-
-    Adds:
-      - chunk_index INTEGER on artifacts
-    """
-    if _table_exists(conn, "artifacts"):
-        _add_column_if_missing(conn, "artifacts", "chunk_index", "INTEGER")
-
-def migrate_schema_v5_messages(conn: sqlite3.Connection) -> None:
-    """
-    Make sure messages have created_at and author_meta columns.
-    """
-    _add_column_if_missing(conn, "messages", "created_at", "TEXT")
-    _add_column_if_missing(conn, "messages", "author_meta", "TEXT")
-
-def migrate_schema_v6_projects(conn: sqlite3.Connection) -> None:
-    """
-    Add is_global and is_hidden flags to projects.
-    """
-    _add_column_if_missing(conn, "projects", "is_global", "INTEGER DEFAULT 0")
-    _add_column_if_missing(conn, "projects", "is_hidden", "INTEGER DEFAULT 0")
-
-def db_debug_info(conn: sqlite3.Connection | None = None) -> dict:
-    if conn is None:
-        with db_session() as sconn:
-            return db_debug_info(sconn)
-    else:
-        tables = [
-            r["name"]
-            for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-            ).fetchall()
-        ]
-        # conn.close()
-        return {
-            "db_path": str(DB_PATH),
-            "tables": tables,
-        }
-
-def _add_column_if_missing(conn: sqlite3.Connection, table: str, col: str, coldef: str) -> None:
-    cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
-    if col not in cols:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coldef}")
-
-def migrate_schema_minimal(conn: sqlite3.Connection) -> None:
-    # conversations: add updated_at + archived + summary_json + project_id if needed
-    _add_column_if_missing(conn, "conversations", "project_id", "INTEGER")
-    _add_column_if_missing(conn, "conversations", "summary_json", "TEXT")
-    _add_column_if_missing(conn, "conversations", "archived", "INTEGER NOT NULL DEFAULT 0")
-    _add_column_if_missing(conn, "conversations", "updated_at", "TEXT")
-    # projects: if you have projects already, ensure uuid exists (optional)
-    if _table_exists(conn, "projects"):
-        _add_column_if_missing(conn, "projects", "uuid", "TEXT")
-        _add_column_if_missing(conn, "projects", "updated_at", "TEXT")
-        _add_column_if_missing(conn, "projects", "created_at", "TEXT")
-
-def init_schema() -> None:
-    with db_session() as conn:
-        conn.execute("PRAGMA foreign_keys = OFF;")
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-        )
-        row = conn.execute(
-            "SELECT value FROM schema_meta WHERE key='schema_version'"
-        ).fetchone()
-        current = int(row["value"]) if row and str(row["value"]).isdigit() else 0
-
-        # Comment the next line after cached artifacts are cleared
-        # You should not need to do this very often. We'll work on a button later.
-        # reset_all_artifacts()
-        if current < SCHEMA_VERSION:
-            # Destructive changes - commented unless needed
-            """
-            dropped = drop_empty_satellite_tables(conn)
-            print("Dropped:", dropped)
-
-            if _db_has_user_data(conn):
-                raise RuntimeError(
-                    "Refusing destructive migration: DB already has data. "
-                    "Write a non-destructive migration before upgrading."
-                )
-            _drop_all_tables(conn)
-            """
-            # Ensure all tables exist (idempotent)
-            _apply_schema_v2(conn)
-            # Bring older DBs up to compatibility without dropping data
-            migrate_schema_minimal(conn)
-            migrate_schema_v3(conn)
-            migrate_schema_v4(conn)
-            migrate_schema_v5_messages(conn)
-            migrate_schema_v6_projects(conn)
-
-        conn.execute("PRAGMA foreign_keys = ON;")
-        print(f"DB initialized with schema version {SCHEMA_VERSION} (was {current})")
-        # TODO implement seperate log file and log there as well.
-        #log.logger.info(f"DB initialized with schema version {SCHEMA_VERSION} (was {current})")
+# region Clean builds for new databases
 
 # endregion
 
-def _normalize_tags(tags: Any) -> str | None:
+def init_schema_start(conn: sqlite3.Connection) -> int:
     """
-    Store tags as JSON text (recommended), but accept None/str/list.
+    Returns the current schema version, or 0 if not set. This also ensures the schema_meta table exists.
     """
-    if tags is None:
-        return None
-    if isinstance(tags, str):
-        t = tags.strip()
-        return t if t else None
-    if isinstance(tags, (list, tuple)):
-        cleaned = [str(x).strip() for x in tags if str(x).strip()]
-        return json.dumps(cleaned) if cleaned else None
-    # last resort: stringify
-    t = str(tags).strip()
-    return t if t else None
+    conn.execute("PRAGMA foreign_keys = OFF;")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+    )
+    row = conn.execute(
+        "SELECT value FROM schema_meta WHERE key='schema_version'"
+    ).fetchone()
+    current = int(row["value"]) if row and str(row["value"]).isdigit() else 0
+    return current
+
+def init_schema_end(conn: sqlite3.Connection, current: int) -> None:
+    conn.execute("PRAGMA foreign_keys = ON;")
+    print(f"DB initialized with schema version {SCHEMA_VERSION} (was {current})")
+    # TODO implement seperate log file and log there as well.
+    #log.logger.info(f"DB initialized with schema version {SCHEMA_VERSION} (was {current})")
+
+def init_schema() -> None:
+    with db_session() as conn:
+        # Get the current schema version, or 0 if not set. This also ensures the schema_meta table exists.
+        current = init_schema_start(conn);
+        # Comment the next line after cached artifacts are cleared
+        # You should not need to do this very often. We'll work on a button later.
+        # reset_all_artifacts()
+        if current == 0:
+            # Clean slate - create all tables
+            _apply_schema_v8(conn)
+            init_schema_end(conn, current)
+            return
+
+        if current < SCHEMA_VERSION - 1:
+            # Destructive changes - commented unless needed
+            if (False):
+                dropped = drop_empty_satellite_tables(conn)
+                print("Dropped:", dropped)
+
+                if _db_has_user_data(conn):
+                    raise RuntimeError(
+                        "Refusing destructive migration: DB already has data. "
+                        "Write a non-destructive migration before upgrading."
+                    )
+                _drop_all_tables(conn)
+
+            # Warn user that this is deprecated and they should migrate or start fresh. We can remove this code in a future release after giving users time to adjust.
+            print(f"\nWARNING: Database schema is {current}, code expects {SCHEMA_VERSION}.")
+            print(f"DB path: {DB_PATH}")
+            print("Recommended action: delete the DB file and restart.\n")
+            if not sys.stdin.isatty():
+                raise RuntimeError("Refusing legacy migration without an interactive console. Delete DB and restart.")
+
+            resp = input("Type MIGRATE to attempt legacy migration anyway, or anything else to abort: ").strip().upper()
+            if resp != "MIGRATE":
+                raise RuntimeError("Aborted legacy migration. Delete DB and restart.")
+
+            migrate_schema_legacy(conn)
+            migrate_schema_v8(conn)
+        else:
+            if current == SCHEMA_VERSION - 1:
+                migrate_schema_v8(conn)
+
+        init_schema_end(conn, current)
+
+# endregion
 
 # ----------------------------
 # Projects
@@ -523,7 +648,7 @@ def get_global_project_id() -> int:
             return int(row["id"])
 
         # Create it
-        now = _utcnow_iso()
+        now = _utc_now_iso()
         cur = conn.execute(
             """
             INSERT INTO projects (name, description, is_global, is_hidden, created_at, updated_at)
@@ -553,7 +678,7 @@ def get_or_create_project(name: str) -> dict:
             }
 
         puuid = str(uuid.uuid4())
-        now = _utcnow_iso()
+        now = _utc_now_iso()
         conn.execute(
             """
             INSERT INTO projects (uuid, name, created_at, updated_at)
@@ -593,7 +718,7 @@ def project_add_conversation(project_id: int, conversation_id: str, set_primary:
         if set_primary:
             conn.execute(
                 "UPDATE conversations SET project_id = ?, updated_at = ? WHERE id = ?",
-                (int(project_id), _utcnow_iso(), conversation_id),
+                (int(project_id), _utc_now_iso(), conversation_id),
             )
 
 def update_project(project_id: int, name: str | None = None, description: str | None = None) -> dict:
@@ -615,7 +740,7 @@ def update_project(project_id: int, name: str | None = None, description: str | 
         raise ValueError("No changes provided.")
 
     sets.append("updated_at = ?")
-    params.append(_utcnow_iso())
+    params.append(_utc_now_iso())
     params.append(int(project_id))
 
     with db_session() as conn:
@@ -679,7 +804,7 @@ def _ensure_conversation_exists(conn: sqlite3.Connection, conversation_id: str) 
         raise ValueError(f"Conversation not found: {conversation_id}")
 
 def create_conversation(conversation_id: str, title: str = "New chat") -> None:
-    now = _utcnow_iso()
+    now = _utc_now_iso()
     title = (title or "").strip() or "New chat"
     with db_session() as conn:
         conn.execute(
@@ -695,7 +820,7 @@ def update_conversation_title(conversation_id: str, title: str) -> bool:
     with db_session() as conn:
         cur = conn.execute(
             "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?",
-            (title, _utcnow_iso(), conversation_id),
+            (title, _utc_now_iso(), conversation_id),
         )
         return (cur.rowcount or 0) > 0
     
@@ -745,14 +870,14 @@ def set_conversation_project(conversation_id: str, project_id: int | None) -> No
     with db_session() as conn:
         conn.execute(
             "UPDATE conversations SET project_id = ?, updated_at = ? WHERE id = ?",
-            (project_id, _utcnow_iso(), conversation_id),
+            (project_id, _utc_now_iso(), conversation_id),
         )
 
 def set_conversation_archived(conversation_id: str, archived: bool) -> None:
     with db_session() as conn:
         conn.execute(
             "UPDATE conversations SET archived = ?, updated_at = ? WHERE id = ?",
-            (1 if archived else 0, _utcnow_iso(), conversation_id),
+            (1 if archived else 0, _utc_now_iso(), conversation_id),
         )
 
 def delete_conversation(conversation_id: str) -> None:
@@ -855,7 +980,7 @@ def save_conversation_summary(conversation_id: str, summary_text: str, model: st
     with db_session() as conn:
         conn.execute(
             "UPDATE conversations SET summary_json = ?, updated_at = ? WHERE id = ?",
-            (json.dumps(summary_obj), _utcnow_iso(), conversation_id),
+            (json.dumps(summary_obj), _utc_now_iso(), conversation_id),
         )
 
 # region Context Cache
@@ -906,7 +1031,7 @@ def save_context_cache(
         raise ValueError("payload is required.")
 
     payload_text = json.dumps(payload, ensure_ascii=False)
-    now = _utcnow_iso()
+    now = _utc_now_iso()
 
     with db_session() as conn:
         if not _table_exists(conn, "context_cache"):
@@ -979,7 +1104,7 @@ def add_message(
         meta: dict | None = None,
         author_meta: dict | None = None,
         ) -> None:
-    now = _utcnow_iso()
+    now = _utc_now_iso()
     meta_json = json.dumps(meta) if meta is not None else None
     author_meta_json = json.dumps(author_meta) if author_meta is not None else None
     with db_session() as conn:
@@ -1005,7 +1130,7 @@ def add_message(
                         t = t[:57] + "…"
                     conn.execute(
                         "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?",
-                        (t, _utcnow_iso(), conversation_id),
+                        (t, _utc_now_iso(), conversation_id),
                     )
 
 
@@ -1068,7 +1193,10 @@ def get_messages(conversation_id: str, limit: int = 200) -> list[dict]:
                 continue
             seen_groups.add(ab_group)
 
-        result.append({"role": r["role"], "created_at": r["created_at"], "content": r["content"], "author_meta": r["author_meta"]})
+        text = r["content"]
+        text = apply_house_markdown_normalization(text)
+        text = autolink_text(text)
+        result.append({"role": r["role"], "created_at": r["created_at"], "content": text, "author_meta": r["author_meta"]})
     return result
 
 
@@ -1124,7 +1252,7 @@ def create_memory(content: str, importance: int = 0, tags: Any = None) -> dict:
         raise ValueError("Memory content cannot be empty.")
 
     mem_id = str(uuid.uuid4())
-    now = _utcnow_iso()
+    now = _utc_now_iso()
     tags_text = _normalize_tags(tags)
 
     with db_session() as conn:
@@ -1206,7 +1334,7 @@ def add_memory_pin(text: str) -> int:
     with db_session() as conn:
         cur = conn.execute(
             "INSERT INTO memory_pins(text, created_at) VALUES(?, ?)",
-            (text, _utcnow_iso()),
+            (text, _utc_now_iso()),
         )
         if cur.lastrowid is None:
             raise RuntimeError("failed to retrieve last insert id")
@@ -1255,7 +1383,7 @@ def register_file(name: str, path: str, mime_type: str | None = None) -> dict:
         raise ValueError("File path cannot be empty.")
 
     fid = str(uuid.uuid4())
-    now = _utcnow_iso()
+    now = _utc_now_iso()
 
     with db_session() as conn:
         conn.execute(
@@ -1435,7 +1563,7 @@ def register_scoped_file(
         raise ValueError("File path cannot be empty.")
 
     fid = str(uuid.uuid4())
-    now = _utcnow_iso()
+    now = _utc_now_iso()
 
     with db_session() as conn:
         conn.execute(
@@ -1487,7 +1615,7 @@ def update_file_description(file_id: str, description: str | None) -> None:
         _ensure_file_exists(conn, file_id)
         conn.execute(
             "UPDATE files SET description = ?, updated_at = ? WHERE id = ?",
-            (desc, _utcnow_iso(), file_id),
+            (desc, _utc_now_iso(), file_id),
         )
 
 def get_file_by_id(file_id: str) -> dict:
@@ -1550,128 +1678,471 @@ def resolve_scope_for_file(file_row: dict) -> FileScope:
         scope_uuid=scope_uuid,
     )
 
+def gather_scoped_files(conversation_id: str) -> dict[str, dict]:
+    """
+    Collect all files that should be considered for this conversation:
+    - conversation-scoped
+    - project-scoped (if any)
+    - global/unassigned
+    Returns a dict keyed by file id -> file row, to dedupe across scopes.
+    """
+    sources = get_context_sources(conversation_id)
+    project_id = sources.get("project_id")
+
+    files_by_id: dict[str, dict] = {}
+
+    # Conversation-scoped files
+    for f in list_files_for_conversation(conversation_id, include_deleted=False):
+        files_by_id[f["id"]] = f
+
+    # Project-scoped files, if any
+    if project_id:
+        for f in list_files_for_project(project_id, include_deleted=False):
+            files_by_id[f["id"]] = f
+
+    # Global / unscoped files
+    for f in list_all_files(include_deleted=False):
+        scope_type = f.get("scope_type")
+        # Treat explicit "global" or completely unscoped files as global.
+        if not scope_type or scope_type == "global":
+            files_by_id[f["id"]] = f
+
+    print(f"[context] gather_scoped_files({conversation_id!r}) -> {len(files_by_id)} files")
+    return files_by_id
+
 # endregion
 # region Artifacts
 
-def create_file_artifacts(
+# region Artifact-File Hygeine
+
+def get_conversation_project_id(conn, conversation_id: str) -> int | None:
+    row = conn.execute(
+        "SELECT project_id FROM conversations WHERE id = ?",
+        (conversation_id,),
+    ).fetchone()
+    if not row:
+        return None
+    pid = row["project_id"]
+    return int(pid) if pid not in (None, "") else None
+
+
+def list_files_missing_artifacts_for_scope(
+    conn,
     *,
-    file_row: dict,
-    project_id: int,
-    scope_type: str | None,
-    scope_id: int | None,
-    scope_uuid: str | None,
-    chunks: list[str],
-    source_kind: str | None,
-    provenance: str | None,
-) -> list[str]:
+    scope_type: str,
+    scope_id: int | None = None,
+    scope_uuid: str | None = None,
+    limit: int = 10,
+) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT f.*
+        FROM files f
+        LEFT JOIN artifacts a
+          ON a.source_id = f.id
+         AND a.source_kind LIKE 'file:%'
+         AND a.is_deleted = 0
+        WHERE f.is_deleted = 0
+          AND f.scope_type = ?
+          AND ( ? IS NULL OR f.scope_id = ? )
+          AND ( ? IS NULL OR f.scope_uuid = ? )
+          AND a.id IS NULL
+        ORDER BY f.created_at DESC
+        LIMIT ?
+        """,
+        (scope_type, scope_id, scope_id, scope_uuid, scope_uuid, int(limit)),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def ensure_files_artifacted_for_conversation_conn(
+    conn,
+    *,
+    conversation_id: str,
+    limit_per_scope: int = 5,
+    include_global: bool = False,
+) -> dict:
     """
-    Insert one artifact row per chunk for a given file.
-
-    Handles soft-deleting the previous artifact set for that file_id.
-
-    Returns the list of artifact IDs.
+    Same as ensure_files_artifacted_for_conversation, but uses an existing conn.
     """
-    from .db import soft_delete_artifacts_for_file  # safe self-import once module is loaded
+    cid = (conversation_id or "").strip()
+    if not cid:
+        return {"checked": 0, "created": 0, "details": {}}
 
-    file_id = file_row.get("id")
-    if not file_id:
-        raise ValueError("file_row missing 'id'")
+    created_total = 0
+    checked_total = 0
+    details: dict[str, dict[str, int]] = {}
 
-    file_id_str = str(file_id)
+    def _heal(scope_label: str, scope_type: str, scope_id: int | None, scope_uuid: str | None) -> None:
+        nonlocal created_total, checked_total, details
 
-    # Soft delete old artifacts for this file.
-    try:
-        soft_delete_artifacts_for_file(file_id_str)
-    except Exception as e:
-        # Fallback if helper is missing or fails (during odd migration states).
-        now = _utcnow_iso()
-        with db_session() as conn:
-            conn.execute(
-                """
-                UPDATE artifacts
-                SET is_deleted = 1, deleted_at = ?
-                WHERE file_id = ?
-                  AND (is_deleted IS NULL OR is_deleted = 0)
-                """,
-                (now, file_id_str),
-            )
+        missing = list_files_missing_artifacts_for_scope(
+            conn,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            scope_uuid=scope_uuid,
+            limit=limit_per_scope,
+        )
+        checked_total += len(missing)
 
-    artifact_ids: list[str] = []
-    name = file_row.get("name") or Path(str(file_row.get("path", "file"))).name
-    tags: Any = None
-
-    for idx, chunk in enumerate(chunks):
-        if not chunk:
-            continue
-
-        # Create the artifact row itself.
-        try:
-            art = create_scoped_artifact(
-                project_id=project_id,
-                name=name,
-                content=chunk,
-                tags=tags,
-                scope_type=scope_type,
-                scope_id=scope_id,
-                scope_uuid=scope_uuid,
-                file_id=file_id_str,
-                source_kind=source_kind,
-                provenance=provenance,
-                chunk_index=idx,
-            )
-        except TypeError:
-            # Fallback for older signature without chunk_index.
-            art = create_scoped_artifact(
-                project_id=project_id,
-                name=name,
-                content=chunk,
-                tags=tags,
-                scope_type=scope_type,
-                scope_id=scope_id,
-                scope_uuid=scope_uuid,
-                file_id=file_id_str,
-                source_kind=source_kind,
-                provenance=provenance,
-            )
-
-        art_id = art.get("id")
-        if not art_id:
-            continue
-
-        artifact_ids.append(str(art_id))
-
-        # If this file is conversation-scoped, link the artifact to that conversation.
-        if scope_type == "conversation" and scope_uuid:
+        created = 0
+        for f in missing:
             try:
-                conversation_link_artifact(scope_uuid, str(art_id))
+                # Note: upsert_file_artifact hydrates file_row now (per your recent fix),
+                # so passing the DB row dict is enough.
+                upsert_file_artifact(
+                    conn,
+                    file_row=f,
+                    scope_type=scope_type,
+                    scope_id=str(scope_id) if scope_id is not None else (scope_uuid if scope_uuid else None),
+                )
+                created += 1
+                created_total += 1
             except Exception:
-                # Don’t explode artifact creation just because linking failed.
+                # your existing logging in upsert_file_artifact / artifactor should capture details
                 pass
 
-    return artifact_ids
+        details[scope_label] = {"missing_checked": len(missing), "created": created}
 
-def create_artifact(project_id: int, name: str, content: str, tags: Any = None) -> dict:
-    if project_id is None:
-        raise ValueError("project_id is required.")
-    name = (name or "").strip()
-    content = (content or "").strip()
-    tags_text = _normalize_tags(tags)  # from earlier memory helper; ok if tags is str/None/list
-    if not name:
-        raise ValueError("Artifact name cannot be empty.")
-    if not content:
-        raise ValueError("Artifact content cannot be empty.")
+    # Conversation-scoped files
+    _heal("conversation", "conversation", None, cid)
 
-    aid = str(uuid.uuid4())
+    # Project-scoped files (if conversation is in a project)
+    pid = get_conversation_project_id(conn, cid)
+    if pid is not None:
+        _heal("project", "project", pid, None)
+
+    # Optional global
+    if include_global:
+        _heal("global", "global", None, None)
+
+    return {"checked": checked_total, "created": created_total, "details": details}
+
+
+def ensure_files_artifacted_for_conversation(
+    *,
+    conversation_id: str,
+    limit_per_scope: int = 5,
+    include_global: bool = False,
+) -> dict:
+    """
+    Open its own DB session so main.py doesn't need db_session.
+    """
     with db_session() as conn:
-        _ensure_project_exists(conn, int(project_id))
-        conn.execute(
-            """
-            INSERT INTO artifacts (id, project_id, name, content, tags, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (aid, int(project_id), name, content, tags_text, _utcnow_iso()),
+        return ensure_files_artifacted_for_conversation_conn(
+            conn,
+            conversation_id=conversation_id,
+            limit_per_scope=limit_per_scope,
+            include_global=include_global,
         )
-    return {"id": aid}
+
+if (False): # Above function uses its own conn
+    def get_conversation_project_id(conn, conversation_id: str) -> int | None:
+        row = conn.execute(
+            "SELECT project_id FROM conversations WHERE id = ?",
+            (conversation_id,),
+        ).fetchone()
+        if not row:
+            return None
+        pid = row["project_id"]
+        return int(pid) if pid not in (None, "") else None
+
+if (False): # above version makes its own conn
+    def list_files_missing_artifacts_for_scope(
+        conn,
+        *,
+        scope_type: str,
+        scope_id: int | None = None,
+        scope_uuid: str | None = None,
+        limit: int = 10,
+    ) -> list[dict]:
+        """
+        Returns file rows in a scope that have no non-deleted file:* artifact.
+        """
+        rows = conn.execute(
+            """
+            SELECT f.*
+            FROM files f
+            LEFT JOIN artifacts a
+            ON a.source_id = f.id
+            AND a.source_kind LIKE 'file:%'
+            AND a.is_deleted = 0
+            WHERE f.is_deleted = 0
+            AND f.scope_type = ?
+            AND ( ? IS NULL OR f.scope_id = ? )
+            AND ( ? IS NULL OR f.scope_uuid = ? )
+            AND a.id IS NULL
+            ORDER BY f.created_at DESC
+            LIMIT ?
+            """,
+            (scope_type, scope_id, scope_id, scope_uuid, scope_uuid, int(limit)),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+if (False): # above version makes its own conn
+    def ensure_files_artifacted_for_conversation(
+        conn,
+        *,
+        conversation_id: str,
+        limit_per_scope: int = 5,
+        include_global: bool = False,
+    ) -> dict:
+        """
+        Best-effort self-heal:
+        - conversation-scoped files
+        - project-scoped files for the conversation's project_id
+        - optionally global files
+        Returns counts for diagnostics.
+        """
+        cid = (conversation_id or "").strip()
+        if not cid:
+            return {"checked": 0, "created": 0, "details": {}}
+
+        created_total = 0
+        checked_total = 0
+        details: dict[str, dict[str, int]] = {}
+
+        def _heal(scope_label: str, scope_type: str, scope_id: int | None, scope_uuid: str | None) -> None:
+            nonlocal created_total, checked_total, details
+            missing = list_files_missing_artifacts_for_scope(
+                conn,
+                scope_type=scope_type,
+                scope_id=scope_id,
+                scope_uuid=scope_uuid,
+                limit=limit_per_scope,
+            )
+            checked_total += len(missing)
+            created = 0
+            for f in missing:
+                try:
+                    # Upsert artifact and scope it consistently
+                    upsert_file_artifact(
+                        conn,
+                        file_row=f,
+                        scope_type=scope_type,
+                        scope_id=str(scope_id) if scope_id is not None else (scope_uuid if scope_uuid else None),
+                    )
+                    created += 1
+                    created_total += 1
+                except Exception:
+                    # your existing logging in upsert_file_artifact / artifactor will record details
+                    pass
+            details[scope_label] = {"missing_checked": len(missing), "created": created}
+
+        # Conversation scope
+        _heal("conversation", "conversation", None, cid)
+
+        # Project scope (if this conversation belongs to a project)
+        pid = get_conversation_project_id(conn, cid)
+        if pid is not None:
+            _heal("project", "project", pid, None)
+
+        # Global scope optional (only if you actually use global files)
+        if include_global:
+            _heal("global", "global", None, None)
+
+        return {"checked": checked_total, "created": created_total, "details": details}
+
+def count_files_missing_artifacts(conn, *, scope_type: str, scope_id: str | None) -> int:
+    """
+    Count files that exist in a scope but have no non-deleted artifact row.
+    """
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS n
+        FROM files f
+        LEFT JOIN artifacts a
+          ON a.source_kind LIKE 'file:%'
+         AND a.source_id = f.id
+         AND a.is_deleted = 0
+        WHERE f.is_deleted = 0
+          AND f.scope_type = ?
+          AND ( ( ? IS NULL AND f.scope_id IS NULL ) OR f.scope_id = ? )
+          AND a.id IS NULL
+        """,
+        (scope_type, scope_id, scope_id),
+    ).fetchone()
+    return int(row["n"] if row else 0)
+
+
+def list_files_missing_artifacts(conn, *, scope_type: str, scope_id: str | None, limit: int = 10) -> list[dict]:
+    """
+    Return file rows missing artifacts in this scope.
+    """
+    rows = conn.execute(
+        """
+        SELECT f.*
+        FROM files f
+        LEFT JOIN artifacts a
+          ON a.source_kind LIKE 'file:%'
+         AND a.source_id = f.id
+         AND a.is_deleted = 0
+        WHERE f.is_deleted = 0
+          AND f.scope_type = ?
+          AND ( ( ? IS NULL AND f.scope_id IS NULL ) OR f.scope_id = ? )
+          AND a.id IS NULL
+        ORDER BY f.created_at DESC
+        LIMIT ?
+        """,
+        (scope_type, scope_id, scope_id, int(limit)),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def ensure_scope_file_artifacts(conn, *, scope_type: str, scope_id: str | None, limit: int = 5) -> int:
+    """
+    Create artifacts for missing files in this scope, up to 'limit'.
+    Returns number artifacted.
+    """
+    missing = list_files_missing_artifacts(conn, scope_type=scope_type, scope_id=scope_id, limit=limit)
+    n = 0
+    for file_row in missing:
+        try:
+            upsert_file_artifact(conn, file_row=file_row, scope_type=scope_type, scope_id=scope_id)
+            n += 1
+        except Exception:
+            # log where you already log db/artifact failures
+            pass
+    return n
+
+# endregion
+
+# region Artifact and Sidecar Helpers
+
+def _deterministic_artifact_id(
+    *,
+    source_kind: str,                          # "file", "web", "memory", "message", "conversation_summary", etc.
+    source_id: str | None = None,       # file_id / memory_id / message_id / whatever
+    url: str | None = None,             # for web
+    conversation_id: str | None = None, # for message/summary
+    chunk_index: int | None = None,     # if you ever want deterministic per-chunk IDs
+) -> str:
+    """
+    Deterministic, filename-safe artifact id.
+
+    Examples:
+      file:     kind="file", source_id="<file_uuid>" => "file--<file_uuid>"
+      web/url:  kind="web",  url="https://..."       => "web--<sha1>"
+      memory:   kind="memory", source_id="<uuid>"    => "memory--<uuid>"
+      message:  kind="message", conversation_id="<cid>", source_id="<msgid>"
+               => "message--<cid>--<msgid>"
+      convo summary: kind="conversation_summary", conversation_id="<cid>"
+               => "conversation_summary--<cid>"
+    """
+
+    kind = (source_kind or "").strip().lower() or "misc"
+    # TODO is the below regex no longer needed now?
+    kind = kind.split(":", 1)[0]   # "file:pdf" -> "file"
+
+    def safe(s: str) -> str:
+        s = (s or "").strip()
+        return _SAFE_ID_RE.sub("_", s) if s else ""
+
+    def sha1_hex(s: str) -> str:
+        return hashlib.sha1(s.encode("utf-8", errors="ignore")).hexdigest()
+
+    if kind in ("web", "url"):
+        u = (url or source_id or "").strip()
+        if not u:
+            raise ValueError("deterministic_artifact_id: web/url requires url or source_id")
+        base = f"web--{sha1_hex(u)}"
+
+    elif kind in ("file", "upload"):
+        if not source_id:
+            raise ValueError("deterministic_artifact_id: file requires source_id (file_id)")
+        base = f"file--{safe(str(source_id))}"
+
+    elif kind in ("memory", "fact"):
+        if not source_id:
+            raise ValueError("deterministic_artifact_id: memory requires source_id (memory_id)")
+        base = f"memory--{safe(str(source_id))}"
+
+    elif kind in ("message", "chat_message"):
+        if not conversation_id or source_id is None:
+            raise ValueError("deterministic_artifact_id: message requires conversation_id and source_id (message_id)")
+        base = f"message--{safe(conversation_id)}--{safe(str(source_id))}"
+
+    elif kind in ("conversation_summary", "chat_summary"):
+        if not conversation_id:
+            raise ValueError("deterministic_artifact_id: conversation_summary requires conversation_id")
+        base = f"conversation_summary--{safe(conversation_id)}"
+
+    else:
+        # Generic: stable hash if only a blob key exists
+        if source_id:
+            base = f"{safe(kind)}--{safe(str(source_id))}"
+        elif url:
+            base = f"{safe(kind)}--{sha1_hex(url)}"
+        elif conversation_id:
+            base = f"{safe(kind)}--{safe(conversation_id)}"
+        else:
+            # last resort: deterministic but not meaningful
+            base = f"{safe(kind)}--{sha1_hex(kind)}"
+
+    if chunk_index is not None:
+        base = f"{base}--c{int(chunk_index)}"
+
+    return base
+
+def _safe_source_folder(source_kind: str) -> str:
+    """
+    "file:image" -> "file": note the folder normalization—Windows hates file:image as a directory name, so we store under file/ not file:image/
+    """
+    return source_kind.split(":", 1)[0] if source_kind else "misc"
+
+def _write_artifact_sidecar(*, source_kind: str, artifact_id: str, text: str) -> str:
+    rel = Path("articles") / _safe_source_folder(source_kind) / f"artifact.{artifact_id}.txt"
+    # relative path is what's stored in DB
+    abs_path = Path(DATA_DIR) / rel
+    ensure_parent_dir(abs_path)
+    abs_path.write_text(text, encoding="utf-8")
+    return str(rel).replace("\\", "/")
+
+def _delete_sidecar_if_exists(*, sidecar_path: str | None) -> None:
+    if not sidecar_path:
+        return
+    p = Path(DATA_DIR) / sidecar_path
+    try:
+        p.unlink()
+    except FileNotFoundError:
+        pass
+
+def _hydrate_artifact_content_text(art: dict) -> dict:
+    """
+    Ensure art['content_text'] is populated.
+
+    Rules:
+      1) If content_text already present and non-empty, keep it.
+      2) Else if sidecar_path exists, read it and put into content_text.
+    """
+    # Commented out:
+    # 3) Else (legacy fallback): if 'content' exists and is non-empty, copy into content_text.
+    #    This is only for transition; once you drop the column, this does nothing.
+    existing = art.get("content_text")
+    if existing is not None and str(existing).strip() != "":
+        return art
+
+    sidecar_path = (art.get("sidecar_path") or "").strip() or None
+    if sidecar_path:
+        p = Path(DATA_DIR) / sidecar_path
+        try:
+            art["content_text"] = p.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            art["content_text"] = ""
+        except Exception as exc:
+            print(f"[db] sidecar read failed for artifact {art.get('id')} path={sidecar_path}: {exc}")
+            art["content_text"] = ""
+    return art
+
+    # Legacy fallback until you fully remove artifacts.content
+    # legacy = art.get("content")
+    #if legacy is not None and str(legacy).strip() != "":
+    #    art["content_text"] = legacy
+    #else:
+    # art["content_text"] = ""
+    # return art
+
+# endregion
 
 def conversation_link_artifact(conversation_id: str, artifact_id: str) -> None:
     """
@@ -1701,14 +2172,92 @@ def conversation_link_artifact(conversation_id: str, artifact_id: str) -> None:
             (conversation_id, artifact_id),
         )
 
+def ensure_artifacts_for_files(files_by_id: dict[str, dict]) -> None:
+    """
+    For each file, if there are no (non-deleted) artifacts, call artifact_file(file_row).
+    Swallow errors per-file so one broken file doesn't kill the context build.
+
+    files_by_id is a dict of file_id -> file_row (as dict) for all files relevant to a context build, keyed by file_id which feeds into artifacts source_id.
+    """
+
+    print(f"[context] ensure_artifacts_for_files: checking {len(files_by_id)} files")     
+    for file_id, file_row in files_by_id.items():
+        # If file row doesn't have data, we are the data layer, so let's go get it!!
+        if file_row == None:
+            file_row = get_file_by_id(file_id)
+        try:
+            existing = list_artifacts_for_file(file_id, include_deleted=False)
+            print(f"[context] file {file_id}: {len(existing)} existing artifacts")
+        except Exception as exc:
+            print(f"[context] list_artifacts_for_file failed for file {file_id}: {exc}")
+            continue
+
+        if existing:
+            continue  # already artifacted
+
+        try:
+            artifact_file(file_row)
+        except Exception as exc:
+            # This might be "no project_id for global file" or a decode error; just log and move on.
+            print(f"[context] artifact_file failed for file {file_id}: {exc}")
+            continue
+
+def list_artifacts_for_file(
+    file_id: int | str,
+    include_deleted: bool = False,
+) -> list[dict]:
+    file_id_str = str(file_id).strip()
+    if not file_id_str:
+        raise ValueError("file_id is required.")
+
+    with db_session() as conn:
+        _ensure_file_exists(conn, file_id_str)
+        sql = """
+            SELECT *
+            FROM artifacts
+            WHERE source_id = ?
+        """
+        params: list[object] = [file_id_str]
+        if not include_deleted:
+            sql += " AND (is_deleted IS NULL OR is_deleted = 0)"
+        sql += " ORDER BY updated_at ASC" # chunk_index ASC, 
+        rows = conn.execute(sql, params).fetchall()
+
+    out = [dict(r) for r in rows]
+    for art in out:
+        _hydrate_artifact_content_text(art)
+
+    print(f"[db] list_artifacts_for_file({file_id_str!r}, include_deleted={include_deleted}) -> {len(out)} rows")
+    return out
+
+def list_artifacts_for_project(
+    project_id: int,
+    include_deleted: bool = False,
+    ) -> list[dict]:
+    if project_id is None:
+        raise ValueError("project_id is required.")
+
+    with db_session() as conn:
+        _ensure_project_exists(conn, int(project_id))
+        sql = """
+            SELECT *
+            FROM artifacts
+            WHERE project_id = ?
+        """
+        params: list[object] = [int(project_id)]
+        if not include_deleted:
+            sql += " AND (is_deleted IS NULL OR is_deleted = 0)"
+        rows = conn.execute(sql, params).fetchall()
+
+    out = [dict(r) for r in rows]
+    for art in out:
+        _hydrate_artifact_content_text(art)
+    return out
 
 def list_artifacts_for_conversation(
     conversation_id: str,
     include_deleted: bool = False,
 ) -> list[dict]:
-    """
-    Return all artifacts linked to a conversation, optionally excluding soft-deleted.
-    """
     conversation_id = (conversation_id or "").strip()
     if not conversation_id:
         raise ValueError("conversation_id is required.")
@@ -1726,61 +2275,10 @@ def list_artifacts_for_conversation(
             sql += " AND (a.is_deleted IS NULL OR a.is_deleted = 0)"
         rows = conn.execute(sql, params).fetchall()
 
-    return [dict(r) for r in rows]
-
-
-def list_artifacts_for_project(
-    project_id: int,
-    include_deleted: bool = False,
-) -> list[dict]:
-    """
-    Convenience to fetch all artifacts under a project.
-    Right now it's just a straight select on artifacts.project_id.
-    """
-    if project_id is None:
-        raise ValueError("project_id is required.")
-
-    with db_session() as conn:
-        _ensure_project_exists(conn, int(project_id))
-        sql = """
-            SELECT *
-            FROM artifacts
-            WHERE project_id = ?
-        """
-        params: list[object] = [int(project_id)]
-        if not include_deleted:
-            sql += " AND (is_deleted IS NULL OR is_deleted = 0)"
-        rows = conn.execute(sql, params).fetchall()
-
-    return [dict(r) for r in rows]
-
-def list_artifacts_for_file(
-    file_id: int | str,
-    include_deleted: bool = False,
-) -> list[dict]:
-    """
-    Return all artifacts associated with a given file_id,
-    ordered by chunk_index (if present) and updated_at.
-    """
-    file_id_str = str(file_id).strip()
-    if not file_id_str:
-        raise ValueError("file_id is required.")
-
-    with db_session() as conn:
-        _ensure_file_exists(conn, file_id_str)
-        sql = """
-            SELECT *
-            FROM artifacts
-            WHERE file_id = ?
-        """
-        params: list[object] = [file_id_str]
-        if not include_deleted:
-            sql += " AND (is_deleted IS NULL OR is_deleted = 0)"
-        sql += " ORDER BY chunk_index ASC, updated_at ASC"
-        rows = conn.execute(sql, params).fetchall()
-
-    print(f"[db] list_artifacts_for_file({file_id_str!r}, include_deleted={include_deleted}) -> {len(rows)} rows")
-    return [dict(r) for r in rows]
+    out = [dict(r) for r in rows]
+    for art in out:
+        _hydrate_artifact_content_text(art)
+    return out
 
 def soft_delete_artifacts_for_file(
     file_id: int | str,
@@ -1796,7 +2294,7 @@ def soft_delete_artifacts_for_file(
         raise ValueError("file_id is required.")
 
     deleted_by_user_id = (deleted_by_user_id or "").strip() or None
-    now = _utcnow_iso()
+    now = _utc_now_iso()
 
     with db_session() as conn:
         _ensure_file_exists(conn, file_id_str)
@@ -1806,102 +2304,12 @@ def soft_delete_artifacts_for_file(
             SET is_deleted = 1,
                 deleted_at = ?,
                 deleted_by_user_id = ?
-            WHERE file_id = ?
+            WHERE source_id = ?
               AND (is_deleted IS NULL OR is_deleted = 0)
             """,
             (now, deleted_by_user_id, file_id_str),
         )
         return cur.rowcount
-
-def create_scoped_artifact(
-    project_id: int,
-    name: str,
-    content: str,
-    tags: Any = None,
-    *,
-    scope_type: str | None = None,
-    scope_id: int | None = None,
-    scope_uuid: str | None = None,
-    file_id: str | None = None,
-    source_kind: str | None = None,
-    provenance: str | None = None,
-    chunk_index: int | None = None,
-) -> dict:
-    """
-    Extended artifact-creation helper that fills the additional schema columns.
-
-    This is the variant you should use for file-/scope-aware artifacts
-    and for multi-chunk file artifacts (via chunk_index).
-    """
-    if project_id is None:
-        raise ValueError("project_id is required.")
-    name = (name or "").strip()
-    content = (content or "").strip()
-    if not name:
-        raise ValueError("Artifact name cannot be empty.")
-    if not content:
-        raise ValueError("Artifact content cannot be empty.")
-
-    tags_text = _normalize_tags(tags)
-    scope_type = (scope_type or "").strip() or None
-    scope_uuid = (scope_uuid or "").strip() or None
-    file_id = (file_id or "").strip() or None
-    source_kind = (source_kind or "").strip() or None
-    provenance = (provenance or "").strip() or None
-
-    if chunk_index is None:
-        chunk_index_int: int | None = None
-    else:
-        try:
-            chunk_index_int = int(chunk_index)
-        except (TypeError, ValueError):
-            raise ValueError("chunk_index must be an integer or None.")
-        if chunk_index_int < 0:
-            raise ValueError("chunk_index cannot be negative.")
-
-    aid = str(uuid.uuid4())
-    now = _utcnow_iso()
-
-    with db_session() as conn:
-        _ensure_project_exists(conn, int(project_id))
-        conn.execute(
-            """
-            INSERT INTO artifacts (
-                id,
-                project_id,
-                name,
-                content,
-                tags,
-                scope_type,
-                scope_id,
-                scope_uuid,
-                file_id,
-                source_kind,
-                provenance,
-                chunk_index,
-                is_deleted,
-                updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
-            """,
-            (
-                aid,
-                int(project_id),
-                name,
-                content,
-                tags_text,
-                scope_type,
-                scope_id,
-                scope_uuid,
-                file_id,
-                source_kind,
-                provenance,
-                chunk_index_int,
-                now,
-            ),
-        )
-
-    return {"id": aid}
 
 def reset_all_artifacts() -> None:
     """
@@ -1931,5 +2339,180 @@ def reset_all_artifacts() -> None:
 
         conn.commit()
         print("[db] reset_all_artifacts: done")
+
+def rebuild_file_artifacts_batch(conn, *, data_dir="data", sidecar_threshold_bytes=200_000) -> int:
+    # IMPORTANT: import locally to avoid circular import at module load
+    from .artifactor import extract_text_from_file
+
+    rows = conn.execute("SELECT * FROM files").fetchall()
+    created = 0
+    for r in rows:
+        upsert_file_artifact(
+            conn,
+            file_row=r,
+            sidecar_threshold_bytes=sidecar_threshold_bytes,
+        )
+        created += 1
+    return created
+
+def artifact_file(file_row) -> str:
+    """
+    Convenience wrapper around upsert_file_artifact for end-to-end artifacting of a single file.
+    Helpful when calling from artifacor.py or other places where you don't already have a db connection.
+    Creates conn from db_session() and calls upsert_file_artifact.
+    """
+    with db_session() as conn:
+        aid = upsert_file_artifact(
+            conn,
+            file_row=file_row,
+        )
+    return aid
+
+def upsert_file_artifact(
+    conn,
+    *,
+    file_row: dict,  # or sqlite row; needs ["id"]
+    scope_type: str = "global",
+    scope_id: str | None = None,
+    sidecar_threshold_bytes: int = SIDECAR_THRESHOLD_BYTES,
+) -> str:
+    """
+    Ensure we have a complete file_row (path/mime_type/name) before extracting.
+    This fixes uploads that pass only {"id": ...}.
+    """
+    from .artifactor import extract_text_from_file
+
+    # Normalize to dict
+    if not isinstance(file_row, dict):
+        file_row = dict(file_row)
+
+    file_id = (file_row.get("id") or "").strip()
+    if not file_id:
+        raise ValueError("upsert_file_artifact: file_row missing id")
+
+    # HYDRATE if incomplete
+    if not file_row.get("path") or not file_row.get("name"):
+        row = conn.execute("SELECT * FROM files WHERE id = ?", (file_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"upsert_file_artifact: file not found: {file_id}")
+        file_row = dict(row)
+
+    title = (file_row.get("title") or None)
+
+    content_text, source_kind = extract_text_from_file(file_row)
+
+    artifact_id = upsert_artifact_text(
+        conn=conn,
+        source_id=file_id,
+        source_kind=source_kind,
+        title=title,
+        scope_type=scope_type,
+        scope_id=scope_id,
+        text=content_text,
+        sidecar_threshold_bytes=sidecar_threshold_bytes,
+    )
+    return artifact_id
+
+if (False): # Replaced by version that correctly calls artifactor
+    def upsert_file_artifact(
+        conn,
+        *,
+        file_row: dict, # or sqlite row; just needs ["id"] and optionally ["title"]
+        scope_type: str = "global",
+        scope_id: str | None = None,
+        sidecar_threshold_bytes: int = SIDECAR_THRESHOLD_BYTES,
+    ) -> str:
+        from .artifactor import extract_text_from_file
+
+        file_id = file_row["id"] if isinstance(file_row, dict) else file_row["id"]
+        title = (file_row.get("title") if isinstance(file_row, dict) else None) or None
+        content_text, source_kind = extract_text_from_file(file_row)
+        artifact_id = upsert_artifact_text(
+            conn=conn,
+            source_id=file_id,
+            source_kind=source_kind, # can be "file:pdf" etc; safe folder handled by _safe_source_folder
+            title=title,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            text=content_text,
+            sidecar_threshold_bytes=sidecar_threshold_bytes,
+        )
+        return artifact_id
+
+def upsert_artifact_text(
+    conn,
+    *,
+    source_kind: str = "unspecified",
+    source_id: str | None = None,
+    title: str | None = None,
+    scope_type: str = "global",
+    scope_id: str | None = None,
+    text: str,
+    sidecar_threshold_bytes: int = SIDECAR_THRESHOLD_BYTES,
+) -> str:
+    if text is None:
+        text = ""
+    norm = text.replace("\r\n", "\n").replace("\r", "\n")
+    content_bytes = len(norm.encode("utf-8"))
+    content_hash = _sha256_hex(norm)
+    
+    artifact_id = _deterministic_artifact_id(
+        source_kind=source_kind,
+        source_id=source_id,
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO artifacts (id, source_kind, source_id, title, scope_type, scope_id, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (artifact_id, source_kind, source_id, title, scope_type, scope_id, _utc_now_iso()),
+    )
+    # Hopefully that worked and now we have...
+    row = conn.execute(
+        "SELECT sidecar_path FROM artifacts WHERE id = ?",
+        (artifact_id,),
+    ).fetchone()
+    if not row:
+        raise ValueError(f"artifact not found: {artifact_id}")
+    old_sidecar_path = row[0]
+
+    use_sidecar = content_bytes > sidecar_threshold_bytes
+
+    if use_sidecar:
+        new_sidecar_path = _write_artifact_sidecar(
+            source_kind=source_kind,
+            artifact_id=artifact_id,
+            text=norm,
+        )
+        conn.execute(
+            """
+            UPDATE artifacts
+            SET content_text = NULL,
+                sidecar_path = ?,
+                content_hash = ?,
+                content_bytes = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (new_sidecar_path, content_hash, content_bytes, _utc_now_iso(), artifact_id),
+        )
+        if old_sidecar_path and old_sidecar_path != new_sidecar_path:
+            _delete_sidecar_if_exists(sidecar_path=old_sidecar_path)
+    else:
+        conn.execute(
+            """
+            UPDATE artifacts
+            SET content_text = ?,
+                sidecar_path = NULL,
+                content_hash = ?,
+                content_bytes = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (norm, content_hash, content_bytes, _utc_now_iso(), artifact_id),
+        )
+        if old_sidecar_path:
+            _delete_sidecar_if_exists(sidecar_path=old_sidecar_path)
+    return artifact_id
 
 # endregion
