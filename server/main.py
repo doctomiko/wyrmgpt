@@ -1,41 +1,52 @@
+import hashlib
+
+import anyio
 import asyncio
 import os
 import re
 import uuid
+import json
+import time
+import traceback
 from pathlib import Path
 from typing import Optional, cast, Any
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, Response, status, UploadFile, File
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-
-import traceback
-from contextlib import asynccontextmanager
-from pydantic import BaseModel
-from openai import OpenAI, APIStatusError
-# From openai/types/responses/response_create_params.py
-from openai.types.responses import ResponseInputParam
-
-# Support checking for models
-import time
-from typing import Any, Optional
-import json
-from pathlib import Path
-
-import anyio
 from functools import partial
+from openai import OpenAI, APIStatusError
+from openai.types.responses import ResponseInputParam
+# From openai/types/responses/response_create_params.py
+from contextlib import asynccontextmanager
+from pathlib import Path
+from pydantic import BaseModel
+
+from server.logging_helper import log_warn
+from .config import ContextConfig, QueryConfig, SummaryConfig, load_context_config, load_openai_config, load_query_config, load_summary_config
+from .context import _get_prompt, build_context, build_context_panel_payload, build_model_input, estimate_context_tokens
+from .markdown_helper import apply_house_markdown_normalization, autolink_text
+from .summary_helper import summarize_conversation_text
+from .query_retrieval import retrieve_chunks_for_message
 
 # region data layer imports
 
 from .db import (
     # Schema and connection
-    ensure_files_artifacted_for_conversation,
+    FileDeleteAction,
+    delete_file_cascade,
+    find_same_scope_same_name_file,
     init_schema,
     db_debug_info,
     # Chat Messages
     add_message,
     get_messages,
     get_messages_raw,
+    list_files_by_sha256,
+    list_files_same_name_any_scope,
+    replace_file_in_place,
+    save_conversation_summary_artifact,
+    scope_rank,
     update_ab_canonical,
     # Converstaions
     list_conversations,
@@ -46,7 +57,7 @@ from .db import (
     update_conversation_title,
     get_conversation_context,
     get_transcript_for_summary,
-    save_conversation_summary,
+    # save_conversation_summary,
     # Projects and subordinate entities
     list_projects,
     get_or_create_project,
@@ -66,6 +77,8 @@ from .db import (
     list_files_for_project,
     list_all_files,
     get_files_summary,
+    ensure_files_artifacted_for_conversation,
+    get_scoped_artifact_debug,
     # Context cache
     invalidate_context_cache_for_conversation,
     invalidate_context_cache_for_project,
@@ -82,9 +95,6 @@ from .db import (
 )
 
 # endregion
-
-from .context import build_context, build_model_input, estimate_context_tokens
-from .markdown_helper import apply_house_markdown_normalization, autolink_text
 
 DEBUG_ERRORS = os.getenv("DEBUG_ERRORS", "1") == "1"
 
@@ -267,6 +277,16 @@ class CorpusSearchRequest(BaseModel):
     limit: int = 10
     include_global: bool = False
 
+class FilePreflightItem(BaseModel):
+    name: str
+    sha256: str
+    scope_type: str
+    conversation_id: str | None = None
+    project_id: int | None = None
+
+class FilePreflightRequest(BaseModel):
+    files: list[FilePreflightItem]
+
 # endregion
 
 # region Helper functions
@@ -367,12 +387,18 @@ def chat(req: ChatRequest, model: str | None = None):
     cid = req.conversation_id or str(uuid.uuid4())
     if req.conversation_id is None:
         create_conversation(cid)
-
-    raw_input = build_model_input(cid, history_limit=200)
+    # Call before build_model_input to ensure that we use it to search RAG
+    heal = ensure_files_artifacted_for_conversation(conversation_id=cid, limit_per_scope=5, include_global=False)
+    if heal["created"]:
+        print("self-heal artifacts: cid=%s heal=%s", cid, heal)
+    full = postprocess_text(req.message)
+    if full:
+        add_message(cid, "user", full)
+    # End to "Call" above.
+    raw_input = build_model_input(cid, full)
     model_input = cast(ResponseInputParam, raw_input)
     print("[debug] model_input:", json.dumps(model_input, indent=2)[:5000])
     model = (req.model or model or MODEL).strip()
-
     def gen():
         parts: list[str] = []
         try:
@@ -390,10 +416,6 @@ def chat(req: ChatRequest, model: str | None = None):
                     elif event.type == "response.error":
                         yield "\n[error]\n"
 
-                heal = ensure_files_artifacted_for_conversation(conversation_id=cid, limit_per_scope=5, include_global=False)
-                if heal["created"]:
-                    print("self-heal artifacts: cid=%s heal=%s", cid, heal)
-
                 full = postprocess_text("".join(parts))
                 if full:
                     add_message(cid, "assistant", full, meta={"model": model})
@@ -403,11 +425,6 @@ def chat(req: ChatRequest, model: str | None = None):
     resp = StreamingResponse(gen(), media_type="text/plain; charset=utf-8")
     resp.headers["X-Conversation-Id"] = cid
     return resp
-
-from openai import APIStatusError
-import json
-import uuid
-from fastapi.responses import JSONResponse
 
 def _openai_error_payload(e: APIStatusError) -> dict:
     # Pull out useful fields safely
@@ -567,7 +584,7 @@ async def chat_ab(req: ABChatRequest):
     if full:
         add_message(cid, "user", full)
 
-    model_input = build_model_input(cid, history_limit=200)
+    model_input = build_model_input(cid, req.message)
     model_a = (req.model_a or MODEL).strip()
     model_b = (req.model_b or model_a).strip()
 
@@ -943,7 +960,9 @@ def api_delete_conversation(conversation_id: str):
     return {"deleted": True, "conversation_id": conversation_id}
 
 @app.post("/api/conversations/{conversation_id}/summarize")
-def api_summarize_conversation(conversation_id: str):
+def api_summarize_conversation(conversation_id: str, sum_cfg: SummaryConfig | None = None):
+    sum_cfg = sum_cfg or load_summary_config()
+    oai_cfg = load_openai_config()
     try:
         title, transcript = get_transcript_for_summary(conversation_id)
     except KeyError:
@@ -951,26 +970,43 @@ def api_summarize_conversation(conversation_id: str):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    system_prompt = (
-        "You are a helpful assistant that summarizes chat conversations for later review. "
-        "Write a concise summary (1–3 short paragraphs) capturing key decisions, questions, and outcomes. "
-        "Do NOT add new advice – only summarize what was actually said."
+    system_prompt = _get_prompt(
+        default_prompt=sum_cfg.summary_conversation_prompt,
+        filepath=sum_cfg.summary_conversation_prompt_file,
+        cfg_default="SUMMARY_CONVO_PROMPT",
+        cfg_filepath="SUMMARY_CONVO_PROMPT_FILE",
     )
+    # TODO phase out MODEL completely
+    model = oai_cfg.summary_model or MODEL
+    if (False):
+        try:
+            resp = client.responses.create(
+                model=model,
+                input=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Title: {title}\n\nFull transcript:\n\n{transcript}"},
+                ],
+                max_output_tokens=sum_cfg.summary_max_tokens,
+            )
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Failed to summarize: {e}")
 
-    model = MODEL
     try:
-        resp = client.responses.create(
+        summary_text = summarize_conversation_text(
+            client=client,
             model=model,
-            input=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Title: {title}\n\nFull transcript:\n\n{transcript}"},
-            ],
-            max_output_tokens=400,
+            title=title,
+            transcript=transcript,
+            cfg=sum_cfg,
+            system_prompt=system_prompt,
         )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to summarize: {e}")
-
-    summary_text = _extract_output_text(resp) or ""
+    # summary_text = (_extract_output_text(resp) or "").strip()
+    summary_text = (summary_text or "").strip()
+    if not summary_text:
+        raise HTTPException(status_code=502, detail="Summarizer returned empty output.")
+    
     summary_message = f"Summary of “{title}”:\n\n{summary_text}"
 
     full = postprocess_text(summary_message)
@@ -981,7 +1017,8 @@ def api_summarize_conversation(conversation_id: str):
             full,
             meta={"summary": True, "model": model},
         )
-        save_conversation_summary(conversation_id, full, model)
+        save_conversation_summary_artifact(conversation_id, summary_text, model)
+        # save_conversation_summary(conversation_id, full, model)
 
     return {"conversation_id": conversation_id, "summary": summary_text, "model": model}
 
@@ -1005,27 +1042,110 @@ def api_get_title(conversation_id: str):
     return JSONResponse({"title": t})
 
 @app.get("/api/conversation/{conversation_id}/context")
-def api_conversation_context(conversation_id: str, preview_limit: int = 20):
-    # TODO Stop using a second version of the truth to show the UI what we're sending to the LLM
-    ctx = build_context(conversation_id,  preview_limit=preview_limit)
-    model_input = build_model_input(conversation_id, history_limit=200)
+def api_conversation_context(
+    conversation_id: str,
+    user_text: str = "",
+    preview_limit: int | None = None,
+):
+    ctx_cfg = load_context_config()
+    if preview_limit is not None:
+        ctx_cfg = ContextConfig(
+            memory_pin_limit=ctx_cfg.memory_pin_limit,
+            history_limit=ctx_cfg.history_limit,
+            preview_limit=max(1, int(preview_limit)),
+            estimate_model=ctx_cfg.estimate_model,
+        )
 
-    assembled = [{"role": m.get("role"), "content": _preview_content(m.get("content"))} for m in model_input]
+    payload = build_context_panel_payload(
+        conversation_id=conversation_id,
+        user_text=user_text or "",
+        ctx_cfg=ctx_cfg,
+    )
+    return JSONResponse(payload)
 
-    preview = assembled[-preview_limit:] if preview_limit > 0 else assembled
-    ctx["assembled_input_preview"] = preview
-    ctx["assembled_input_count"] = len(assembled)
-    ctx["assembled_input_preview_limit"] = preview_limit
-    ctx["assembled_input_preview_truncated"] = len(preview) < len(assembled)
+if (False):
+    @app.get("/api/conversation/{conversation_id}/context")
+    def api_conversation_context(
+        conversation_id: str,
+        user_text: str = "",
+        preview_limit: int | None = None,
+    ):
+        ctx_cfg = load_context_config()
+        if preview_limit is not None:
+            ctx_cfg = ContextConfig(
+                memory_pin_limit=ctx_cfg.memory_pin_limit,
+                history_limit=ctx_cfg.history_limit,
+                preview_limit=max(1, int(preview_limit)),
+                estimate_model=ctx_cfg.estimate_model,
+            )
 
-    # Get the estimated token count for this context; useful for cost management, debugging, and deciding when to trim or summarize.
-    token_stats = estimate_context_tokens(conversation_id, history_limit=200, model="gpt-4.1-mini")
-    # You can either embed into ctx or return a wrapper. I’d embed; it’s simpler.
-    ctx["token_stats"] = token_stats
-    try:
+        ctx = build_context(
+            conversation_id=conversation_id,
+            user_text=user_text or "",
+            ctx_cfg=ctx_cfg,
+        )
         return JSONResponse(ctx)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Not Found")
+
+@app.get("/api/conversation/{conversation_id}/artifacts/debug")
+def api_conversation_artifacts_debug(conversation_id: str):
+    query_cfg = load_query_config()
+    data = get_scoped_artifact_debug(
+        conversation_id,
+        include_global=query_cfg.query_global_artifacts,
+        preview_chars=180,
+    )
+    return JSONResponse(data)
+
+if (False): # new version accepts user input
+    @app.get("/api/conversation/{conversation_id}/context")
+    def api_conversation_context(conversation_id: str):
+        # You know what's even better? One function to rule them all!
+        # Note that build_context does do RAG but doesn't expand files and stuff
+
+        # Do not bother, they will be lazy loaded
+        # ctx_cfg = load_context_config()
+        # query_cfg = load_query_config()
+        user_text: str = "" # We don't have a user text in this call
+
+        ctx = build_context(conversation_id, user_text) # , ctx_cfg, query_cfg
+        if (False):
+            # we no longer need model input or assembled_input becuase everything we want to have comes in build_context now
+            model_input = build_model_input(conversation_id, user_text, ctx_cfg, query_cfg, ctx=ctx)
+            assembled_input = [{"role": m.get("role"), "content": _preview_content(m.get("content"))} for m in model_input]
+            preview = assembled_input[-ctx_cfg.preview_limit:] if ctx_cfg.preview_limit > 0 else assembled_input
+            ctx["assembled_input_preview"] = preview
+            ctx["assembled_input_count"] = len(assembled)
+            ctx["assembled_input_preview_limit"] = ctx_cfg.preview_limit
+            ctx["assembled_input_preview_truncated"] = len(preview) < len(assembled)
+            token_stats = estimate_context_tokens(conversation_id, ctx_cfg, user_text, model=ctx_cfg.estimate_model)
+            ctx["token_stats"] = token_stats
+
+        return JSONResponse(ctx)
+
+if (False):
+    @app.get("/api/conversation/{conversation_id}/context")
+    def api_conversation_context(conversation_id: str):
+        ctx_cfg = load_context_config()
+        user_text: str = "" # we don't know the user's text so we make whatever we can
+        ctx = build_context(conversation_id, user_text)
+        model_input = build_model_input(conversation_id, user_text)
+
+        assembled = [{"role": m.get("role"), "content": _preview_content(m.get("content"))} for m in model_input]
+
+        preview = assembled[-ctx_cfg.preview_limit:] if ctx_cfg.preview_limit > 0 else assembled
+        ctx["assembled_input_preview"] = preview
+        ctx["assembled_input_count"] = len(assembled)
+        ctx["assembled_input_preview_limit"] = ctx_cfg.preview_limit
+        ctx["assembled_input_preview_truncated"] = len(preview) < len(assembled)
+
+        # Get the estimated token count for this context; useful for cost management, debugging, and deciding when to trim or summarize.
+        token_stats = estimate_context_tokens(conversation_id, ctx_cfg, user_text, model="gpt-4.1-mini")
+        # You can either embed into ctx or return a wrapper. I’d embed; it’s simpler.
+        ctx["token_stats"] = token_stats
+        try:
+            return JSONResponse(ctx)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Not Found")
 
 # endregion
 
@@ -1168,6 +1288,56 @@ def api_project_add_file(project_id: int, file_id: str):
 
 # region Upload Endpoints
 
+@app.post("/api/files/preflight_upload")
+def api_preflight_upload(req: FilePreflightRequest):
+    out = []
+
+    for item in req.files:
+        dupes = list_files_by_sha256(item.sha256, include_deleted=False)
+        same_name = list_files_same_name_any_scope(item.name, include_deleted=False)
+
+        out.append({
+            "name": item.name,
+            "sha256": item.sha256,
+            "duplicate_count": len(dupes),
+            "duplicates": [
+                {
+                    "id": f["id"],
+                    "name": f["name"],
+                    "scope_type": f.get("scope_type"),
+                    "scope_id": f.get("scope_id"),
+                    "scope_uuid": f.get("scope_uuid"),
+                    "path": f.get("path"),
+                }
+                for f in dupes
+            ],
+            "same_name_count": len(same_name),
+            "same_name_conflicts": [
+                {
+                    "id": f["id"],
+                    "name": f["name"],
+                    "scope_type": f.get("scope_type"),
+                    "scope_id": f.get("scope_id"),
+                    "scope_uuid": f.get("scope_uuid"),
+                    "sha256": f.get("sha256"),
+                    "same_hash": (f.get("sha256") or "").lower() == item.sha256.lower(),
+                }
+                for f in same_name
+            ],            
+        })
+
+    return JSONResponse({"files": out})
+
+def _sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
 @app.post("/api/upload_file")
 async def api_upload_file(
     scope_type: str,
@@ -1227,15 +1397,19 @@ async def api_upload_file(
             continue
         orig_name = Path(upload.filename).name
 
-        # avoid overwriting existing files
-        dest_path = dest_root / orig_name
-        counter = 1
-        while dest_path.exists():
-            dest_path = dest_root / f"{dest_path.stem}_{counter}{dest_path.suffix}"
-            counter += 1
+        if (False): # Old methodology replaced by sha256 de-dupe w/ warnings
+            # avoid overwriting existing files
+            dest_path = dest_root / orig_name
+            counter = 1
+            while dest_path.exists():
+                dest_path = dest_root / f"{dest_path.stem}_{counter}{dest_path.suffix}"
+                counter += 1
 
-        # stream the file to disk
-        with dest_path.open("wb") as out_f:
+        final_path = dest_root / orig_name
+        temp_path = dest_root / f".{orig_name}.uploading.{uuid.uuid4().hex}.tmp"
+
+        # stream upload to TEMP file first
+        with temp_path.open("wb") as out_f:
             while True:
                 chunk = await upload.read(1024 * 1024)
                 if not chunk:
@@ -1243,31 +1417,144 @@ async def api_upload_file(
                 out_f.write(chunk)
         await upload.close()
 
-        # register in DB with scoped metadata
-        file_row = register_scoped_file(
+        file_sha256 = _sha256_file(temp_path)
+
+        existing_same_scope = find_same_scope_same_name_file(
             name=orig_name,
-            path=str(dest_path),
-            mime_type=upload.content_type,
             scope_type=scope_type_norm,
             scope_id=proj_id if scope_type_norm == "project" else None,
             scope_uuid=conv_id if scope_type_norm == "conversation" else None,
-            source_kind="upload",
-            url=None,
-            provenance=f"upload:{scope_type_norm}",
+            include_deleted=False,
         )
-        fid = file_row["id"]
 
-        if scope_type_norm == "conversation" and conv_id:
-            conversation_link_file(conv_id, fid)
-            invalidate_context_cache_for_conversation(conv_id)
-        elif scope_type_norm == "project" and proj_id is not None:
-            db_project_add_file(proj_id, fid)
-            invalidate_context_cache_for_project(proj_id)
+        same_name_any_scope = list_files_same_name_any_scope(orig_name, include_deleted=False)
+        higher_scope_same_hash = None
+        for f in same_name_any_scope:
+            if (f.get("sha256") or "").lower() != file_sha256.lower():
+                continue
+            if scope_rank(scope_type_norm) > scope_rank(f.get("scope_type")):
+                higher_scope_same_hash = f
+                break
+        if higher_scope_same_hash:
+            delete_file_cascade(higher_scope_same_hash["id"])        
 
-        # kick off artifacting for this file (best-effort; logs on failure)
-        artifact_file(file_row)
+        if existing_same_scope:
+            #old_path = Path(existing_same_scope["path"])
 
-        results.append({"id": fid, "name": orig_name, "path": str(dest_path)})
+            if (False):
+                # move temp into final canonical filename
+                if final_path.exists():
+                    try:
+                        final_path.unlink()
+                    except Exception:
+                        pass
+                temp_path.replace(final_path)
+
+            # safer replacement: move old canonical aside first, then swap temp into place
+            backup_old = None
+            if final_path.exists():
+                backup_old = final_path.with_name(f".{final_path.name}.replaced.{uuid.uuid4().hex}.bak")
+                final_path.replace(backup_old)
+
+            try:
+                temp_path.replace(final_path)
+            except Exception:
+                # rollback: restore original file if replacement failed
+                if backup_old and backup_old.exists():
+                    try:
+                        backup_old.replace(final_path)
+                    except Exception:
+                        pass
+                raise
+            else:
+                # replacement succeeded; remove old backup
+                if backup_old and backup_old.exists():
+                    try:
+                        backup_old.unlink()
+                    except Exception:
+                        pass
+            file_row = replace_file_in_place(
+                existing_same_scope["id"],
+                path=str(final_path),
+                mime_type=upload.content_type,
+                sha256=file_sha256,
+            )
+            fid = file_row["id"]
+
+            # keep scope links alive / idempotent
+            if scope_type_norm == "conversation" and conv_id:
+                conversation_link_file(conv_id, fid)
+                invalidate_context_cache_for_conversation(conv_id)
+            elif scope_type_norm == "project" and proj_id is not None:
+                db_project_add_file(proj_id, fid)
+                invalidate_context_cache_for_project(proj_id)
+
+            # re-artifact / reindex through normal path
+            artifact_file(file_row)
+        else:
+            if final_path.exists():
+                # if some stray file exists on disk but no live DB row owns it, keep temp unique
+                final_path = dest_root / f"{final_path.stem}.{uuid.uuid4().hex}{final_path.suffix}"
+
+            temp_path.replace(final_path)
+
+            file_row = register_scoped_file(
+                name=orig_name,
+                path=str(final_path),
+                mime_type=upload.content_type,
+                sha256=file_sha256,
+                scope_type=scope_type_norm,
+                scope_id=proj_id if scope_type_norm == "project" else None,
+                scope_uuid=conv_id if scope_type_norm == "conversation" else None,
+                source_kind="upload",
+                url=None,
+                provenance=f"upload:{scope_type_norm}",
+            )
+            fid = file_row["id"]
+
+            if scope_type_norm == "conversation" and conv_id:
+                conversation_link_file(conv_id, fid)
+                invalidate_context_cache_for_conversation(conv_id)
+            elif scope_type_norm == "project" and proj_id is not None:
+                db_project_add_file(proj_id, fid)
+                invalidate_context_cache_for_project(proj_id)
+            artifact_file(file_row)        
+
+        # stream the file to disk
+        if (False):
+            with dest_path.open("wb") as out_f:
+                while True:
+                    chunk = await upload.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    out_f.write(chunk)
+
+            await upload.close()
+
+            # register in DB with scoped metadata
+            file_row = register_scoped_file(
+                name=orig_name,
+                path=str(dest_path),
+                mime_type=upload.content_type,
+                scope_type=scope_type_norm,
+                scope_id=proj_id if scope_type_norm == "project" else None,
+                scope_uuid=conv_id if scope_type_norm == "conversation" else None,
+                source_kind="upload",
+                url=None,
+                provenance=f"upload:{scope_type_norm}",
+            )
+            fid = file_row["id"]
+
+            if scope_type_norm == "conversation" and conv_id:
+                conversation_link_file(conv_id, fid)
+                invalidate_context_cache_for_conversation(conv_id)
+            elif scope_type_norm == "project" and proj_id is not None:
+                db_project_add_file(proj_id, fid)
+                invalidate_context_cache_for_project(proj_id)
+            # kick off artifacting for this file (best-effort; logs on failure)
+            artifact_file(file_row)
+
+        results.append({"id": fid, "name": orig_name, "path": str(final_path)}) # dest_path
 
     return {"files": results}
 
@@ -1281,7 +1568,6 @@ def api_list_files():
     """
     files = list_all_files()
     return JSONResponse({"files": files})
-
 
 @app.get("/api/files/summary")
 def api_files_summary():
@@ -1362,7 +1648,7 @@ async def api_upload_conversation_file(conversation_id: str, file: UploadFile = 
             name=file.filename,
             path=str(dest_path),
             mime_type=file.content_type,
-            scope_type="chat",
+            scope_type="conversation",
             scope_id=None,
             scope_uuid=conversation_id,
             source_kind="upload",
@@ -1409,7 +1695,6 @@ def api_list_conversation_files(conversation_id: str):
         raise HTTPException(status_code=400, detail=str(e))
 
     return JSONResponse({"conversation_id": conversation_id, "files": files})
-
 
 @app.post("/api/projects/{project_id}/files/upload")
 async def api_upload_project_file(project_id: int, file: UploadFile = File(...)):
@@ -1479,7 +1764,6 @@ async def api_upload_project_file(project_id: int, file: UploadFile = File(...))
         }
     )
 
-
 @app.get("/api/projects/{project_id}/files")
 def api_list_project_files(project_id: int):
     """
@@ -1491,6 +1775,17 @@ def api_list_project_files(project_id: int):
         raise HTTPException(status_code=400, detail=str(e))
 
     return JSONResponse({"project_id": project_id, "files": files})
+
+@app.delete("/api/files/{file_id}")
+def api_delete_file(file_id: str):
+    try:
+        out = delete_file_cascade(
+            file_id,
+            delete_disk_action=FileDeleteAction.MOVE
+        )
+        return JSONResponse(out)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 # endregion
 
@@ -1562,15 +1857,25 @@ def corpus_search(req: CorpusSearchRequest):
     cid = (req.conversation_id or "").strip()
     q = (req.query or "").strip()
 
+    # We normally would bother to load here, since function will load QueryConfig
+    # but we need it anyway for healing function
+    cfg: QueryConfig = load_query_config()
+    include_global=req.include_global
+    if req.include_global:
+        include_global=req.include_global
+        log_warn("corpus_search is using req.include_global which may override cfg.query_global_artifacts, but only for healing functions.")
+    else:
+        include_global=cfg.query_global_artifacts
     # Optional: self-heal missing artifacts before searching
-    ensure_files_artifacted_for_conversation(conversation_id=cid, limit_per_scope=5, include_global=req.include_global)
+    ensure_files_artifacted_for_conversation(conversation_id=cid, limit_per_scope=5, include_global=include_global)
 
     rows = search_corpus_for_conversation(
         conversation_id=cid,
         query=q,
         limit=req.limit,
-        include_global=req.include_global,
+        cfg=cfg,
+        #include_global=req.include_global,
     )
     return {"ok": True, "results": rows}
 
-# region
+# endregion

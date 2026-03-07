@@ -1,5 +1,6 @@
 # server/db.py
 from asyncio import log
+from enum import Enum
 import hashlib
 import sqlite3
 import json
@@ -12,10 +13,12 @@ from datetime import datetime, timezone
 from contextlib import contextmanager
 from typing import Any, Iterable, Iterator
 
+from .logging_helper import log_debug
+from .config import QueryConfig, load_query_config
 from .markdown_helper import autolink_text, apply_house_markdown_normalization
 from .chunking import chunk_text_with_hints
 # Support legacy migrations from v1-v7. You can remove this after a few releases once most users have migrated or started fresh.
-from .db_migrate import migrate_schema_legacy
+from .db_migrate import _migrate_schema_legacy
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
@@ -23,7 +26,7 @@ DB_PATH = DATA_DIR / "callie_mvp.sqlite3"
 _VALID_TABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 11
 
 SIDECAR_THRESHOLD_BYTES = 500 * 1024 # 500KB default threshold for when to use sidecar files for artifact content
 
@@ -209,7 +212,7 @@ def drop_empty_satellite_tables(conn: sqlite3.Connection | None = None) -> list[
 
 # region Latest migrations
 
-def migrate_schema_v8(conn: sqlite3.Connection) -> None:
+def _migrate_schema_v8(conn: sqlite3.Connection) -> None:
     """
     This migration makes changes to artifacts in support of future RAG implementation
     """
@@ -361,6 +364,9 @@ def _apply_schema_v8(conn: sqlite3.Connection) -> None:
             is_deleted INTEGER NOT NULL DEFAULT 0,
             deleted_at TEXT,
             deleted_by_user_id TEXT,
+
+            -- v11 additions (sha256 hash)
+            sha256 TEXT,
 
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -620,13 +626,23 @@ def _migrate_schema_v9(conn) -> None:
         """
     )
 
+def _migrate_schema_v10(conn) -> None:
+    _add_column_if_missing(conn, "artifacts", "summary_text", "TEXT")
+    _add_column_if_missing(conn, "artifacts", "summary_model", "TEXT")
+    _add_column_if_missing(conn, "artifacts", "summary_input_hash", "TEXT")
+    _add_column_if_missing(conn, "artifacts", "summary_updated_at", "TEXT")
+
+def _migrate_schema_v11(conn) -> None:
+    _add_column_if_missing(conn, "files", "sha256", "TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_files_sha256 ON files(sha256)")
+
 # endregion
 
 # region Clean builds for new databases
 
 # endregion
 
-def init_schema_start(conn: sqlite3.Connection) -> int:
+def _start_schema_init(conn: sqlite3.Connection) -> int:
     """
     Returns the current schema version, or 0 if not set. This also ensures the schema_meta table exists.
     """
@@ -640,7 +656,12 @@ def init_schema_start(conn: sqlite3.Connection) -> int:
     current = int(row["value"]) if row and str(row["value"]).isdigit() else 0
     return current
 
-def init_schema_end(conn: sqlite3.Connection, current: int) -> None:
+def _end_schema_init(conn: sqlite3.Connection, current: int) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema_version', ?)",
+        (str(SCHEMA_VERSION),),
+    )
+
     conn.execute("PRAGMA foreign_keys = ON;")
     print(f"DB initialized with schema version {SCHEMA_VERSION} (was {current})")
     # TODO implement seperate log file and log there as well.
@@ -649,7 +670,7 @@ def init_schema_end(conn: sqlite3.Connection, current: int) -> None:
 def init_schema() -> None:
     with db_session() as conn:
         # Get the current schema version, or 0 if not set. This also ensures the schema_meta table exists.
-        current = init_schema_start(conn);
+        current = _start_schema_init(conn);
         # Comment the next line after cached artifacts are cleared
         # You should not need to do this very often. We'll work on a button later.
         # reset_all_artifacts()
@@ -657,7 +678,9 @@ def init_schema() -> None:
             # Clean slate - create all tables
             _apply_schema_v8(conn)
             _migrate_schema_v9(conn)
-            init_schema_end(conn, current)
+            _migrate_schema_v10(conn)
+            _migrate_schema_v11(conn)
+            _end_schema_init(conn, current)
             return
 
         if current < 7:
@@ -684,16 +707,18 @@ def init_schema() -> None:
             if resp != "MIGRATE":
                 raise RuntimeError("Aborted legacy migration. Delete DB and restart.")
 
-            migrate_schema_legacy(conn)
-            migrate_schema_v8(conn)
-        else:
-            if current == 7:
-                migrate_schema_v8(conn)
-            else:
-                # doens't do anything if you are on v9
-                _migrate_schema_v9(conn)
+            _migrate_schema_legacy(conn)
+            _migrate_schema_v8(conn)
+        if current < 8:
+            _migrate_schema_v8(conn)
+        if current < 9:
+            _migrate_schema_v9(conn)
+        if current < 10:
+            _migrate_schema_v10(conn)
+        if current < 11:
+            _migrate_schema_v11(conn)
 
-        init_schema_end(conn, current)
+        _end_schema_init(conn, current)
 
 # endregion
 
@@ -749,6 +774,16 @@ def get_global_project_id() -> int:
         )
         newid: int = cur.lastrowid # type: ignore[union-attr]
         return newid
+
+def get_conversation_project_id(conn, conversation_id: str) -> int | None:
+    row = conn.execute(
+        "SELECT project_id FROM conversations WHERE id = ?",
+        (conversation_id,),
+    ).fetchone()
+    if not row:
+        return None
+    pid = row["project_id"]
+    return int(pid) if pid not in (None, "") else None
 
 def get_or_create_project(name: str) -> dict:
     name = (name or "").strip()
@@ -889,6 +924,33 @@ def project_import(
 
 # region Conversations
 
+def _scope_keys_for_conversation(conn, conversation_id: str, include_global: bool = False) -> list[str]:
+    cid = (conversation_id or "").strip()
+    keys = [f"conversation:{cid}", f"chat:{cid}"]  # TODO remove chat alias after DB cleanup
+
+    row = conn.execute("SELECT project_id FROM conversations WHERE id = ?", (cid,)).fetchone()
+    if row and row["project_id"] is not None:
+        keys.append(f"project:{int(row['project_id'])}")
+
+    if include_global:
+        keys.append("global")
+
+    return keys
+
+if (False):
+    def _scope_keys_for_conversation(conn, conversation_id: str, include_global: bool = False) -> list[str]:
+        cid = (conversation_id or "").strip()
+        keys = [f"conversation:{cid}"]
+
+        row = conn.execute("SELECT project_id FROM conversations WHERE id = ?", (cid,)).fetchone()
+        if row and row["project_id"] is not None:
+            keys.append(f"project:{int(row['project_id'])}")
+
+        if include_global:
+            keys.append("global")
+
+        return keys
+
 def _ensure_conversation_exists(conn: sqlite3.Connection, conversation_id: str) -> None:
     row = conn.execute("SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
     if not row:
@@ -915,6 +977,16 @@ def update_conversation_title(conversation_id: str, title: str) -> bool:
         )
         return (cur.rowcount or 0) > 0
     
+def _summary_excerpt(text: str, max_chars: int = 220) -> str:
+    s = (text or "").strip()
+    if not s:
+        return ""
+    parts = re.split(r'(?<=[.!?])\s+', s)
+    out = " ".join(parts[:2]).strip()
+    if len(out) > max_chars:
+        out = out[:max_chars].rstrip() + "…"
+    return out
+
 def list_conversations(limit: int = 200, include_archived: bool = False) -> list[dict]:
     with db_session() as conn:
         if include_archived:
@@ -933,9 +1005,14 @@ def list_conversations(limit: int = 200, include_archived: bool = False) -> list
                 c.updated_at,
                 c.project_id,
                 c.archived,
-                p.name AS project_name
+                p.name AS project_name,
+                s.summary_text AS summary_text
             FROM conversations c
             LEFT JOIN projects p ON p.id = c.project_id
+            LEFT JOIN artifacts s
+              ON s.source_kind = 'conversation:summary'
+             AND s.source_id = c.id
+             AND s.is_deleted = 0
             {where}
             ORDER BY COALESCE(c.updated_at, c.created_at) DESC
             LIMIT ?
@@ -952,10 +1029,52 @@ def list_conversations(limit: int = 200, include_archived: bool = False) -> list
                 "project_id": (int(r["project_id"]) if r["project_id"] is not None else None),
                 "project_name": r["project_name"],
                 "archived": bool(r["archived"]),
+                "summary_excerpt": _summary_excerpt(r["summary_text"] or ""),
             }
             for r in rows
         ]
 
+if (False):
+    def list_conversations(limit: int = 200, include_archived: bool = False) -> list[dict]:
+        with db_session() as conn:
+            if include_archived:
+                where = ""
+                params: tuple[Any, ...] = (limit,)
+            else:
+                where = "WHERE c.archived = 0"
+                params = (limit,)
+
+            rows = conn.execute(
+                f"""
+                SELECT
+                    c.id,
+                    c.title,
+                    c.created_at,
+                    c.updated_at,
+                    c.project_id,
+                    c.archived,
+                    p.name AS project_name
+                FROM conversations c
+                LEFT JOIN projects p ON p.id = c.project_id
+                {where}
+                ORDER BY COALESCE(c.updated_at, c.created_at) DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+
+            return [
+                {
+                    "id": r["id"],
+                    "title": r["title"] or "New chat",
+                    "created_at": r["created_at"],
+                    "updated_at": r["updated_at"],
+                    "project_id": (int(r["project_id"]) if r["project_id"] is not None else None),
+                    "project_name": r["project_name"],
+                    "archived": bool(r["archived"]),
+                }
+                for r in rows
+            ]
 
 def set_conversation_project(conversation_id: str, project_id: int | None) -> None:
     with db_session() as conn:
@@ -993,7 +1112,7 @@ def get_conversation_context(conversation_id: str, preview_limit: int = 20) -> d
     with db_session() as conn:
         row = conn.execute(
             """
-            SELECT c.project_id, p.name AS project_name, c.archived, c.summary_json
+            SELECT c.project_id, p.name AS project_name, c.archived -- , c.summary_json
             FROM conversations c
             LEFT JOIN projects p ON p.id = c.project_id
             WHERE c.id = ?
@@ -1011,7 +1130,7 @@ def get_conversation_context(conversation_id: str, preview_limit: int = 20) -> d
         "project_id": int(row["project_id"]) if row and row["project_id"] is not None else None,
         "project_name": row["project_name"] if row else None,
         "archived": bool(row["archived"]) if row and row["archived"] is not None else False,
-        "summary_json": row["summary_json"] if row else None,
+        # "summary_json": row["summary_json"] if row else None,
         "preview_limit": int(preview_limit),
         "messages_preview": preview,
     }
@@ -1022,7 +1141,7 @@ def get_context_sources(conversation_id: str) -> dict:
             """
             SELECT
               c.id AS conversation_id,
-              c.summary_json,
+              -- c.summary_json,
               c.project_id,
               p.name AS project_name,
               p.system_prompt AS project_system_prompt,
@@ -1039,7 +1158,7 @@ def get_context_sources(conversation_id: str) -> dict:
 
         return {
             "conversation_id": row["conversation_id"],
-            "summary_json": row["summary_json"],
+            # "summary_json": row["summary_json"],
             "project_id": row["project_id"],
             "project_name": row["project_name"],
             "project_system_prompt": row["project_system_prompt"],
@@ -1047,12 +1166,84 @@ def get_context_sources(conversation_id: str) -> dict:
         }
 
 # endregion
-# region Conversation Summaries
+# region Conversation Summaries (now in Artifacts)
+
+def conversation_summary_artifact_id(conversation_id: str) -> str:
+    return _deterministic_artifact_id(source_kind="conversation:summary", source_id=conversation_id)
+
+def save_conversation_summary_artifact(conversation_id: str, summary_text: str, model: str) -> str:
+    title = get_conversation_title(conversation_id) or "Conversation"
+    artifact_id = conversation_summary_artifact_id(conversation_id)
+
+    with db_session() as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO artifacts
+            (id, source_kind, source_id, title, scope_type, scope_uuid, updated_at)
+            VALUES (?, ?, ?, ?, 'conversation', ?, ?)
+            """,
+            (artifact_id, "conversation:summary", conversation_id, f"Summary: {title}", conversation_id, _utc_now_iso()),
+        )
+        set_artifact_summary(conn, artifact_id, summary_text, model)
+        conn.execute("UPDATE conversations SET summary_json = NULL WHERE id = ?", (conversation_id,))
+
+    # Make the summary immediately searchable
+    reindex_artifact_by_id(artifact_id)
+    return artifact_id
+
+if (False):
+    def save_conversation_summary_artifact(conversation_id: str, summary_text: str, model: str) -> str:
+        """
+        Stores summary as artifact summary metadata, not in conversations.summary_json.
+        """
+        title = get_conversation_title(conversation_id) or "Conversation"
+        artifact_id = conversation_summary_artifact_id(conversation_id)
+
+        with db_session() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO artifacts (id, source_kind, source_id, title, scope_type, scope_id, updated_at)
+                VALUES (?, ?, ?, ?, 'conversation', ?, ?)
+                """,
+                (artifact_id, "conversation:summary", conversation_id, f"Summary: {title}", conversation_id, _utc_now_iso()),
+            )
+            set_artifact_summary(conn, artifact_id, summary_text, model)
+
+            # Optional: stop carrying old legacy summary_json once new summary exists
+            conn.execute("UPDATE conversations SET summary_json = NULL WHERE id = ?", (conversation_id,))
+
+        return artifact_id
+
+def get_conversation_summary_text(conversation_id: str) -> str:
+    """
+    Preferred: artifact summary.
+    Fallback: legacy conversations.summary_json if present.
+    """
+    aid = conversation_summary_artifact_id(conversation_id)
+    with db_session() as conn:
+        s = get_artifact_summary(conn, aid, include_stale=False)
+        if s and s.get("summary_text"):
+            return (s["summary_text"] or "").strip()
+
+        # Fallback for old data
+        row = conn.execute("SELECT summary_json FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+        if row and row["summary_json"]:
+            try:
+                obj = json.loads(row["summary_json"])
+                return (obj.get("summary") or "").strip()
+            except Exception:
+                return ""
+    return ""
 
 def get_transcript_for_summary(conversation_id: str) -> tuple[str, str]:
+    """Retrieves information to summarize a conversation history"""
     title = get_conversation_title(conversation_id)
-    if not title:
+
+    # Only "not found" if row is missing. Empty title is allowed.
+    if title is None:
         raise KeyError("Conversation not found.")
+
+    title = (title or "").strip() or f"Conversation {conversation_id}"
 
     with db_session() as conn:
         msgs = conn.execute(
@@ -1066,13 +1257,14 @@ def get_transcript_for_summary(conversation_id: str) -> tuple[str, str]:
     transcript = "\n\n".join(f"{m['role']}: {m['content']}" for m in msgs)
     return title, transcript
 
-def save_conversation_summary(conversation_id: str, summary_text: str, model: str) -> None:
-    summary_obj = {"model": model, "summary": summary_text}
-    with db_session() as conn:
-        conn.execute(
-            "UPDATE conversations SET summary_json = ?, updated_at = ? WHERE id = ?",
-            (json.dumps(summary_obj), _utc_now_iso(), conversation_id),
-        )
+if (False): # We're saving these to articles now
+    def save_conversation_summary(conversation_id: str, summary_text: str, model: str) -> None:
+        summary_obj = {"model": model, "summary": summary_text}
+        with db_session() as conn:
+            conn.execute(
+                "UPDATE conversations SET summary_json = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(summary_obj), _utc_now_iso(), conversation_id),
+            )
 
 # region Context Cache
 
@@ -1456,93 +1648,10 @@ def delete_memory_pin(pin_id: int) -> None:
 
 # region Corpus / Indexing
 
-def _scope_keys_for_conversation(conn, conversation_id: str, include_global: bool = False) -> list[str]:
-    cid = (conversation_id or "").strip()
-    keys = [f"conversation:{cid}"]
-
-    row = conn.execute("SELECT project_id FROM conversations WHERE id = ?", (cid,)).fetchone()
-    if row and row["project_id"] is not None:
-        keys.append(f"project:{int(row['project_id'])}")
-
-    if include_global:
-        keys.append("global")
-
-    return keys
-
-
-def _artifact_scope_key_for_row(conn, artifact_row: dict) -> str:
-    """
-    Map your artifact scope fields to scope_key.
-    Adjust this if your artifacts table uses different columns.
-    """
-    # Common patterns in your project:
-    # - scope_type in ("conversation","project","global")
-    # - scope_id is conversation_id or project_id as string
-    st = (artifact_row.get("scope_type") or "").strip().lower()
-    sid = artifact_row.get("scope_id")
-
-    if st == "conversation" and sid:
-        return f"conversation:{sid}"
-    if st == "project" and sid:
-        return f"project:{sid}"
-    return "global"
-
-
-def iter_artifacts_with_file_hints_for_scope_keys(conn, scope_keys: list[str]) -> list[dict]:
-    """
-    Returns artifact rows in those scope_keys, with optional file hints
-    when artifact source_kind is file:* and source_id matches files.id.
-    """
-    # Break scope_keys into scope_type/scope_id pairs for SQL
-    convo_ids = [k.split(":", 1)[1] for k in scope_keys if k.startswith("conversation:")]
-    proj_ids = [k.split(":", 1)[1] for k in scope_keys if k.startswith("project:")]
-    include_global = any(k == "global" for k in scope_keys)
-
-    clauses = []
-    params: list = []
-
-    if convo_ids:
-        clauses.append("(a.scope_type = 'conversation' AND a.scope_id IN (" + ",".join("?" * len(convo_ids)) + "))")
-        params.extend(convo_ids)
-
-    if proj_ids:
-        clauses.append("(a.scope_type = 'project' AND a.scope_id IN (" + ",".join("?" * len(proj_ids)) + "))")
-        params.extend(proj_ids)
-
-    if include_global:
-        clauses.append("(a.scope_type = 'global' OR a.scope_type IS NULL)")
-
-    if not clauses:
-        return []
-
-    where_scope = " OR ".join(clauses)
-
-    rows = conn.execute(
-        f"""
-        SELECT
-          a.*,
-          f.id AS file_id,
-          f.name AS filename,
-          f.mime_type AS file_mime_type,
-          f.path AS file_path
-        FROM artifacts a
-        LEFT JOIN files f
-          ON a.source_kind LIKE 'file:%'
-         AND a.source_id = f.id
-         AND f.is_deleted = 0
-        WHERE a.is_deleted = 0
-          AND ({where_scope})
-        ORDER BY a.updated_at DESC
-        """,
-        tuple(params),
-    ).fetchall()
-
-    return [dict(r) for r in rows]
-
+# region Corpus Indexing/Chunking
 
 def delete_corpus_chunks_for_artifact(conn, artifact_id: str) -> None:
     conn.execute("DELETE FROM corpus_chunks WHERE artifact_id = ?", (artifact_id,))
-
 
 def upsert_corpus_chunks_for_artifact_row(conn, artifact_row: dict, *, chunks: list[str]) -> int:
     """
@@ -1577,7 +1686,6 @@ def upsert_corpus_chunks_for_artifact_row(conn, artifact_row: dict, *, chunks: l
         )
         n += 1
     return n
-
 
 def reindex_corpus_for_conversation(
     *,
@@ -1643,6 +1751,12 @@ def reindex_corpus_for_conversation(
                 # fallback if your artifacts table has a text field
                 text = a.get("text") or a.get("content_text") or ""
 
+            # When text comes up dry (like in image files or conversation summaries) try the summary instead
+            if not text.strip():
+                row = conn.execute("SELECT summary_text FROM artifacts WHERE id = ?", (artifact_id,)).fetchone()
+                if row and row["summary_text"]:
+                    text = row["summary_text"]
+
             if not text or not text.strip():
                 skipped += 1
                 continue
@@ -1669,27 +1783,51 @@ def reindex_corpus_for_conversation(
             "skipped_artifacts": skipped,
             "total_chunks_written": total_chunks,
         }
-    
-def search_corpus_for_conversation(
-    *,
-    conversation_id: str,
-    query: str,
-    limit: int = 10,
-    include_global: bool = False,
-) -> list[dict]:
-    """
-    FTS search across chunks visible to conversation (conversation + project [+global]).
-    Returns best matches with provenance.
-    """
-    cid = (conversation_id or "").strip()
+
+def reindex_artifact_by_id(artifact_id: str) -> dict:
+    artifact_id = (artifact_id or "").strip()
+    if not artifact_id:
+        return {"ok": False, "error": "missing artifact_id"}
+
+    with db_session() as conn:
+        art = _load_artifact_with_file_hints(conn, artifact_id)
+        if not art:
+            return {"ok": False, "error": "artifact not found"}
+
+        try:
+            text = hydrate_artifact_content_text(conn, artifact_id)
+        except Exception:
+            text = art.get("content_text") or ""
+
+        if not text.strip():
+            row = conn.execute("SELECT summary_text FROM artifacts WHERE id = ?", (artifact_id,)).fetchone()
+            if row and row["summary_text"]:
+                text = row["summary_text"]
+
+        if not text.strip():
+            delete_corpus_chunks_for_artifact(conn, artifact_id)
+            return {"ok": True, "artifact_id": artifact_id, "chunks_written": 0}
+
+        chunks = chunk_text_with_hints(
+            text,
+            source_kind=art.get("source_kind"),
+            filename=art.get("filename") or art.get("file_path"),
+            mime_type=art.get("file_mime_type"),
+        )
+
+        delete_corpus_chunks_for_artifact(conn, artifact_id)
+        n = upsert_corpus_chunks_for_artifact_row(conn, art, chunks=chunks)
+        return {"ok": True, "artifact_id": artifact_id, "chunks_written": n}
+
+# endregion
+# region Corpus FTS Query
+
+def search_corpus(*, scope_keys: list[str], query: str, limit: int = 10) -> list[dict]:
     q = (query or "").strip()
-    if not cid or not q:
+    if not q or not scope_keys:
         return []
 
     with db_session() as conn:
-        scope_keys = _scope_keys_for_conversation(conn, cid, include_global=include_global)
-
-        # FTS scope filter
         placeholders = ",".join("?" * len(scope_keys))
         params = [q] + scope_keys + [int(limit)]
 
@@ -1706,9 +1844,15 @@ def search_corpus_for_conversation(
               c.filename,
               c.mime_type,
               c.text,
+              a.title AS artifact_title,
+              a.updated_at AS artifact_updated_at,
+              f.created_at AS file_created_at,
+              f.updated_at AS file_updated_at,
               bm25(corpus_fts) AS score
             FROM corpus_fts
             JOIN corpus_chunks c ON corpus_fts.rowid = c.id
+            LEFT JOIN artifacts a ON a.id = c.artifact_id
+            LEFT JOIN files f ON f.id = c.file_id
             WHERE corpus_fts MATCH ?
               AND c.scope_key IN ({placeholders})
             ORDER BY score ASC
@@ -1718,7 +1862,112 @@ def search_corpus_for_conversation(
         ).fetchall()
 
         return [dict(r) for r in rows]
-        
+
+def search_corpus_for_conversation(
+    *,
+    conversation_id: str,
+    query: str,
+    limit: int = 10,
+    cfg: QueryConfig | None = None,
+    #include_global: bool = False,
+) -> list[dict]:
+    cid = (conversation_id or "").strip()
+    if not cid:
+        return []
+
+    cfg = cfg or load_query_config()
+
+    with db_session() as conn:
+        scope_keys = _scope_keys_for_conversation(conn, cid, include_global=cfg.query_global_artifacts)
+    log_debug("RAG scope keys for cid=%s include_global=%s keys=%r", cid, cfg.query_global_artifacts, scope_keys)
+    return search_corpus(scope_keys=scope_keys, query=query, limit=limit)
+
+if (False):
+    def search_corpus_for_conversation(
+        *,
+        conversation_id: str,
+        query: str,
+        limit: int = 10,
+        include_global: bool = False,
+    ) -> list[dict]:
+        """
+        FTS search across chunks visible to conversation (conversation + project [+global]).
+        Returns best matches with provenance.
+        """
+        cid = (conversation_id or "").strip()
+        q = (query or "").strip()
+        if not cid or not q:
+            return []
+
+        with db_session() as conn:
+            scope_keys = _scope_keys_for_conversation(conn, cid, include_global=include_global)
+
+            # FTS scope filter
+            placeholders = ",".join("?" * len(scope_keys))
+            params = [q] + scope_keys + [int(limit)]
+
+            rows = conn.execute(
+                f"""
+                SELECT
+                c.id AS chunk_id,
+                c.scope_key,
+                c.artifact_id,
+                c.chunk_index,
+                c.source_kind,
+                c.source_id,
+                c.file_id,
+                c.filename,
+                c.mime_type,
+                c.text,
+
+                a.title AS artifact_title,
+                a.updated_at AS artifact_updated_at,
+
+                f.created_at AS file_created_at,
+                f.updated_at AS file_updated_at,
+
+                bm25(corpus_fts) AS score
+                FROM corpus_fts
+                JOIN corpus_chunks c ON corpus_fts.rowid = c.id
+                LEFT JOIN artifacts a ON a.id = c.artifact_id
+                LEFT JOIN files f ON f.id = c.file_id
+                WHERE corpus_fts MATCH ?
+                AND c.scope_key IN ({placeholders})
+                ORDER BY score ASC
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
+
+            if (False): # Expanded to include source info
+                rows = conn.execute(
+                    f"""
+                    SELECT
+                    c.id AS chunk_id,
+                    c.scope_key,
+                    c.artifact_id,
+                    c.chunk_index,
+                    c.source_kind,
+                    c.source_id,
+                    c.file_id,
+                    c.filename,
+                    c.mime_type,
+                    c.text,
+                    bm25(corpus_fts) AS score
+                    FROM corpus_fts
+                    JOIN corpus_chunks c ON corpus_fts.rowid = c.id
+                    WHERE corpus_fts MATCH ?
+                    AND c.scope_key IN ({placeholders})
+                    ORDER BY score ASC
+                    LIMIT ?
+                    """,
+                    tuple(params),
+                ).fetchall()
+
+            return [dict(r) for r in rows]
+
+# endregion
+
 # endregion
 
 # ----------------------------
@@ -1897,6 +2146,7 @@ def register_scoped_file(
     path: str,
     mime_type: str | None = None,
     *,
+    sha256: str | None = None,
     scope_type: str | None = None,
     scope_id: int | None = None,
     scope_uuid: str | None = None,
@@ -1912,6 +2162,7 @@ def register_scoped_file(
     name = (name or "").strip()
     path = (path or "").strip()
     mime_type = (mime_type or "").strip() or None
+    sha256 = (sha256 or "").strip() or None
     scope_type = (scope_type or "").strip() or None
     scope_uuid = (scope_uuid or "").strip() or None
     source_kind = (source_kind or "").strip() or None
@@ -1935,6 +2186,7 @@ def register_scoped_file(
                 name,
                 path,
                 mime_type,
+                sha256,
                 scope_type,
                 scope_id,
                 scope_uuid,
@@ -1946,13 +2198,14 @@ def register_scoped_file(
                 created_at,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
             """,
             (
                 fid,
                 name,
                 path,
                 mime_type,
+                sha256,
                 scope_type,
                 scope_id,
                 scope_uuid,
@@ -1965,6 +2218,85 @@ def register_scoped_file(
             ),
         )
     return {"id": fid}
+
+def find_same_scope_same_name_file(
+    *,
+    name: str,
+    scope_type: str | None,
+    scope_id: int | None,
+    scope_uuid: str | None,
+    include_deleted: bool = False,
+) -> dict | None:
+    name = (name or "").strip()
+    scope_type = (scope_type or "").strip() or None
+    scope_uuid = (scope_uuid or "").strip() or None
+
+    if not name:
+        return None
+
+    with db_session() as conn:
+        sql = """
+            SELECT *
+            FROM files
+            WHERE name = ?
+              AND COALESCE(scope_type, '') = COALESCE(?, '')
+              AND COALESCE(scope_id, -1) = COALESCE(?, -1)
+              AND COALESCE(scope_uuid, '') = COALESCE(?, '')
+        """
+        params = [name, scope_type, scope_id, scope_uuid]
+        if not include_deleted:
+            sql += " AND (is_deleted IS NULL OR is_deleted = 0)"
+        sql += " LIMIT 1"
+
+        row = conn.execute(sql, params).fetchone()
+    return dict(row) if row else None
+
+def replace_file_in_place(
+    file_id: str,
+    *,
+    path: str,
+    mime_type: str | None,
+    sha256: str | None,
+) -> dict:
+    file_id = (file_id or "").strip()
+    if not file_id:
+        raise ValueError("file_id is required.")
+
+    mime_type = (mime_type or "").strip() or None
+    sha256 = (sha256 or "").strip() or None
+    path = (path or "").strip()
+    if not path:
+        raise ValueError("path is required.")
+
+    with db_session() as conn:
+        _ensure_file_exists(conn, file_id)
+        conn.execute(
+            """
+            UPDATE files
+            SET path = ?,
+                mime_type = ?,
+                sha256 = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (path, mime_type, sha256, _utc_now_iso(), file_id),
+        )
+
+    return get_file_by_id(file_id)
+
+def list_files_by_sha256(sha256: str, include_deleted: bool = False) -> list[dict]:
+    sha256 = (sha256 or "").strip().lower()
+    if not sha256:
+        return []
+
+    with db_session() as conn:
+        sql = "SELECT * FROM files WHERE LOWER(COALESCE(sha256, '')) = ?"
+        params = [sha256]
+        if not include_deleted:
+            sql += " AND (is_deleted IS NULL OR is_deleted = 0)"
+        rows = conn.execute(sql, params).fetchall()
+
+    return [dict(r) for r in rows]
 
 def update_file_description(file_id: str, description: str | None) -> None:
     file_id = (file_id or "").strip()
@@ -1979,6 +2311,18 @@ def update_file_description(file_id: str, description: str | None) -> None:
             "UPDATE files SET description = ?, updated_at = ? WHERE id = ?",
             (desc, _utc_now_iso(), file_id),
         )
+        # invalidates the summary of attached artifacts
+        conn.execute(
+            """
+            UPDATE artifacts
+            SET summary_input_hash = NULL,
+                summary_updated_at = NULL
+            WHERE is_deleted = 0
+            AND source_id = ?
+            AND source_kind LIKE 'file:%'
+            """,
+            (file_id,),
+        )        
 
 def get_file_by_id(file_id: str) -> dict:
     """
@@ -2072,21 +2416,289 @@ def gather_scoped_files(conversation_id: str) -> dict[str, dict]:
     print(f"[context] gather_scoped_files({conversation_id!r}) -> {len(files_by_id)} files")
     return files_by_id
 
+class FileDeleteAction(Enum):
+    NOTHING = 0
+    MOVE = 1
+    DELETE = 2
+
+def delete_file_cascade(
+    file_id: str,
+    *,
+    deleted_by_user_id: str | None = None,
+    delete_disk_action: FileDeleteAction = FileDeleteAction.MOVE,
+) -> dict:
+    """
+    Soft-delete a file and remove all derived/search assets tied to it.
+
+    Effects:
+      - soft-delete file row
+      - soft-delete artifacts sourced from this file
+      - delete corpus_chunks for those artifacts
+      - unlink from conversation_files / project_files
+      - optionally remove physical file from disk
+      - invalidate relevant context caches
+    """
+    file_id = (file_id or "").strip()
+    if not file_id:
+        raise ValueError("file_id is required.")
+
+    deleted_by_user_id = (deleted_by_user_id or "").strip() or None
+    now = _utc_now_iso()
+
+    with db_session() as conn:
+        _ensure_file_exists(conn, file_id)
+
+        file_row = conn.execute("SELECT * FROM files WHERE id = ?", (file_id,)).fetchone()
+        if file_row is None:
+            raise ValueError(f"File not found: {file_id}")
+        file_row = dict(file_row)
+
+        path = (file_row.get("path") or "").strip()
+        scope_type = (file_row.get("scope_type") or "").strip() or None
+        scope_id = file_row.get("scope_id")
+        scope_uuid = (file_row.get("scope_uuid") or "").strip() or None
+
+        # collect artifacts before soft-delete
+        arts = conn.execute(
+            """
+            SELECT id
+            FROM artifacts
+            WHERE source_id = ?
+              AND (is_deleted IS NULL OR is_deleted = 0)
+            """,
+            (file_id,),
+        ).fetchall()
+        artifact_ids = [r["id"] for r in arts]
+
+        # remove chunk rows first
+        for aid in artifact_ids:
+            delete_corpus_chunks_for_artifact(conn, aid)
+
+        # soft-delete artifacts
+        conn.execute(
+            """
+            UPDATE artifacts
+            SET is_deleted = 1,
+                deleted_at = ?,
+                deleted_by_user_id = ?
+            WHERE source_id = ?
+              AND (is_deleted IS NULL OR is_deleted = 0)
+            """,
+            (now, deleted_by_user_id, file_id),
+        )
+
+        # unlink file from conversation/project link tables
+        if _table_exists(conn, "conversation_files"):
+            conn.execute("DELETE FROM conversation_files WHERE file_id = ?", (file_id,))
+        if _table_exists(conn, "project_files"):
+            conn.execute("DELETE FROM project_files WHERE file_id = ?", (file_id,))
+
+        # soft-delete the file row
+        conn.execute(
+            """
+            UPDATE files
+            SET is_deleted = 1,
+                deleted_at = ?,
+                deleted_by_user_id = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, deleted_by_user_id, now, file_id),
+        )
+
+    # invalidate caches outside the db_session for simplicity
+    try:
+        if scope_type == "conversation" and scope_uuid:
+            invalidate_context_cache_for_conversation(scope_uuid)
+        elif scope_type == "project" and scope_id is not None:
+            invalidate_context_cache_for_project(int(scope_id))
+    except Exception:
+        pass
+
+    disk_deleted = False
+    disk_moved = False
+    moved_to = None
+
+    if delete_disk_action == FileDeleteAction.MOVE and path:
+        try:
+            p = Path(path)
+            if p.exists() and p.is_file():
+                backup_root = DATA_DIR / "deleted_files"
+                backup_root.mkdir(parents=True, exist_ok=True)
+
+                # TODO fix deprecated function call
+                stamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+                target = backup_root / f"{stamp}__{file_id}__{p.name}"
+
+                p.replace(target)
+                disk_moved = True
+                moved_to = str(target)
+        except Exception:
+            # leave it soft-deleted in DB even if filesystem move fails
+            disk_moved = False
+            moved_to = None            
+    if delete_disk_action == FileDeleteAction.DELETE and path:
+        try:
+            p = Path(path)
+            if p.exists() and p.is_file():
+                p.unlink()
+                disk_deleted = True
+        except Exception:
+            # leave it soft-deleted in DB even if filesystem cleanup fails
+            disk_deleted = False
+
+    return {
+        "ok": True,
+        "file_id": file_id,
+        "artifact_count": len(artifact_ids),
+        "disk_deleted": disk_deleted,
+        "disk_moved": disk_moved,
+        "moved_to": moved_to,
+    }
+
+def list_files_same_name_any_scope(name: str, include_deleted: bool = False) -> list[dict]:
+    name = (name or "").strip()
+    if not name:
+        return []
+
+    with db_session() as conn:
+        sql = "SELECT * FROM files WHERE name = ?"
+        params = [name]
+        if not include_deleted:
+            sql += " AND (is_deleted IS NULL OR is_deleted = 0)"
+        rows = conn.execute(sql, params).fetchall()
+
+    return [dict(r) for r in rows]
+
 # endregion
 # region Artifacts
 
-# region Artifact-File Hygeine
+def scope_rank(scope_type: str | None) -> int:
+    st = (scope_type or "").strip().lower()
+    if st == "global":
+        return 3
+    if st == "project":
+        return 2
+    if st in ("conversation", "chat"):
+        return 1
+    return 0
 
-def get_conversation_project_id(conn, conversation_id: str) -> int | None:
+def _artifact_scope_key_for_row(conn, artifact_row: dict) -> str:
+    st = (artifact_row.get("scope_type") or "").strip().lower()
+    sid = artifact_row.get("scope_id")
+    suid = (artifact_row.get("scope_uuid") or "").strip()
+
+    if st in ("conversation", "chat"): # Legacy bad-stuff ("chat" scope) in early versions of data
+        conv_id = suid or (str(sid).strip() if sid is not None else "")
+        if conv_id:
+            return f"conversation:{conv_id}" if st == "conversation" else f"chat:{conv_id}"
+
+    if st == "project" and sid:
+        return f"project:{sid}"
+
+    return "global"
+
+if (False):
+    def _artifact_scope_key_for_row(conn, artifact_row: dict) -> str:
+        """
+        Map your artifact scope fields to scope_key.
+        Adjust this if your artifacts table uses different columns.
+        """
+        # Common patterns in your project:
+        # - scope_type in ("conversation","project","global")
+        # - scope_id is conversation_id or project_id as string
+        st = (artifact_row.get("scope_type") or "").strip().lower()
+        sid = artifact_row.get("scope_id")
+
+        if st == "conversation" and sid:
+            return f"conversation:{sid}"
+        if st == "project" and sid:
+            return f"project:{sid}"
+        return "global"
+
+# region File Artifact Summaries
+
+def _compute_artifact_summary_input_hash(conn, art: dict) -> str:
+    """
+    Hash of all inputs that should affect the summary.
+    For file artifacts, include files.description/name/mime_type.
+    """
+    source_kind = (art.get("source_kind") or "")
+    source_id = (art.get("source_id") or "")
+    title = (art.get("title") or "")
+    content_hash = (art.get("content_hash") or "")
+
+    base = f"{source_kind}|{source_id}|{title}|{content_hash}"
+
+    if source_kind.startswith("file:") and source_id:
+        f = conn.execute(
+            "SELECT name, mime_type, description FROM files WHERE id = ?",
+            (source_id,),
+        ).fetchone()
+        if f:
+            base += f"|{f['name'] or ''}|{f['mime_type'] or ''}|{f['description'] or ''}"
+
+    return _sha256_hex(base)
+
+
+def get_artifact_summary(conn, artifact_id: str, *, include_stale: bool = False) -> dict | None:
     row = conn.execute(
-        "SELECT project_id FROM conversations WHERE id = ?",
-        (conversation_id,),
+        "SELECT * FROM artifacts WHERE id = ? AND is_deleted = 0",
+        (artifact_id,),
     ).fetchone()
     if not row:
         return None
-    pid = row["project_id"]
-    return int(pid) if pid not in (None, "") else None
 
+    art = dict(row)
+    summary_text = (art.get("summary_text") or "").strip()
+    if not summary_text:
+        return None
+
+    stored = (art.get("summary_input_hash") or "").strip()
+    current = _compute_artifact_summary_input_hash(conn, art)
+
+    is_stale = (not stored) or (stored != current)
+    if is_stale and not include_stale:
+        return None
+
+    return {
+        "artifact_id": artifact_id,
+        "summary_text": summary_text,
+        "summary_model": art.get("summary_model"),
+        "summary_input_hash": stored,
+        "summary_updated_at": art.get("summary_updated_at"),
+        "is_stale": is_stale,
+        "current_input_hash": current,
+        "title": art.get("title"),
+        "source_kind": art.get("source_kind"),
+        "source_id": art.get("source_id"),
+    }
+
+
+def set_artifact_summary(conn, artifact_id: str, summary_text: str, model: str) -> None:
+    row = conn.execute("SELECT * FROM artifacts WHERE id = ?", (artifact_id,)).fetchone()
+    if not row:
+        raise ValueError(f"artifact not found: {artifact_id}")
+
+    art = dict(row)
+    input_hash = _compute_artifact_summary_input_hash(conn, art)
+
+    conn.execute(
+        """
+        UPDATE artifacts
+        SET summary_text = ?,
+            summary_model = ?,
+            summary_input_hash = ?,
+            summary_updated_at = ?,
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (summary_text, model, input_hash, _utc_now_iso(), _utc_now_iso(), artifact_id),
+    )
+
+# endregion
+
+# region File-Artifact Hygeine
 
 def list_files_missing_artifacts_for_scope(
     conn,
@@ -2115,7 +2727,6 @@ def list_files_missing_artifacts_for_scope(
         (scope_type, scope_id, scope_id, scope_uuid, scope_uuid, int(limit)),
     ).fetchall()
     return [dict(r) for r in rows]
-
 
 def ensure_files_artifacted_for_conversation_conn(
     conn,
@@ -2169,6 +2780,9 @@ def ensure_files_artifacted_for_conversation_conn(
     # Conversation-scoped files
     _heal("conversation", "conversation", None, cid)
 
+    # Heal problems caused by scope="chat"
+    _heal("chat", "chat", None, cid)  # TODO remove after DB cleanup
+
     # Project-scoped files (if conversation is in a project)
     pid = get_conversation_project_id(conn, cid)
     if pid is not None:
@@ -2180,6 +2794,80 @@ def ensure_files_artifacted_for_conversation_conn(
 
     return {"checked": checked_total, "created": created_total, "details": details}
 
+def soft_delete_artifacts_for_file(
+    file_id: int | str,
+    deleted_by_user_id: str | None = None,
+) -> int:
+    """
+    Soft-delete all artifacts associated with a given file_id.
+
+    Returns the number of rows affected.
+    """
+    file_id_str = str(file_id).strip()
+    if not file_id_str:
+        raise ValueError("file_id is required.")
+
+    deleted_by_user_id = (deleted_by_user_id or "").strip() or None
+    now = _utc_now_iso()
+
+    with db_session() as conn:
+        _ensure_file_exists(conn, file_id_str)
+        cur = conn.execute(
+            """
+            UPDATE artifacts
+            SET is_deleted = 1,
+                deleted_at = ?,
+                deleted_by_user_id = ?
+            WHERE source_id = ?
+              AND (is_deleted IS NULL OR is_deleted = 0)
+            """,
+            (now, deleted_by_user_id, file_id_str),
+        )
+        return cur.rowcount
+
+def reset_all_artifacts() -> None:
+    """
+    Hard-reset the artifacts table. Intended for use during development
+    or after changing artifact semantics; artifacts will be lazily
+    rebuilt by _ensure_artifacts_for_files().
+
+    Hard-reset the artifact graph:
+      - delete all conversation_artifacts rows
+      - delete all artifacts rows
+
+    Safe because artifacts are derived from files and can be rebuilt lazily.
+    """
+    with db_session() as conn:
+        print("[db] reset_all_artifacts: deleting conversation_artifacts and artifacts")
+
+        # First, clear the child table that references artifacts.id
+        if _table_exists(conn, "conversation_artifacts"):
+            conn.execute("DELETE FROM conversation_artifacts")
+
+        if _table_exists(conn, "project_artifacts"):
+            conn.execute("DELETE FROM project_artifacts")
+
+        # Now it's safe to delete from artifacts
+        if _table_exists(conn, "artifacts"):
+            conn.execute("DELETE FROM artifacts")
+
+        conn.commit()
+        print("[db] reset_all_artifacts: done")
+
+def rebuild_file_artifacts_batch(conn, *, data_dir="data", sidecar_threshold_bytes=200_000) -> int:
+    # IMPORTANT: import locally to avoid circular import at module load
+    from .artifactor import extract_text_from_file
+
+    rows = conn.execute("SELECT * FROM files").fetchall()
+    created = 0
+    for r in rows:
+        upsert_file_artifact(
+            conn,
+            file_row=r,
+            sidecar_threshold_bytes=sidecar_threshold_bytes,
+        )
+        created += 1
+    return created
 
 def ensure_files_artifacted_for_conversation(
     *,
@@ -2522,36 +3210,99 @@ def hydrate_artifact_content_text(conn, artifact_id: str) -> str:
     _hydrate_artifact_content_text(art)
     return (art.get("content_text") or "")
 
+def get_scoped_artifact_debug(conversation_id: str, *, include_global: bool = False, preview_chars: int = 180) -> dict:
+    with db_session() as conn:
+        scope_keys = _scope_keys_for_conversation(conn, conversation_id, include_global=include_global)
+        arts = iter_artifacts_with_file_hints_for_scope_keys(conn, scope_keys)
+
+        counts = {
+            r["artifact_id"]: r["n"]
+            for r in conn.execute(
+                "SELECT artifact_id, COUNT(*) AS n FROM corpus_chunks GROUP BY artifact_id"
+            ).fetchall()
+        }
+
+        items = []
+        by_scope = {}
+
+        for a in arts:
+            aid = a["id"]
+            _hydrate_artifact_content_text(a)
+
+            summary_preview = (a.get("summary_text") or "").strip()
+            if summary_preview:
+                summary_preview = summary_preview[:preview_chars]
+
+            content_preview = (a.get("content_text") or "").strip()
+            if content_preview:
+                content_preview = content_preview[:preview_chars]
+
+            item = {
+                "artifact_id": aid,
+                "scope_type": a.get("scope_type"),
+                "scope_id": a.get("scope_id"),
+                "scope_uuid": a.get("scope_uuid"),
+                "scope_key": _artifact_scope_key_for_row(conn, a),
+                "source_kind": a.get("source_kind"),
+                "source_id": a.get("source_id"),
+                "title": a.get("title"),
+                "updated_at": a.get("updated_at"),
+                "chunk_count": int(counts.get(aid, 0)),
+                "summary_preview": summary_preview,
+                "content_preview": content_preview,
+                "file": {
+                    "file_id": a.get("file_id"),
+                    "filename": a.get("filename"),
+                    "mime_type": a.get("file_mime_type"),
+                    "description": None,
+                },
+            }
+
+            if a.get("file_id"):
+                f = conn.execute(
+                    "SELECT description FROM files WHERE id = ?",
+                    (a["file_id"],),
+                ).fetchone()
+                if f:
+                    item["file"]["description"] = f["description"]
+
+            by_scope.setdefault(item["scope_key"], {"artifact_count": 0, "chunk_count": 0})
+            by_scope[item["scope_key"]]["artifact_count"] += 1
+            by_scope[item["scope_key"]]["chunk_count"] += item["chunk_count"]
+
+            items.append(item)
+
+        return {
+            "conversation_id": conversation_id,
+            "scope_keys": scope_keys,
+            "by_scope": by_scope,
+            "artifacts": items,
+        }
+
 # endregion
 
+# region File-Artifact Queries
 
-def conversation_link_artifact(conversation_id: str, artifact_id: str) -> None:
-    """
-    Link an artifact to a conversation (chat-scoped derived content).
-    """
-    conversation_id = (conversation_id or "").strip()
-    artifact_id = (artifact_id or "").strip()
-    if not conversation_id:
-        raise ValueError("conversation_id is required.")
-    if not artifact_id:
-        raise ValueError("artifact_id is required.")
-
-    with db_session() as conn:
-        _ensure_conversation_exists(conn, conversation_id)
-        row = conn.execute(
-            "SELECT 1 FROM artifacts WHERE id = ?",
-            (artifact_id,),
-        ).fetchone()
-        if not row:
-            raise ValueError(f"Artifact not found: {artifact_id}")
-
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO conversation_artifacts (conversation_id, artifact_id)
-            VALUES (?, ?)
-            """,
-            (conversation_id, artifact_id),
-        )
+def _load_artifact_with_file_hints(conn, artifact_id: str) -> dict | None:
+    row = conn.execute(
+        """
+        SELECT
+          a.*,
+          f.id AS file_id,
+          f.name AS filename,
+          f.mime_type AS file_mime_type,
+          f.path AS file_path
+        FROM artifacts a
+        LEFT JOIN files f
+          ON a.source_kind LIKE 'file:%'
+         AND a.source_id = f.id
+         AND f.is_deleted = 0
+        WHERE a.id = ?
+          AND a.is_deleted = 0
+        """,
+        (artifact_id,),
+    ).fetchone()
+    return dict(row) if row else None
 
 def ensure_artifacts_for_files(files_by_id: dict[str, dict]) -> None:
     """
@@ -2611,6 +3362,101 @@ def list_artifacts_for_file(
     print(f"[db] list_artifacts_for_file({file_id_str!r}, include_deleted={include_deleted}) -> {len(out)} rows")
     return out
 
+def iter_artifacts_with_file_hints_for_scope_keys(conn, scope_keys: list[str]) -> list[dict]:
+    """
+    Returns artifact rows in those scope_keys, with optional file hints
+    when artifact source_kind is file:* and source_id matches files.id.
+    """
+    # Break scope_keys into scope_type/scope_id pairs for SQL
+    convo_ids = [k.split(":", 1)[1] for k in scope_keys if k.startswith("conversation:")]
+    proj_ids = [k.split(":", 1)[1] for k in scope_keys if k.startswith("project:")]
+    include_global = any(k == "global" for k in scope_keys)
+
+    clauses = []
+    params: list = []
+
+    if convo_ids:
+        placeholders = ",".join("?" * len(convo_ids))
+        # legacy bad stuff from early versions of the data (scope="chat")
+        clauses.append(
+            "("
+            "a.scope_type IN ('conversation','chat') AND ("
+            f"(a.scope_uuid IS NOT NULL AND a.scope_uuid IN ({placeholders})) "
+            f"OR (a.scope_id IS NOT NULL AND CAST(a.scope_id AS TEXT) IN ({placeholders}))"
+            ")"
+            ")"
+        )
+        params.extend(convo_ids)
+        params.extend(convo_ids)
+
+    #if convo_ids:
+    #    clauses.append("(a.scope_type = 'conversation' AND a.scope_id IN (" + ",".join("?" * len(convo_ids)) + "))")
+    #    params.extend(convo_ids)
+
+    if proj_ids:
+        clauses.append("(a.scope_type = 'project' AND a.scope_id IN (" + ",".join("?" * len(proj_ids)) + "))")
+        params.extend(proj_ids)
+
+    if include_global:
+        clauses.append("(a.scope_type = 'global' OR a.scope_type IS NULL)")
+
+    if not clauses:
+        return []
+
+    where_scope = " OR ".join(clauses)
+
+    rows = conn.execute(
+        f"""
+        SELECT
+          a.*,
+          f.id AS file_id,
+          f.name AS filename,
+          f.mime_type AS file_mime_type,
+          f.path AS file_path
+        FROM artifacts a
+        LEFT JOIN files f
+          ON a.source_kind LIKE 'file:%'
+         AND a.source_id = f.id
+         AND f.is_deleted = 0
+        WHERE a.is_deleted = 0
+          AND ({where_scope})
+        ORDER BY a.updated_at DESC
+        """,
+        tuple(params),
+    ).fetchall()
+
+    return [dict(r) for r in rows]
+
+# endregion
+
+def conversation_link_artifact(conversation_id: str, artifact_id: str) -> None:
+    """
+    Link an artifact to a conversation (chat-scoped derived content).
+    """
+    conversation_id = (conversation_id or "").strip()
+    artifact_id = (artifact_id or "").strip()
+    if not conversation_id:
+        raise ValueError("conversation_id is required.")
+    if not artifact_id:
+        raise ValueError("artifact_id is required.")
+
+    with db_session() as conn:
+        _ensure_conversation_exists(conn, conversation_id)
+        row = conn.execute(
+            "SELECT 1 FROM artifacts WHERE id = ?",
+            (artifact_id,),
+        ).fetchone()
+        if not row:
+            raise ValueError(f"Artifact not found: {artifact_id}")
+
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO conversation_artifacts (conversation_id, artifact_id)
+            VALUES (?, ?)
+            """,
+            (conversation_id, artifact_id),
+        )
+
 def list_artifacts_for_project(
     project_id: int,
     include_deleted: bool = False,
@@ -2661,91 +3507,34 @@ def list_artifacts_for_conversation(
         _hydrate_artifact_content_text(art)
     return out
 
-def soft_delete_artifacts_for_file(
-    file_id: int | str,
-    deleted_by_user_id: str | None = None,
-) -> int:
-    """
-    Soft-delete all artifacts associated with a given file_id.
-
-    Returns the number of rows affected.
-    """
-    file_id_str = str(file_id).strip()
-    if not file_id_str:
-        raise ValueError("file_id is required.")
-
-    deleted_by_user_id = (deleted_by_user_id or "").strip() or None
-    now = _utc_now_iso()
-
-    with db_session() as conn:
-        _ensure_file_exists(conn, file_id_str)
-        cur = conn.execute(
-            """
-            UPDATE artifacts
-            SET is_deleted = 1,
-                deleted_at = ?,
-                deleted_by_user_id = ?
-            WHERE source_id = ?
-              AND (is_deleted IS NULL OR is_deleted = 0)
-            """,
-            (now, deleted_by_user_id, file_id_str),
-        )
-        return cur.rowcount
-
-def reset_all_artifacts() -> None:
-    """
-    Hard-reset the artifacts table. Intended for use during development
-    or after changing artifact semantics; artifacts will be lazily
-    rebuilt by _ensure_artifacts_for_files().
-
-    Hard-reset the artifact graph:
-      - delete all conversation_artifacts rows
-      - delete all artifacts rows
-
-    Safe because artifacts are derived from files and can be rebuilt lazily.
-    """
-    with db_session() as conn:
-        print("[db] reset_all_artifacts: deleting conversation_artifacts and artifacts")
-
-        # First, clear the child table that references artifacts.id
-        if _table_exists(conn, "conversation_artifacts"):
-            conn.execute("DELETE FROM conversation_artifacts")
-
-        if _table_exists(conn, "project_artifacts"):
-            conn.execute("DELETE FROM project_artifacts")
-
-        # Now it's safe to delete from artifacts
-        if _table_exists(conn, "artifacts"):
-            conn.execute("DELETE FROM artifacts")
-
-        conn.commit()
-        print("[db] reset_all_artifacts: done")
-
-def rebuild_file_artifacts_batch(conn, *, data_dir="data", sidecar_threshold_bytes=200_000) -> int:
-    # IMPORTANT: import locally to avoid circular import at module load
-    from .artifactor import extract_text_from_file
-
-    rows = conn.execute("SELECT * FROM files").fetchall()
-    created = 0
-    for r in rows:
-        upsert_file_artifact(
-            conn,
-            file_row=r,
-            sidecar_threshold_bytes=sidecar_threshold_bytes,
-        )
-        created += 1
-    return created
+# region Add/Upsert File-Artifact
 
 def artifact_file(file_row) -> str:
     """
     Convenience wrapper around upsert_file_artifact for end-to-end artifacting of a single file.
-    Helpful when calling from artifacor.py or other places where you don't already have a db connection.
-    Creates conn from db_session() and calls upsert_file_artifact.
+    Uses the file row's real scope, not global defaults.
     """
+    if not isinstance(file_row, dict):
+        file_row = dict(file_row)
+
+    scope_type = (file_row.get("scope_type") or "").strip() or "global"
+    scope_id = None
+
+    if scope_type == "project":
+        sid = file_row.get("scope_id")
+        scope_id = str(sid) if sid is not None else None
+    elif scope_type == "conversation":
+        scope_id = (file_row.get("scope_uuid") or "").strip() or None
+    else:
+        scope_type = "global"
+        scope_id = None
+
     with db_session() as conn:
         aid = upsert_file_artifact(
             conn,
             file_row=file_row,
+            scope_type=scope_type,
+            scope_id=scope_id,
         )
     return aid
 
@@ -2794,31 +3583,7 @@ def upsert_file_artifact(
     )
     return artifact_id
 
-if (False): # Replaced by version that correctly calls artifactor
-    def upsert_file_artifact(
-        conn,
-        *,
-        file_row: dict, # or sqlite row; just needs ["id"] and optionally ["title"]
-        scope_type: str = "global",
-        scope_id: str | None = None,
-        sidecar_threshold_bytes: int = SIDECAR_THRESHOLD_BYTES,
-    ) -> str:
-        from .artifactor import extract_text_from_file
-
-        file_id = file_row["id"] if isinstance(file_row, dict) else file_row["id"]
-        title = (file_row.get("title") if isinstance(file_row, dict) else None) or None
-        content_text, source_kind = extract_text_from_file(file_row)
-        artifact_id = upsert_artifact_text(
-            conn=conn,
-            source_id=file_id,
-            source_kind=source_kind, # can be "file:pdf" etc; safe folder handled by _safe_source_folder
-            title=title,
-            scope_type=scope_type,
-            scope_id=scope_id,
-            text=content_text,
-            sidecar_threshold_bytes=sidecar_threshold_bytes,
-        )
-        return artifact_id
+# endregion
 
 def upsert_artifact_text(
     conn,
@@ -2872,7 +3637,11 @@ def upsert_artifact_text(
                 sidecar_path = ?,
                 content_hash = ?,
                 content_bytes = ?,
-                updated_at = ?
+                updated_at = ?,
+                summary_text = NULL,
+                summary_model = NULL,
+                summary_input_hash = NULL,
+                summary_updated_at = NULL
             WHERE id = ?
             """,
             (new_sidecar_path, content_hash, content_bytes, _utc_now_iso(), artifact_id),
@@ -2887,7 +3656,11 @@ def upsert_artifact_text(
                 sidecar_path = NULL,
                 content_hash = ?,
                 content_bytes = ?,
-                updated_at = ?
+                updated_at = ?,
+                summary_text = NULL,
+                summary_model = NULL,
+                summary_input_hash = NULL,
+                summary_updated_at = NULL
             WHERE id = ?
             """,
             (norm, content_hash, content_bytes, _utc_now_iso(), artifact_id),

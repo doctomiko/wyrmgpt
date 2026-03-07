@@ -85,6 +85,11 @@ const filesCloseBtn = document.getElementById("filesClose");
 const filesSaveBtn = document.getElementById("filesSave");
 const filesCloseBottomBtn = document.getElementById("filesCloseBottom");
 const filesBackdrop = filesModal ? filesModal.querySelector(".modalBackdrop") : null;
+// artifact debug modal and launch buttons
+const artifactsDebugTopBtn = document.getElementById("artifactsDebugTop");
+const artifactsDebugModal = document.getElementById("artifactsDebugModal");
+const artifactsDebugCloseBtn = document.getElementById("artifactsDebugClose");
+const artifactsDebugPre = document.getElementById("artifactsDebugPre");
 
 // ----------------------------------
 // Global variables we'll need later
@@ -119,10 +124,62 @@ let UI_TIMEZONE = null; // TZ for display
 const ZEIT_PREFIX_RE = /^\s*(?:⟂ts=\d+|⟂t=\d{8}T\d{6}Z(?:\s+⟂age=-?\d+)?)\s*\n/;
 //const ZEIT_PREFIX_RE = /^\s*(?:⟂ts=\d+|⟂t=\d{8}T\d{6}Z(?:\s+⟂age=\d+)?)\s*\n/;
 const LEGACY_PREFIX_RE = /^\s*\[20\d\d-[^\]]+\]\s*\n/;
+// real-time RAG query update timer
+// These limits appear to not have any impact
+const CONTEXT_PREVIEW_LIMIT_LOW = 20;
+const CONTEXT_PREVIEW_LIMIT_MAX = 200;
+// how long user should idle typing before we refresh context preview
+const CONTEXT_IDLE_MS = 5000;
+// minimum size of text input to matter for previews
+const MIN_RAG_QUERY_TEXT_LEN = 5;
+// state maintenance for preview and trigger
+let contextRefreshTimer = null;
+let contextRefreshing = false;
+let lastContextDraftSent = "";
 
 // ----------------------------------
 // Helpers for UI state management and updates. 
 // ----------------------------------
+
+function setContextRefreshing(isRefreshing) {
+  contextRefreshing = !!isRefreshing;
+  if (!contextPreviewEl) return;
+
+  if (contextRefreshing) {
+    contextPreviewEl.dataset.loading = "1";
+  } else {
+    delete contextPreviewEl.dataset.loading;
+  }
+}
+
+function cancelScheduledContextRefresh() {
+  if (contextRefreshTimer) {
+    clearTimeout(contextRefreshTimer);
+    contextRefreshTimer = null;
+  }
+}
+
+function scheduleContextRefresh() {
+  if (!conversationId) return;
+
+  cancelScheduledContextRefresh();
+
+  contextRefreshTimer = setTimeout(async () => {
+    contextRefreshTimer = null;
+
+    const draft = (inputEl?.value || "").trim();
+    if (draft.length < MIN_RAG_QUERY_TEXT_LEN) return;
+    // Don't re-query if the draft hasn't changed since the last preview refresh.
+    if (draft === lastContextDraftSent) return;
+
+    try {
+      await refreshContext();
+      lastContextDraftSent = draft;
+    } catch (e) {
+      console.warn("debounced refreshContext failed", e);
+    }
+  }, CONTEXT_IDLE_MS);
+}
 
 async function fetchUiConfig() {
   try {
@@ -259,12 +316,43 @@ function buildMetaBar({ labelText = null, timeIso = null, includeButton = false 
 }
 */
 
+async function openArtifactsDebug() {
+  if (!conversationId) {
+    alert("Pick a conversation first.");
+    return;
+  }
+  artifactsDebugPre.textContent = "Loading…";
+  artifactsDebugModal.classList.remove("hidden");
+
+  try {
+    const data = await fetchJsonDebug(`/api/conversation/${conversationId}/artifacts/debug`);
+    artifactsDebugPre.textContent = JSON.stringify(data, null, 2);
+  } catch (e) {
+    artifactsDebugPre.textContent = `Failed to load artifact debug:\n${e?.message || e}`;
+  }
+}
+
+function closeArtifactsDebug() {
+  artifactsDebugModal.classList.add("hidden");
+}
+
 async function loadMessages(cid) {
   return await fetchJsonDebug(`/api/conversation/${cid}/messages`);
 }
 
+/*
 async function fetchContext(cid, previewLimit = 20) {
   return await fetchJsonDebug(`/api/conversation/${cid}/context?preview_limit=${previewLimit}`);
+}
+*/
+
+async function fetchContext(cid, previewLimit = 20, userText = "") {
+  const qs = new URLSearchParams();
+  qs.set("preview_limit", String(previewLimit));
+  if (userText && userText.trim()) {
+    qs.set("user_text", userText);
+  }
+  return await fetchJsonDebug(`/api/conversation/${cid}/context?${qs.toString()}`);
 }
 
 async function newChat() {
@@ -1045,14 +1133,20 @@ function makeConversationItem(c) {
   const t = document.createElement("div");
   t.className = "convTitle";
   t.textContent = c.title || "New chat";
+  item.appendChild(t);
 
   const m = document.createElement("div");
   m.className = "convMeta";
   m.textContent = formatReadableDateTime(c.created_at); //convMetaText(c);
   // You can swap created_at for updated_at later if you add it to the API.
-
-  item.appendChild(t);
   item.appendChild(m);
+
+  if (c.summary_excerpt) {
+    const s = document.createElement("div");
+    s.className = "convSummary";
+    s.textContent = c.summary_excerpt;
+    item.appendChild(s);
+  }
 
   item.addEventListener("click", () => selectConversation(c.id));
   item.addEventListener("contextmenu", (ev) => {
@@ -1185,6 +1279,181 @@ function applyAdvancedVisibility() {
 
 function renderContext(ctx) {
   const lines = [];
+
+  const total = ctx.assembled_input_count || 0;
+  const previewLimit = ctx.assembled_input_preview_limit ?? 20;
+  const truncated = !!ctx.assembled_input_preview_truncated;
+
+  const stats = ctx.token_stats || {};
+  const approxTokens = stats.approx_text_tokens ?? 0;
+  const numImages = stats.num_images ?? 0;
+  const totalChars = stats.total_chars ?? 0;
+
+  const projectName = ctx.project_name || "";
+  const projectId = ctx.project_id ?? null;
+
+  if (contextRefreshing) {
+    lines.push("[updating context preview...]");
+    lines.push("");
+  }
+
+  // 1) Headings / scope info
+  lines.push(`Conversation: ${ctx.conversation_id}`);
+  if (projectId !== null || projectName) {
+    lines.push(`Project: ${projectName || "(unnamed project)"}${projectId !== null ? ` [${projectId}]` : ""}`);
+  } else {
+    lines.push("Project: (none)");
+  }
+  const queryMode = ctx.query_mode || "UNKNOWN";
+  const hasDraft = !!ctx.has_user_text;
+  const fileIncludeActive = !!ctx.file_include;
+  const ftsActive = !!ctx.fts_rag_active;
+  const vectorActive = !!ctx.vector_rag_active;
+  let modeLine = `Mode: ${queryMode}`;
+  if (!hasDraft) {
+    modeLine += " (idle: no draft text, so retrieval/file injection is not running)";
+  } else {
+    const activeParts = [];
+    if (fileIncludeActive) activeParts.push("full-file inclusion active");
+    if (ftsActive) activeParts.push("FTS active");
+    if (vectorActive) activeParts.push("vector active");
+    if (!activeParts.length) activeParts.push("no retrieval path active");
+    modeLine += ` (${activeParts.join("; ")})`;
+  }
+  lines.push(modeLine);
+  // 2) High-level metrics
+  lines.push("CONTEXT METRICS:");
+  lines.push("Token and character counts are approximate.");
+  lines.push(`  Assembled messages: ${total}`);
+  lines.push(`  Context load: ~${approxTokens} text tokens; ${totalChars} characters; ${numImages} images`);
+  lines.push(`  Recent history preview limit: ${previewLimit}${truncated ? " (truncated)" : ""}`);
+  lines.push("Asset/RAG:");
+  lines.push(`  Pinned memories: ${(ctx.pinned_memories || []).length}`);
+  lines.push(`  Included files: ${(ctx.file_labels || []).length}`);
+  lines.push(`  RAG raw hits: ${((ctx.retrieved_chunks_raw || []).length)}`);
+  lines.push(`  RAG final hits: ${((ctx.retrieved_chunks_final || []).length)}`);
+  lines.push("");
+
+  // 3) System + project prompt
+  lines.push("SYSTEM + PROJECT PROMPT:");
+  lines.push(ctx.effective_system_prompt || "(none)");
+  lines.push("");
+
+  // 4) Conversation summary
+  lines.push("CONVERSATION SUMMARY:");
+  lines.push((ctx.summary || "").trim() || "(none)");
+  lines.push("");
+
+  // 5) In-scope memories
+  lines.push("IN-SCOPE MEMORIES:");
+  if ((ctx.pinned_memories || []).length) {
+    for (const t of ctx.pinned_memories) lines.push(`- ${t}`);
+  } else {
+    lines.push("(none)");
+  }
+  lines.push("");
+
+  // 6) In-scope files (only included if query model is ALL or FILES)
+  lines.push("IN-SCOPE FILES:");
+  const scopedFiles = ctx.scoped_files || [];
+  if (scopedFiles.length) {
+    for (const f of scopedFiles) {
+      const name = f.name || "(unnamed file)";
+      const scope =
+        f.scope_type === "conversation"
+          ? `conversation:${f.scope_uuid || "?"}`
+          : f.scope_type === "project"
+          ? `project:${f.scope_id ?? "?"}`
+          : (f.scope_type || "global");
+      lines.push(`- ${name} [${scope}]`);
+    }
+  } else {
+    lines.push("(none)");
+  }
+  lines.push("");
+
+  // 7) File suggestions / mode notes
+  lines.push("FILE INCLUSION / SUGGESTIONS:");
+  const rd = ctx.retrieval_debug || {};
+  const includedNow = ctx.included_file_labels || [];
+
+  if (ctx.file_include) {
+    lines.push("- Full file inclusion is active for this draft.");
+  } else {
+    lines.push("- Full file inclusion is not active.");
+  }
+
+  if (includedNow.length) {
+    lines.push("- Currently included files:");
+    for (const f of includedNow) lines.push(`  - ${f}`);
+  } else {
+    lines.push("- No full files are currently injected.");
+  }
+
+  if (rd.suggested_file_ids && rd.suggested_file_ids.length) {
+    lines.push("- Suggested files to include:");
+    for (const fid of rd.suggested_file_ids) {
+      const why = (rd.suggested_file_reasons && rd.suggested_file_reasons[fid]) || "";
+      lines.push(`  - ${fid}${why ? ` :: ${why}` : ""}`);
+    }
+  } else {
+    lines.push("(no file suggestions)");
+  }
+  lines.push("");
+
+  // 8) RAG metrics
+  lines.push("RAG METRICS:");
+  if (ctx.retrieval_debug) {
+    try {
+      lines.push(JSON.stringify(ctx.retrieval_debug, null, 2));
+    } catch (e) {
+      lines.push(String(ctx.retrieval_debug));
+    }
+  } else {
+    lines.push("(none)");
+  }
+  lines.push("");
+
+  // 9) RAG raw hits (no dedupe)
+  const rawRows = ctx.retrieved_chunks_raw || [];
+  lines.push(`RAG RAW HITS (${rawRows.length}):`);
+  if (rawRows.length) {
+    for (const r of rawRows.slice(0, 50)) {
+      const src = r.filename || r.scope_key || r.source_kind || "source";
+      lines.push(`- ${src}#${r.chunk_index} chunk_id=${r.chunk_id} artifact_id=${r.artifact_id} file_id=${r.file_id || ""} score=${r.score}`);
+    }
+  } else {
+    lines.push("(none)");
+  }
+  lines.push("");
+
+  // 10) RAG final hits (after dedupe/diversify/suppression)
+  const finalRows = ctx.retrieved_chunk_meta || [];
+  lines.push(`RAG FINAL HITS (${finalRows.length}):`);
+  if (finalRows.length) {
+    for (const r of finalRows) {
+      const src = r.filename || r.scope_key || r.source_kind || "source";
+      const ts = r.artifact_updated_at || r.file_updated_at || r.file_created_at || "";
+      lines.push(`- ${src}#${r.chunk_index} chunk_id=${r.chunk_id} score=${r.score} ts=${ts}`);
+    }
+  } else {
+    lines.push("(none)");
+  }
+  lines.push("");
+
+  // 11) Recent conversation context only
+  lines.push("RECENT CONVERSATION CONTEXT:");
+  for (const m of (ctx.recent_history_preview || [])) {
+    lines.push(`${(m.role || "??").toUpperCase()}: ${m.content || ""}`);
+    lines.push("");
+  }
+
+  contextPreviewEl.textContent = lines.join("\n");
+}
+
+/*
+function renderContext(ctx) {
+  const lines = [];
   const total = ctx.assembled_input_count || 0;
   const previewLimit = ctx.assembled_input_preview_limit ?? 20;
   const truncated = !!ctx.assembled_input_preview_truncated;
@@ -1193,6 +1462,11 @@ function renderContext(ctx) {
   const approxTokens = stats.approx_text_tokens;
   const numImages = stats.num_images;
   const totalChars = stats.total_chars;
+
+  if (contextRefreshing) {
+    lines.push("[updating context preview...]");
+    lines.push("");
+  }
 
   let previewNote;
   if (truncated) {
@@ -1210,9 +1484,10 @@ function renderContext(ctx) {
   lines.push("");
 
   lines.push("SYSTEM:");
-  lines.push(ctx.system_prompt || "");
+  lines.push(ctx.system_text || ctx.system_prompt || "(none)");
   lines.push("");
 
+  / *
   lines.push(`PINNED (${(ctx.pinned_memories || []).length}):`);
   if ((ctx.pinned_memories || []).length) {
     for (const t of ctx.pinned_memories) lines.push(`- ${t}`);
@@ -1224,7 +1499,34 @@ function renderContext(ctx) {
   lines.push(`SUMMARY:`);
   lines.push((ctx.summary || "").trim() || "(none)");
   lines.push("");
+  * /
 
+  const retrieved = ctx.retrieved_chunk_meta || [];
+  lines.push(`RETRIEVED (${retrieved.length}):`);
+  if (retrieved.length) {
+    for (const r of retrieved) {
+      const src = r.filename || r.scope_key || r.source_kind || "source";
+      const ts = r.artifact_updated_at || r.file_updated_at || r.file_created_at || "";
+      lines.push(`- ${src}#${r.chunk_index} chunk_id=${r.chunk_id} score=${r.score} ts=${ts}`);
+    }
+  } else {
+    lines.push("(none)");
+  }
+  lines.push("");
+  
+  lines.push("RAG DEBUG:");
+  if (ctx.retrieval_debug) {
+    try {
+      lines.push(JSON.stringify(ctx.retrieval_debug, null, 2));
+    } catch (e) {
+      lines.push(String(ctx.retrieval_debug));
+    }
+  } else {
+    lines.push("(none)");
+  }
+  lines.push("");
+
+  / * This is obsolete; pinned memories are included in ctx.assembled_input_preview
   lines.push(`RETRIEVED (${(ctx.retrieved_memories || []).length}):`);
   if ((ctx.retrieved_memories || []).length) {
     for (const t of ctx.retrieved_memories) lines.push(`- ${t}`);
@@ -1232,8 +1534,9 @@ function renderContext(ctx) {
     lines.push("(none)");
   }
   lines.push("");
+  * /
 
-  lines.push("INPUT PREVIEW (tail):");
+  lines.push("INPUT PREVIEW:");
   for (const m of (ctx.assembled_input_preview || [])) {
     lines.push(`${(m.role || "??").toUpperCase()}: ${m.content || ""}`);
     lines.push("");
@@ -1241,13 +1544,38 @@ function renderContext(ctx) {
 
   contextPreviewEl.textContent = lines.join("\n");
 }
+*/
 
+/*
 async function refreshContext() {
   if (!conversationId) return;
   const limit = contextExpanded ? 200 : 20;
   const ctx = await fetchContext(conversationId, limit);
   renderContext(ctx);
   toggleContextBtn.textContent = contextExpanded ? "Show less" : "Show more";
+}
+*/
+
+async function refreshContext() {
+  if (!conversationId) return;
+  const limit = contextExpanded ? CONTEXT_PREVIEW_LIMIT_MAX : CONTEXT_PREVIEW_LIMIT_LOW;
+  const draft = (inputEl?.value || "").trim();
+
+  setContextRefreshing(true);
+  try {
+    const ctx = await fetchContext(conversationId, limit, draft);
+    setContextRefreshing(false);
+    renderContext(ctx);
+    toggleContextBtn.textContent = contextExpanded ? "Show less" : "Show more";
+  } catch (e) {
+    console.error("refreshContext failed", e);
+    setContextRefreshing(false);
+    if (contextPreviewEl) {
+      contextPreviewEl.textContent = `Context refresh failed: ${e?.message || e}`;
+    }
+  } finally {
+    setContextRefreshing(false);
+  }
 }
 
 // #endregion
@@ -1258,6 +1586,9 @@ async function send() {
   const text = inputEl.value.trim();
   if (!text) return;
   inputEl.value = "";
+  // Reset the RAG timer
+  cancelScheduledContextRefresh();
+  lastContextDraftSent = "";
 
   // Base model from A
   const modelA = modelSelectA?.value || null;
@@ -2048,8 +2379,9 @@ async function summarizeConversation(conversationId) {
       return;
     }
     const data = await res.json();
-    // reload that conversation so the new summary message appears
-    await loadConversation(conversationId);
+    // Re-open current conversation so the new assistant summary message appears
+    await selectConversation(conversationId);
+    // Downstream calls refreshConversationLists() and refreshContext
   } catch (e) {
     console.error("summarizeConversation failed", e);
     alert("Error summarizing conversation.");
@@ -2182,6 +2514,13 @@ async function updateProject(projectId, fields) {
 
 // #region File upload helpers
 
+async function sha256OfFile(file) {
+  const buf = await file.arrayBuffer();
+  const digest = await crypto.subtle.digest("SHA-256", buf);
+  const bytes = Array.from(new Uint8Array(digest));
+  return bytes.map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
 function openUploadModal(forceScope, explicitProjectId) {
   if (!uploadModal) return;
 
@@ -2239,11 +2578,10 @@ async function startUpload() {
     return;
   }
 
+  // scope checks
   const scope = uploadScopeEl.value || "conversation";
-
   let payloadConversationId = null;
   let payloadProjectId = null;
-
   if (scope === "conversation") {
     if (!conversationId) {
       alert("You need an active conversation for conversation scope.");
@@ -2268,6 +2606,79 @@ async function startUpload() {
     return;
   }
 
+  // Preflight duplicate warning
+  const preflightFiles = [];
+  for (const f of files) {
+    const sha256 = await sha256OfFile(f);
+    preflightFiles.push({
+      name: f.name,
+      sha256,
+      scope_type: scope,
+      conversation_id: payloadConversationId || null,
+      project_id: payloadProjectId ?? null,
+    });
+  }
+
+  const preflightRes = await fetch("/api/files/preflight_upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ files: preflightFiles }),
+  });
+
+  if (!preflightRes.ok) {
+    const txt = await preflightRes.text().catch(() => "");
+    alert("Upload preflight failed: " + (txt.slice(0, 200) || preflightRes.status));
+    return;
+  }
+
+  const preflight = await preflightRes.json();
+  const pfFiles = preflight.files || [];
+  const dupes = pfFiles.filter(x => (x.duplicate_count || 0) > 0);
+  const sameNameConflicts = pfFiles.filter(x => (x.same_name_count || 0) > 0);
+  let warnings = [];
+  if (dupes.length) {
+    warnings.push("Possible duplicate upload(s) detected:");
+    for (const d of dupes) {
+      warnings.push(`• ${d.name} -> ${d.duplicate_count} existing file(s) with same hash`);
+      for (const f of (d.duplicates || []).slice(0, 8)) {
+        const scope =
+          f.scope_type === "conversation"
+            ? `conversation:${f.scope_uuid || "?"}`
+            : f.scope_type === "project"
+            ? `project:${f.scope_id ?? "?"}`
+            : (f.scope_type || "global");
+        warnings.push(`    - ${scope} :: ${f.name} [${f.id}]`);
+      }
+    }
+  }
+  if (sameNameConflicts.length) {
+    warnings.push("");
+    warnings.push("Same-name conflicts detected:");
+    for (const d of sameNameConflicts) {
+      const conflicts = (d.same_name_conflicts || []).filter(f => f.id);
+      if (!conflicts.length) continue;
+
+      warnings.push(`• ${d.name} -> ${conflicts.length} existing file(s) with same name`);
+      for (const f of conflicts.slice(0, 8)) {
+        const scope =
+          f.scope_type === "conversation"
+            ? `conversation:${f.scope_uuid || "?"}`
+            : f.scope_type === "project"
+            ? `project:${f.scope_id ?? "?"}`
+            : (f.scope_type || "global");
+        const hashNote = f.same_hash ? "same hash" : "different hash";
+        warnings.push(`    - ${scope} :: ${hashNote} [${f.id}]`);
+      }
+    }
+  }
+  if (warnings.length) {
+    warnings.push("");
+    warnings.push("Continue anyway?");
+    const ok = confirm(warnings.join("\n"));
+    if (!ok) return;
+  }
+
+  // actually submittal
   const form = new FormData();
   files.forEach(f => form.append("files", f));
 
@@ -2395,6 +2806,62 @@ async function loadFilesModal() {
     const container = document.createElement("div");
     container.className = "filesListTable";
 
+      files.forEach(file => {
+      const row = document.createElement("div");
+      row.className = "filesRow";
+
+      const nameSpan = document.createElement("span");
+      nameSpan.className = "filesName";
+      nameSpan.textContent = file.name || file.path || file.id;
+
+      const descInput = document.createElement("input");
+      descInput.className = "filesDescInput";
+      descInput.type = "text";
+      descInput.placeholder = "Description / what this file is for…";
+      descInput.value = file.description || "";
+      descInput.dataset.fileId = file.id;   // IMPORTANT: this was missing
+      descInput.addEventListener("change", () => {
+        saveFileDescription(file.id, descInput.value);
+      });
+
+      const deleteBtn = document.createElement("button");
+      deleteBtn.className = "filesDeleteBtn";
+      deleteBtn.textContent = "Delete";
+      deleteBtn.addEventListener("click", async () => {
+        const ok = confirm(`Delete file "${file.name || file.id}" and its artifacts/chunks?`);
+        if (!ok) return;
+
+        try {
+          const res = await fetch(`/api/files/${encodeURIComponent(file.id)}`, {
+            method: "DELETE",
+          });
+          if (!res.ok) {
+            const txt = await res.text().catch(() => "");
+            alert(`Delete failed (HTTP ${res.status}). ${txt.slice(0, 200)}`);
+            return;
+          }
+
+          // remove row from UI immediately
+          row.remove();
+
+          // refresh context because this can change prompt inputs
+          try {
+            await refreshContext();
+          } catch (e) {
+            console.warn("refreshContext after file delete failed", e);
+          }
+        } catch (err) {
+          console.error("delete file failed", err);
+          alert("Delete failed: " + (err?.message || err));
+        }
+      });
+
+      row.appendChild(nameSpan);
+      row.appendChild(descInput);
+      row.appendChild(deleteBtn);
+      container.appendChild(row);
+    });
+    /*
     files.forEach(file => {
       const row = document.createElement("div");
       row.className = "filesRow";
@@ -2416,6 +2883,7 @@ async function loadFilesModal() {
       row.appendChild(descInput);
       container.appendChild(row);
     });
+    */
 
     filesListEl.innerHTML = "";
     filesListEl.appendChild(container);
@@ -2871,12 +3339,27 @@ if (projDescBtn) {
 
 // #endregion
 
+// #region Artifact debug/info model bindings
+
+if (artifactsDebugTopBtn) {
+  artifactsDebugTopBtn.addEventListener("click", openArtifactsDebug);
+}
+if (artifactsDebugCloseBtn) {
+  artifactsDebugCloseBtn.addEventListener("click", closeArtifactsDebug);
+}
+
+// #endregion
+
 // bind send to enter when chat input is focused, but allow shift+enter for newlines
 inputEl.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     send();
   }
+});
+// tell the RAG timer not to fire while typing actively.
+inputEl.addEventListener("input", () => {
+  scheduleContextRefresh();
 });
 
 document.addEventListener("click", (e) => {

@@ -8,8 +8,47 @@ Set-StrictMode -Version Latest
 
 $root = Get-Location
 $date = Get-Date -Format "yyyyMMdd"
-$zipName = "WyrmGPT.$date.d.zip"
-$zipPath = Join-Path $root $zipName
+$root = Get-Location
+$date = Get-Date -Format "yyyyMMdd"
+
+function Get-NextArchiveRev {
+    param(
+        [string]$Root,
+        [string]$Date
+    )
+
+    $existing = Get-ChildItem -Path $Root -Filter "WyrmGPT.$Date.*.zip" -File -ErrorAction SilentlyContinue
+
+    # Convert rev like a, b, z, aa, ab ... into an integer (1-indexed base-26)
+    function RevToInt([string]$rev) {
+        $n = 0
+        foreach ($ch in $rev.ToCharArray()) {
+            if ($ch -lt 'a' -or $ch -gt 'z') { return -1 }
+            $n = ($n * 26) + ([int][char]$ch - [int][char]'a' + 1)
+        }
+        return $n
+    }
+
+    function IntToRev([int]$n) {
+        $s = ""
+        while ($n -gt 0) {
+            $n--
+            $s = [char]([int][char]'a' + ($n % 26)) + $s
+            $n = [math]::Floor($n / 26)
+        }
+        return $s
+    }
+
+    $max = 0
+    foreach ($f in $existing) {
+        if ($f.Name -match "^WyrmGPT\.$Date\.([a-z]+)\.zip$") {
+            $v = RevToInt $matches[1]
+            if ($v -gt $max) { $max = $v }
+        }
+    }
+
+    return (IntToRev ($max + 1))
+}
 
 function Get-GitIgnorePatterns {
     $gitignore = Join-Path $root ".gitignore"
@@ -65,6 +104,10 @@ function Get-ExcludePatterns {
 
     return $patterns
 }
+
+$rev = Get-NextArchiveRev -Root $root -Date $date
+$zipName = "WyrmGPT.$date.$rev.zip"
+$zipPath = Join-Path $root $zipName
 
 $excludePatterns = Get-ExcludePatterns
 

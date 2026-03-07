@@ -13,8 +13,9 @@
       <div class="sideHeader">
         <div class="title">WyrmGPT</div>
         <div class="sideHeaderButtons">
-          <button id="manageFilesTop">Files</button>
           <button id="newChat">New</button>
+          <button id="manageFilesTop">Files</button>
+          <button id="artifactsDebugTop">Artifacts</button>
         </div>
       </div>
       <div id="projectHeader">
@@ -175,6 +176,18 @@
       </div>
     </div>
   </div>
+  <div id="artifactsDebugModal" class="modal hidden">
+    <div class="modalBackdrop"></div>
+    <div class="modalPanel" style="max-width: 900px;">
+      <div class="modalHeader">
+        <div class="modalTitle">Scoped Artifacts</div>
+        <button id="artifactsDebugClose" class="iconButton" title="Close">&times;</button>
+      </div>
+      <div class="modalBody">
+        <pre id="artifactsDebugPre" class="contextPreview"></pre>
+      </div>
+    </div>
+  </div>  
   <div id="convMenu" class="convMenu hidden">
     <button id="menuRename">Rename</button>
     <button id="menuSuggest">Suggest Title</button>

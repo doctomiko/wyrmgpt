@@ -3,7 +3,10 @@ import json
 import os
 #from typing import cast
 from pathlib import Path
+
+from .logging_helper import log_debug, log_warn
 from .db import (
+    get_conversation_summary_text,
     get_messages,
     get_context_sources,
     list_memory_pins,
@@ -14,10 +17,12 @@ from .db import (
     ensure_artifacts_for_files,
     gather_scoped_files
 )
+from .config import ContextConfig, CoreConfig, QueryConfig, load_context_config, load_core_config, load_query_config
 # TODO untagle dependencies later if needed
 # Now artifactor is used entirely from the database layer
 # from .artifactor import artifact_file
 from .image_helpers import load_image_bytes, image_bytes_to_base64
+from .query_retrieval import retrieve_chunks_for_message
 try:
     import tiktoken
 except ImportError:
@@ -26,32 +31,70 @@ except ImportError:
 # From openai/types/responses/response_create_params.py
 # from openai.types.responses import ResponseInputParam
 
-DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant. Be concise, candid, and technically accurate."
-
-def get_system_prompt() -> str:
+def _get_prompt(default_prompt: str, filepath: str = "", cfg_default="(cfg default)", cfg_filepath="(cfg filepath name)") -> str:
     """
-    Loads system prompt in this precedence order:
-    1) SYSTEM_PROMPT_FILE (read text file)
-    2) SYSTEM_PROMPT (env var, supports literal '\n' sequences)
-    3) DEFAULT_SYSTEM_PROMPT (fallback hardcoded string)
+    Loads a given prompt in this precedence order:
+    1) filepath (read text file)
+    2) default_prompt (fallback from cfg values, supports literal '\\n' sequences)
     """
-    file_path = os.getenv("SYSTEM_PROMPT_FILE", "").strip()
-    print(f"Loading system prompt from file: {file_path}")  # Debug print)
-    if file_path:
-        p = Path(file_path)
-        if p.exists() and p.is_file():
-            return p.read_text(encoding="utf-8")
+    if filepath:
+        raw = Path(filepath)
 
-    print("No valid SYSTEM_PROMPT_FILE found, checking SYSTEM_PROMPT env var...")  # Debug print
-    val = os.getenv("SYSTEM_PROMPT", "")
-    if val:
-        print(f"Loaded SYSTEM_PROMPT from env var: {val[:60]}...")  # Debug print (showing only first 60 chars)
+        candidates = []
+        if raw.is_absolute():
+            candidates.append(raw)
+        else:
+            candidates.append(raw)
+            candidates.append(Path.cwd() / raw)
+            candidates.append(Path(__file__).resolve().parents[1] / raw)  # repo root / relative path
+
+        for p in candidates:
+            try:
+                if p.exists() and p.is_file():
+                    log_debug("Loaded prompt from file %s (%s)", cfg_filepath, p)
+                    return p.read_text(encoding="utf-8")
+            except Exception as e:
+                log_warn("Failed reading prompt file %s from %s: %s", cfg_filepath, p, e)
+
+    log_debug("No valid %s found, falling back to %s", cfg_filepath, cfg_default)
+    val = default_prompt or ""
+    val = val.replace("\\n", "\n")
+    return val
+
+if (False):
+    def _get_prompt(default_prompt: str, filepath: str = "", cfg_default = "(cfg default)", cfg_filepath = "(cfg filepath name)") -> str:
+        """
+        Loads a given system prompt in this precedence order:
+        1) filepath (read text file)
+        3) default_prompt (fallback from cfg values, derrived from .env or hardcoded string, supports literal '\n' sequences)
+        """
+        log_debug(f"Loading system prompt from file: {filepath}")
+        if filepath:
+            p = Path(filepath)
+            if p.exists() and p.is_file():
+                return p.read_text(encoding="utf-8")
+
+        log_debug(f"No valid {cfg_filepath} found, checking {cfg_default}...")  # Debug print
+        val = default_prompt
+        print(f"Loaded {cfg_default} from env var: {val[:60]}...")  # Debug print (showing only first 60 chars)
         # If your .env uses \n escapes, turn them into real newlines
         val = val.replace("\\n", "\n")
         return val
-    
-    print("No SYSTEM_PROMPT env var found, using default system prompt.")  # Debug print
-    return DEFAULT_SYSTEM_PROMPT
+
+def get_system_prompt(cfg: CoreConfig | None = None) -> str:
+    """
+    Loads system prompt from cfg in this precedence order:
+    1) SYSTEM_PROMPT_FILE (read text file)
+    2) SYSTEM_PROMPT (env var, supports literal '\n' sequences)
+    3) fallback to hardcoded string in CoreConfig
+    """
+    cfg = cfg or load_core_config()
+    return _get_prompt(
+        cfg.default_system_prompt,
+        cfg.system_prompt_file,
+        cfg_default="SYSTEM_PROMPT",
+        cfg_filepath="SYSTEM_PROMPT_FILE",
+    )
 
 def iso_to_epoch_ms(iso: str) -> int:
     """Handles "2026-02-28T23:15:12.140213+00:00" cleanly"""
@@ -78,6 +121,80 @@ def iso_to_age_seconds(iso: str) -> int:
     dt = dt.astimezone(timezone.utc)
     now = datetime.now(timezone.utc)
     return max(0, int((now - dt).total_seconds()))
+
+def _format_retrieved_chunks(rows: list[dict], *, max_chunks: int = 8, max_chars: int = 1200) -> tuple[str, list[dict], list[str]]:
+    """
+    Returns:
+      - block_text: ready to paste into system prompt (includes provenance headers + chunk text)
+      - meta: structured per-chunk metadata for UI / later expansion
+      - cites: short single-line citations (back-compat with your retrieved_memories list usage)
+    """
+    block_parts: list[str] = []
+    meta: list[dict] = []
+    cites: list[str] = []
+
+    for r in (rows or [])[:max_chunks]:
+        text = (r.get("text") or "").strip()
+        if not text:
+            continue
+
+        if len(text) > max_chars:
+            text = text[:max_chars] + f"\n[...truncated chunk; max_chars={max_chars}]"
+
+        chunk_id = r.get("chunk_id")
+        artifact_id = r.get("artifact_id")
+        chunk_index = r.get("chunk_index")
+        score = r.get("score")
+        filename = r.get("filename")
+        scope_key = r.get("scope_key")
+        source_kind = r.get("source_kind")
+        source_id = r.get("source_id")
+        file_id = r.get("file_id")
+        mime_type = r.get("mime_type")
+        src_label = filename or scope_key or source_kind or "source"
+
+        artifact_title = r.get("artifact_title")
+        artifact_updated_at = r.get("artifact_updated_at")
+        file_created_at = r.get("file_created_at")
+        file_updated_at = r.get("file_updated_at")
+
+        # Best “source timestamp” we can show:
+        ts = artifact_updated_at or file_updated_at or file_created_at
+        age = None
+        if ts:
+            try:
+                age = iso_to_age_seconds(ts)
+            except Exception:
+                age = None
+
+        header = (
+            f"[chunk_id={chunk_id} score={score} ts={ts} age={age} "
+            f"src={src_label} artifact_id={artifact_id} chunk_index={chunk_index} file_id={file_id}]"
+        )
+        #header = f"[chunk_id={chunk_id} score={score} src={src_label} artifact_id={artifact_id} chunk_index={chunk_index} file_id={file_id}]"
+
+        block_parts.append(header + "\n" + text)
+
+        meta.append({
+            "chunk_id": chunk_id,
+            "chunk_index": chunk_index,
+            "score": score,
+            "artifact_id": artifact_id,
+            "artifact_title": artifact_title,
+            "artifact_updated_at": artifact_updated_at,
+            "scope_key": scope_key,
+            "source_kind": source_kind,
+            "source_id": source_id,
+            "file_id": file_id,
+            "filename": filename,
+            "file_created_at": file_created_at,
+            "file_updated_at": file_updated_at,
+            "mime_type": mime_type,
+        })
+
+        cites.append(f"{src_label}#{chunk_index} (chunk_id={chunk_id})")
+
+    return ("\n\n".join(block_parts)).strip(), meta, cites
 
 def zeitgeber_prefix(created_at: str, raw_content: str) -> str:
     stamp = iso_to_compact_utc(created_at)
@@ -145,7 +262,8 @@ def estimate_tokens_for_messages(messages: list[dict], model: str = "gpt-4.1-min
 
 def estimate_context_tokens(
     conversation_id: str,
-    history_limit: int = 200,
+    ctx_cfg: ContextConfig, #history_limit: int = 200,
+    addtl_user_text: str = "",
     model: str = "gpt-5.2",
     drop_last_user_message: bool = False,
 ) -> dict:
@@ -153,7 +271,7 @@ def estimate_context_tokens(
     Estimate tokens for the context that will be sent with the next user message,
     excluding that next user message itself.
     """
-    full_input = build_model_input(conversation_id, history_limit=history_limit)
+    full_input = build_model_input(conversation_id, addtl_user_text, ctx_cfg)
     if not full_input:
         return {"total_chars": 0, "approx_text_tokens": 0, "num_images": 0}
 
@@ -164,31 +282,103 @@ def estimate_context_tokens(
         context = full_input
     return estimate_tokens_for_messages(context, model=model)
 
-def build_context(conversation_id: str, history_limit: int = 200, preview_limit: int = 20) -> dict:
-    sources = get_context_sources(conversation_id)
+# TODO memory pin limit
+def build_context(
+        conversation_id: str, # shapes the context by scope
+        user_text: str, # needed for RAG queries
+        ctx_cfg: ContextConfig | None = None,
+        query_cfg: QueryConfig | None = None,
+        include_preview: bool = True,
+        ) -> dict:
+    ctx_cfg = ctx_cfg or load_context_config()
+    query_cfg = query_cfg or load_query_config()
 
-    history = get_messages(conversation_id, limit=history_limit)
+    has_user_text = bool((user_text or "").strip())
+    do_include_files = has_user_text and query_cfg.query_mode in ("FILES", "ALL")
+    do_fts_rag = has_user_text and query_cfg.query_mode in ("FTS", "HYBRID", "ALL")
+    do_vector_rag = has_user_text and query_cfg.query_mode in ("VECTOR", "HYBRID", "ALL")
 
-    pinned = list_memory_pins(limit=200)
+    preview_limit = max(1, int(ctx_cfg.preview_limit))
+
+    history_rows = get_messages(conversation_id, limit=ctx_cfg.history_limit)
+    # Add the zeitgeber prefixes
+    typed_history: list[dict] = []
+    for r in history_rows:
+        created_at = (r.get("created_at") or "").strip() if r.get("created_at") else ""
+        raw_content = r.get("content") or ""
+        text = zeitgeber_prefix(created_at, raw_content) if created_at else raw_content
+        typed_history.append({"role": r["role"], "content": text})
+
+    pinned = list_memory_pins(limit=ctx_cfg.memory_pin_limit)
     pinned_texts = [p["text"] for p in pinned]
 
+    sources = get_context_sources(conversation_id)
     # Pull summary if present
-    summary = ""
-    sj = sources.get("summary_json")
-    if sj:
-        try:
-            obj = json.loads(sj)
-            summary = (obj.get("summary") or "").strip()
-        except Exception:
-            summary = ""
+    summary = get_conversation_summary_text(conversation_id)
+    if (False):
+        summary = ""
+        sj = sources.get("summary_json")
+        if sj:
+            try:
+                obj = json.loads(sj)
+                summary = (obj.get("summary") or "").strip()
+            except Exception:
+                summary = ""
 
-    retrieved = []  # still placeholder
+    retrieved_rows_raw: list[dict] = []
+    retrieved_rows: list[dict] = []
+    retrieved_block = ""
+    retrieved_meta: list[dict] = []
+    retrieved_cites: list[str] = []
+    retrieval_debug: dict | None = None
+
+    if do_fts_rag:
+        chunks_resp = retrieve_chunks_for_message(
+            conversation_id=conversation_id,
+            user_message=user_text,
+            limit=8,
+            cfg=query_cfg,
+        )
+
+        retrieved_rows_raw = chunks_resp.get("raw_results") or []
+        retrieved_rows = chunks_resp.get("results") or []
+        retrieval_debug = chunks_resp.get("debug") or {"skipped": False, "reason": None}
+
+        # If full files are already included, do NOT also stuff file-derived chunks into the final RAG block.
+        if do_include_files:
+            suppressed = [r for r in retrieved_rows if r.get("file_id")]
+            retrieved_rows = [r for r in retrieved_rows if not r.get("file_id")]
+
+            retrieval_debug["suppressed_file_chunk_rows"] = [
+                {
+                    "chunk_id": r.get("chunk_id"),
+                    "artifact_id": r.get("artifact_id"),
+                    "file_id": r.get("file_id"),
+                    "filename": r.get("filename"),
+                    "chunk_index": r.get("chunk_index"),
+                    "score": r.get("score"),
+                    "reason": "file already fully included in ALL/FILES mode",
+                }
+                for r in suppressed[:50]
+            ]
+
+        retrieved_block, retrieved_meta, retrieved_cites = _format_retrieved_chunks(
+            retrieved_rows,
+            max_chunks=8,
+            max_chars=1200,
+        )
+
+    # We're skipping all searches - say why
+    if not (do_fts_rag or do_vector_rag):
+        retrieval_debug = {
+            "skipped": True,
+            "reason": f"query_mode={query_cfg.query_mode} user_text_present={bool(user_text.strip())}",
+        }
 
     # Choose base system prompt
     core_system = get_system_prompt()
     proj_prompt = (sources.get("project_system_prompt") or "").strip()
     override = bool(sources.get("override_core_prompt"))
-
     if override and proj_prompt:
         system_prompt = proj_prompt
     elif proj_prompt:
@@ -201,82 +391,43 @@ def build_context(conversation_id: str, history_limit: int = 200, preview_limit:
 
     if pinned_texts:
         joined = "\n".join(f"- {t}" for t in pinned_texts)
-        system_blocks.append("Pinned memories (user-curated, treat as true):\n" + joined)
+        system_blocks.append("PINNED MEMORIES (user-curated, treat as true):\n" + joined)
 
     if summary:
-        system_blocks.append("Conversation summary:\n" + summary)
+        system_blocks.append("CONVERSATION SUMMARY:\n" + summary)
 
-    if retrieved:
-        joined = "\n".join(f"- {m}" for m in retrieved)
-        system_blocks.append("Retrieved memories (machine-selected, verify if uncertain):\n" + joined)
-
-    assembled_input = [{"role": "system", "content": "\n\n".join(system_blocks)}] + history
-
-    preview = assembled_input[-preview_limit:] if preview_limit > 0 else assembled_input
-    truncated = len(preview) < len(assembled_input)
-
-    return {
-        "conversation_id": conversation_id,
-        "system_prompt": system_prompt,
-        "pinned_memories": pinned_texts,
-        "retrieved_memories": retrieved,
-        "summary": summary,
-        "history_count": len(history),
-        "assembled_input_preview": preview,
-        "assembled_input_count": len(assembled_input),
-        "assembled_input_preview_limit": preview_limit,
-        "assembled_input_preview_truncated": truncated,
-    }
-
-def build_model_input(conversation_id: str, history_limit: int = 200) -> list[dict]:
-    """
-    Build a Responses-API compatible input.
-    Use string `content` for all text messages (max compatibility).
-    Keep file/image messages as typed parts ONLY when needed.
-    """
-    ctx = build_context(conversation_id, history_limit=history_limit)
-    history_rows = get_messages(conversation_id, limit=history_limit)
-
-    pinned = ctx["pinned_memories"]
-    summary = ctx["summary"]
-    retrieved = ctx["retrieved_memories"]
-
-    system_blocks = [ctx["system_prompt"]]
-    if pinned:
-        system_blocks.append(
-            "Pinned memories (user-curated, treat as true):\n"
-            + "\n".join(f"- {t}" for t in pinned)
-        )
-    if summary.strip():
-        system_blocks.append("Conversation summary:\n" + summary.strip())
-    if retrieved:
-        system_blocks.append(
-            "Retrieved memories (machine-selected; verify if uncertain):\n"
-            + "\n".join(f"- {t}" for t in retrieved)
-        )
+    if retrieved_block:
+        system_blocks.append("RETRIEVED CONTENT (RAG; cite chunk_id if referencing):\n" + retrieved_block)
+    # if retrieved:
+    #    joined = "\n".join(f"- {m}" for m in retrieved)
+    #    system_blocks.append("Retrieved memories (machine-selected using RAG, verify if uncertain):\n" + joined)
 
     system_text = "\n\n".join(system_blocks)
 
-    system_message = {"role": "system", "content": system_text}
+    # Build the list of scoped files regardless of do_include_files
+    scoped_files_by_id = gather_scoped_files(conversation_id)
+    scoped_files = []
+    for file_id, file_row in scoped_files_by_id.items():
+        scoped_files.append({
+            "file_id": file_id,
+            "name": file_row.get("original_name") or Path(file_row.get("path") or "").name,
+            "mime_type": file_row.get("mime_type"),
+            "scope_type": file_row.get("scope_type"),
+            "scope_id": file_row.get("scope_id"),
+            "scope_uuid": file_row.get("scope_uuid"),
+            "description": file_row.get("description"),
+            "created_at": file_row.get("created_at"),
+            "updated_at": file_row.get("updated_at"),
+            "sha256": file_row.get("sha256"),
+        })
 
-    if not history_rows:
-        return [system_message]
-
-    typed_history: list[dict] = []
-    for r in history_rows:
-        created_at = (r.get("created_at") or "").strip() if r.get("created_at") else ""
-        raw_content = r.get("content") or ""
-        text = zeitgeber_prefix(created_at, raw_content) if created_at else raw_content
-        typed_history.append({"role": r["role"], "content": text})
-
-    *prior_msgs, last_msg = typed_history
-
-    # These file messages MUST already be in a format your app uses.
-    # If they currently use [{"type":"input_text",...}] convert that to plain text.
-    file_messages = _build_file_messages_for_conversation(conversation_id)
-
+    # FILE CONTNENTS
+    # check include_files and don't do this step if it is false
+    file_messages = _build_file_messages_for_conversation(conversation_id) if do_include_files else []
     # Normalize any file_messages that are purely text parts
     normalized_file_messages = []
+    # These file messages MUST already be in a format your app uses.
+    # If they currently use [{"type":"input_text",...}] convert that to plain text.
     for m in file_messages:
         c = m.get("content")
         if isinstance(c, list) and c and isinstance(c[0], dict):
@@ -286,7 +437,154 @@ def build_model_input(conversation_id: str, history_limit: int = 200) -> list[di
                 continue
         normalized_file_messages.append(m)
 
+    # These are only needed for the /context debug endpoint, not for actual chat turns.
+    assembled_input_count = None
+    assembled_input_preview = None
+    assembled_input_truncated = None
+    token_stats = None
+    # This will provide long or short preview when the call
+    # is being made to populate the right-hand diagnostic panel.
+    if include_preview:
+        assembled_input_full = typed_history
+        assembled_input_count = len(assembled_input_full)
+        assembled_input_preview = assembled_input_full[-preview_limit:] if preview_limit > 0 else assembled_input_full
+        assembled_input_truncated = len(assembled_input_preview) < len(assembled_input_full)
+        # Include files in the assembled input also
+        assembled_input_preview = [{"role": "system", "content": system_text}] + normalized_file_messages + assembled_input_preview
+        token_stats = estimate_context_tokens(conversation_id, ctx_cfg, user_text, model=ctx_cfg.estimate_model)
+
+    return {
+        "conversation_id": conversation_id,
+        "project_id": sources.get("project_id"),
+        "project_name": sources.get("project_name"),
+        "file_include": bool(do_include_files),
+        "fts_rag_active": bool(do_fts_rag),
+        "vector_rag_active": bool(do_vector_rag),
+        "query_mode": query_cfg.query_mode,
+        "has_user_text": has_user_text,
+        "core_system_prompt": core_system,
+        "project_system_prompt": proj_prompt,
+        "effective_system_prompt": system_prompt,
+        "system_text": system_text, #"system_prompt": system_prompt,
+        "token_stats": token_stats,
+        "summary": summary,
+        "pinned_memories": pinned_texts, #"retrieved_memories": retrieved,
+        "retrieved_memories": retrieved_cites,     # keeps your existing key stable for UI
+        "retrieved_chunks_raw": retrieved_rows_raw,
+        #"retrieved_chunks": retrieved_rows,        
+        "retrieved_chunks_final": retrieved_rows,  # full rows
+        "retrieved_chunk_meta": retrieved_meta,    # tidy meta for future expand/open
+        "retrieval_debug": retrieval_debug,        
+
+        # Do we need assembled input here or not?
+        "assembled_input_count": assembled_input_count,
+        "assembled_input_preview": assembled_input_preview,
+        "assembled_input_preview_limit": ctx_cfg.preview_limit,
+        "assembled_input_preview_truncated": assembled_input_truncated,
+        "history_count": len(history_rows),
+        "history_rows": history_rows, 
+        "history_rows_typed": typed_history,
+        "scoped_files": scoped_files,
+        "file_messages": normalized_file_messages,
+    }
+
+def build_model_input(
+        conversation_id: str, 
+        user_text: str, 
+        ctx_cfg: ContextConfig | None = None,
+        query_cfg: QueryConfig | None = None,
+        ctx: dict | None = None
+    ) -> list[dict]:
+    """
+    Build a Responses-API compatible input.
+    Use string `content` for all text messages (max compatibility).
+    Keep file/image messages as typed parts ONLY when needed.
+    """
+    ctx_cfg = ctx_cfg or load_context_config()
+    query_cfg = query_cfg or load_query_config()
+    
+    ctx = ctx or build_context(conversation_id, user_text, ctx_cfg, query_cfg, include_preview=False)
+
+    # TODO ensure pinned, summary, and retrieved are included in system_text
+    history_rows = ctx.get("history_rows") or []
+    system_message = {"role": "system", "content": ctx["system_text"]}
+    normalized_file_messages = ctx.get("file_messages") or []
+
+    # If first message, just return the system prompt and the files list
+    # Otherwise split the last message off and show it after the file list.
+    # TODO could this be simplified?
+    if not history_rows:
+        return [system_message] + normalized_file_messages
+    typed_history = ctx["history_rows_typed"]
+    *prior_msgs, last_msg = typed_history
     return [system_message] + prior_msgs + normalized_file_messages + [last_msg]
+
+def build_context_panel_payload(
+    conversation_id: str,
+    user_text: str,
+    ctx_cfg: ContextConfig | None = None,
+    query_cfg: QueryConfig | None = None,
+) -> dict:
+    """
+    Side-panel-only diagnostic payload.
+    This is NOT the function used to assemble model input for a live chat turn.
+    """
+    ctx_cfg = ctx_cfg or load_context_config()
+    query_cfg = query_cfg or load_query_config()
+
+    # Build raw context state first
+    ctx = build_context(
+        conversation_id=conversation_id,
+        user_text=user_text,
+        ctx_cfg=ctx_cfg,
+        query_cfg=query_cfg,
+        include_preview=False,
+    )
+
+    # Build the ACTUAL model input from the same ctx so the side panel reflects reality
+    full_input = build_model_input(
+        conversation_id=conversation_id,
+        user_text=user_text,
+        ctx_cfg=ctx_cfg,
+        query_cfg=query_cfg,
+        ctx=ctx,
+    )
+
+    preview_limit = max(1, int(ctx_cfg.preview_limit))
+
+    typed_history = ctx.get("history_rows_typed") or []
+    recent_history_preview = typed_history[-preview_limit:] if preview_limit > 0 else typed_history
+    recent_history_truncated = len(recent_history_preview) < len(typed_history)
+
+    # File info
+    scoped_files = ctx.get("scoped_files") or []
+    file_messages = ctx.get("file_messages") or []
+    file_labels = [f.get("name") or "(file)" for f in scoped_files]
+    included_file_labels = [_panel_label_for_file_message(m) for m in file_messages]
+
+    token_stats = estimate_tokens_for_messages(full_input, model=ctx_cfg.estimate_model)
+
+    return {
+        **ctx,
+        "token_stats": token_stats,
+        "assembled_input_count": len(full_input),
+        "assembled_input_preview_limit": preview_limit,
+        "assembled_input_preview_truncated": recent_history_truncated,
+        "recent_history_preview": recent_history_preview,
+        "file_labels": file_labels,
+        "included_file_labels": included_file_labels,
+    }
+
+def _panel_label_for_file_message(msg: dict) -> str:
+    content = msg.get("content") or ""
+    if isinstance(content, str):
+        first = content.splitlines()[0].strip()
+        return first or "(file)"
+    if isinstance(content, list) and content and isinstance(content[0], dict):
+        txt = content[0].get("text") or ""
+        first = str(txt).splitlines()[0].strip()
+        return first or "(file)"
+    return "(file)"
 
 def _build_file_messages_for_conversation(conversation_id: str) -> list[dict]:
     """

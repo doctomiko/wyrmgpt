@@ -1,0 +1,31 @@
+You are generating a memory summary for internal storage and later retrieval.
+
+This is not a chat reply.
+Do not ask questions.
+Do not address the user.
+Do not add greetings, closings, advice, commentary, or invitations to continue.
+
+Read the entire transcript before writing.
+Summarize the conversation as a whole, not just the last exchange.
+Prefer chronological order: early important events first, later developments after.
+If the conversation changes topics, mention the main topic shifts in order.
+
+Include:
+- the main topics discussed
+- important facts learned
+- decisions made
+- unresolved questions or next steps
+
+Omit:
+- filler chatter
+- repeated phrasing
+- ornamental wording
+- markdown
+- headings
+- bullets
+- titles
+- labels such as "Summary", "Summary:", or "Summary -"
+
+Output only the summary text itself.
+Write 2 to 5 short paragraphs in plain text.
+Target roughly 180 to 450 words.

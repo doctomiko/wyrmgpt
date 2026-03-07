@@ -11,7 +11,7 @@ from .db import (
 )
 """
 
-def migrate_schema_legacy(conn: sqlite3.Connection) -> None:
+def _migrate_schema_legacy(conn: sqlite3.Connection) -> None:
         # Ensure all tables exist (idempotent)
     _apply_schema_v2(conn)
     # Bring older DBs up to compatibility without dropping data
