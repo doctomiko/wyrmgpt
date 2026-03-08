@@ -10,11 +10,12 @@ import re
 from pathlib import Path
 from pydantic.dataclasses import dataclass
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from contextlib import contextmanager
 from typing import Any, Iterable, Iterator
 
 from .logging_helper import log_debug
-from .config import QueryConfig, load_query_config
+from .config import QueryConfig, CoreConfig, load_query_config, load_core_config, load_ui_config
 from .markdown_helper import autolink_text, apply_house_markdown_normalization
 from .chunking import chunk_text_with_hints
 # Support legacy migrations from v1-v7. You can remove this after a few releases once most users have migrated or started fresh.
@@ -26,7 +27,7 @@ DB_PATH = DATA_DIR / "callie_mvp.sqlite3"
 _VALID_TABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 SIDECAR_THRESHOLD_BYTES = 500 * 1024 # 500KB default threshold for when to use sidecar files for artifact content
 
@@ -427,6 +428,9 @@ def _apply_schema_v8(conn: sqlite3.Connection) -> None:
             significance REAL DEFAULT 0.0,
             tags_json TEXT,
 
+            -- v12 metadata (for other uses)
+            meta_json TEXT,
+
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
 
             FOREIGN KEY (project_id) REFERENCES projects(id),
@@ -636,6 +640,9 @@ def _migrate_schema_v11(conn) -> None:
     _add_column_if_missing(conn, "files", "sha256", "TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_files_sha256 ON files(sha256)")
 
+def _migrate_schema_v12(conn) -> None:
+    _add_column_if_missing(conn, "artifacts", "meta_json", "TEXT")
+
 # endregion
 
 # region Clean builds for new databases
@@ -680,6 +687,7 @@ def init_schema() -> None:
             _migrate_schema_v9(conn)
             _migrate_schema_v10(conn)
             _migrate_schema_v11(conn)
+            _migrate_schema_v12(conn)
             _end_schema_init(conn, current)
             return
 
@@ -708,7 +716,12 @@ def init_schema() -> None:
                 raise RuntimeError("Aborted legacy migration. Delete DB and restart.")
 
             _migrate_schema_legacy(conn)
-            _migrate_schema_v8(conn)
+            if (False):
+                _migrate_schema_v8(conn)
+                _migrate_schema_v9(conn)
+                _migrate_schema_v10(conn)
+                _migrate_schema_v11(conn)
+                _migrate_schema_v12(conn)
         if current < 8:
             _migrate_schema_v8(conn)
         if current < 9:
@@ -717,7 +730,8 @@ def init_schema() -> None:
             _migrate_schema_v10(conn)
         if current < 11:
             _migrate_schema_v11(conn)
-
+        if current < 12:
+            _migrate_schema_v12(conn)
         _end_schema_init(conn, current)
 
 # endregion
@@ -1266,6 +1280,765 @@ if (False): # We're saving these to articles now
                 (json.dumps(summary_obj), _utc_now_iso(), conversation_id),
             )
 
+# region Conversation Transcript Artifacts
+
+TRANSCRIPT_SOURCE_KIND = "conversation:transcript"
+TRANSCRIPT_FORMAT_VERSION = 1
+
+_TRANSCRIPT_ZEIT_PREFIX_RE = re.compile(
+    r"^\s*(?:"
+    r"⟂ts=\d+"
+    r"|⟂t=\d{8}T\d{6}Z(?:\s+⟂age=-?\d+)?"
+    r")\s*\n",
+    re.UNICODE,
+)
+_TRANSCRIPT_LEGACY_PREFIX_RE = re.compile(r"^\s*\[20\d\d-[^\]]+\]\s*\n")
+
+
+def _json_loads_or_empty_dict(raw: str | None) -> dict:
+    if not raw:
+        return {}
+    try:
+        obj = json.loads(raw)
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        return {}
+
+
+def _json_dumps_stable(obj: dict) -> str:
+    return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _parse_dt_loose(value: str | None) -> datetime | None:
+    s = (value or "").strip()
+    if not s:
+        return None
+    s = s.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(s)
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _format_utc_header_stamp(value: str | None) -> str:
+    dt = _parse_dt_loose(value)
+    if not dt:
+        return ""
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _format_local_header_stamp(value: str | None, tz_name: str) -> str:
+    dt = _parse_dt_loose(value)
+    if not dt:
+        return ""
+    try:
+        local_dt = dt.astimezone(ZoneInfo(tz_name))
+    except Exception:
+        local_dt = dt
+    return local_dt.strftime("%a %Y-%m-%d %H:%M:%S %Z")
+
+
+def _strip_transcript_prefixes(text: str) -> str:
+    if not text:
+        return text
+    text = _TRANSCRIPT_ZEIT_PREFIX_RE.sub("", text, count=1)
+    text = _TRANSCRIPT_LEGACY_PREFIX_RE.sub("", text, count=1)
+    return text.lstrip("\ufeff")
+
+
+def conversation_transcript_artifact_id(conversation_id: str) -> str:
+    cid = (conversation_id or "").strip()
+    if not cid:
+        raise ValueError("conversation_id is required.")
+    safe_cid = _SAFE_ID_RE.sub("_", cid)
+    return f"conversation_transcript--{safe_cid}"
+
+
+def _get_conversation_title_conn(conn: sqlite3.Connection, conversation_id: str) -> str | None:
+    row = conn.execute("SELECT title FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+    if not row:
+        return None
+    return (row["title"] or "").strip() or None
+
+
+def _get_messages_raw_for_transcript_conn(
+    conn: sqlite3.Connection,
+    conversation_id: str,
+    *,
+    after_message_id: int | None = None,
+) -> list[dict]:
+    params: list[Any] = [conversation_id]
+    sql = """
+        SELECT id, role, content, created_at, meta, author_meta
+        FROM messages
+        WHERE conversation_id = ?
+    """
+    if after_message_id is not None:
+        sql += " AND id > ?"
+        params.append(int(after_message_id))
+    sql += " ORDER BY id ASC"
+
+    rows = conn.execute(sql, params).fetchall()
+
+    out: list[dict] = []
+    for r in rows:
+        meta_obj = _json_loads_or_empty_dict(r["meta"])
+        author_meta_obj = _json_loads_or_empty_dict(r["author_meta"])
+        out.append(
+            {
+                "id": int(r["id"]),
+                "role": r["role"],
+                "content": r["content"] or "",
+                "created_at": r["created_at"],
+                "meta": meta_obj,
+                "author_meta": author_meta_obj,
+            }
+        )
+    return out
+
+
+def _get_latest_message_state_conn(conn: sqlite3.Connection, conversation_id: str) -> dict:
+    row = conn.execute(
+        """
+        SELECT
+            MAX(id) AS latest_message_id,
+            MAX(created_at) AS latest_message_created_at,
+            COUNT(*) AS message_count
+        FROM messages
+        WHERE conversation_id = ?
+        """,
+        (conversation_id,),
+    ).fetchone()
+
+    latest_id = int(row["latest_message_id"] or 0) if row else 0
+    latest_created_at = row["latest_message_created_at"] if row else None
+    message_count = int(row["message_count"] or 0) if row else 0
+
+    return {
+        "latest_message_id": latest_id,
+        "latest_message_created_at": latest_created_at,
+        "message_count": message_count,
+    }
+
+def _ensure_conversation_transcript_artifact_row(
+    conn: sqlite3.Connection,
+    conversation_id: str,
+    *,
+    title: str | None = None,
+) -> str:
+    artifact_id = conversation_transcript_artifact_id(conversation_id)
+    now = _utc_now_iso()
+    title = (title or "").strip() or f"Transcript: {conversation_id}"
+
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO artifacts
+        (id, source_kind, source_id, title, scope_type, scope_uuid, updated_at)
+        VALUES (?, ?, ?, ?, 'conversation', ?, ?)
+        """,
+        (
+            artifact_id,
+            TRANSCRIPT_SOURCE_KIND,
+            conversation_id,
+            title,
+            conversation_id,
+            now,
+        ),
+    )
+
+    conn.execute(
+        """
+        UPDATE artifacts
+        SET source_kind = ?,
+            source_id = ?,
+            title = ?,
+            scope_type = 'conversation',
+            scope_uuid = ?,
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            TRANSCRIPT_SOURCE_KIND,
+            conversation_id,
+            title,
+            conversation_id,
+            now,
+            artifact_id,
+        ),
+    )
+    return artifact_id
+
+if (False): # table does not have created_at
+    def _ensure_conversation_transcript_artifact_row(
+        conn: sqlite3.Connection,
+        conversation_id: str,
+        *,
+        title: str | None = None,
+    ) -> str:
+        artifact_id = conversation_transcript_artifact_id(conversation_id)
+        now = _utc_now_iso()
+        title = (title or "").strip() or f"Transcript: {conversation_id}"
+
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO artifacts
+            (id, source_kind, source_id, title, scope_type, scope_uuid, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 'conversation', ?, ?, ?)
+            """,
+            (
+                artifact_id,
+                TRANSCRIPT_SOURCE_KIND,
+                conversation_id,
+                title,
+                conversation_id,
+                now,
+                now,
+            ),
+        )
+
+        conn.execute(
+            """
+            UPDATE artifacts
+            SET source_kind = ?,
+                source_id = ?,
+                title = ?,
+                scope_type = 'conversation',
+                scope_uuid = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                TRANSCRIPT_SOURCE_KIND,
+                conversation_id,
+                title,
+                conversation_id,
+                now,
+                artifact_id,
+            ),
+        )
+        return artifact_id
+
+
+def _artifact_meta_json(conn: sqlite3.Connection, artifact_id: str) -> dict:
+    row = conn.execute("SELECT meta_json FROM artifacts WHERE id = ?", (artifact_id,)).fetchone()
+    return _json_loads_or_empty_dict(row["meta_json"] if row else None)
+
+
+def _set_artifact_meta_json(conn: sqlite3.Connection, artifact_id: str, meta: dict) -> None:
+    conn.execute(
+        "UPDATE artifacts SET meta_json = ?, updated_at = ? WHERE id = ?",
+        (_json_dumps_stable(meta), _utc_now_iso(), artifact_id),
+    )
+
+
+def _set_artifact_text_payload(
+    conn: sqlite3.Connection,
+    *,
+    artifact_id: str,
+    source_kind: str,
+    text: str,
+    sidecar_threshold_bytes: int = SIDECAR_THRESHOLD_BYTES,
+) -> None:
+    norm = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    content_bytes = len(norm.encode("utf-8"))
+    content_hash = _sha256_hex(norm)
+
+    row = conn.execute(
+        "SELECT sidecar_path FROM artifacts WHERE id = ?",
+        (artifact_id,),
+    ).fetchone()
+    old_sidecar = (row["sidecar_path"] if row else None)
+
+    if content_bytes > int(sidecar_threshold_bytes):
+        new_sidecar = _write_artifact_sidecar(source_kind=source_kind, artifact_id=artifact_id, text=norm)
+        conn.execute(
+            """
+            UPDATE artifacts
+            SET content_text = NULL,
+                sidecar_path = ?,
+                content_hash = ?,
+                content_bytes = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (new_sidecar, content_hash, content_bytes, _utc_now_iso(), artifact_id),
+        )
+        if old_sidecar and old_sidecar != new_sidecar:
+            _delete_sidecar_if_exists(sidecar_path=old_sidecar)
+    else:
+        conn.execute(
+            """
+            UPDATE artifacts
+            SET content_text = ?,
+                sidecar_path = NULL,
+                content_hash = ?,
+                content_bytes = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (norm, content_hash, content_bytes, _utc_now_iso(), artifact_id),
+        )
+        if old_sidecar:
+            _delete_sidecar_if_exists(sidecar_path=old_sidecar)
+
+
+def _transcript_should_skip_message(row: dict) -> bool:
+    content = (row.get("content") or "").strip()
+    if not content:
+        return True
+
+    meta = row.get("meta") or {}
+
+    # summary messages are stored separately as conversation summary artifacts
+    if bool(meta.get("summary")):
+        return True
+
+    return False
+
+
+def _transcript_user_identity(author_meta: dict) -> str | None:
+    if not isinstance(author_meta, dict):
+        return None
+    for key in ("display_name", "username", "user_name", "name", "user_id", "author_id"):
+        val = (author_meta.get(key) or "")
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+        if val is not None and str(val).strip():
+            return str(val).strip()
+    return None
+
+
+def _transcript_header_for_message(row: dict, *, local_timezone: str) -> str:
+    role = (row.get("role") or "").strip().lower()
+    meta = row.get("meta") or {}
+    author_meta = row.get("author_meta") or {}
+    created_at = row.get("created_at")
+
+    parts: list[str] = []
+
+    if role == "user":
+        parts.append("User")
+        ident = _transcript_user_identity(author_meta)
+        if ident:
+            parts.append(f"user={ident}")
+
+    elif role == "assistant":
+        if meta.get("kind") == "error":
+            parts.append("System Message")
+            slot = (meta.get("slot") or "").strip()
+            if slot:
+                parts.append(f"source=Assistant {slot}")
+            model = (meta.get("model") or "").strip()
+            if model:
+                parts.append("provider=OpenAI")
+                parts.append(f"model={model}")
+        elif meta.get("ab_group"):
+            slot = (meta.get("slot") or "").strip() or "?"
+            parts.append(f"Assistant {slot}")
+            model = (meta.get("model") or "").strip()
+            if model:
+                parts.append("provider=OpenAI")
+                parts.append(f"model={model}")
+            if "canonical" in meta:
+                parts.append(f"canonical={'true' if bool(meta.get('canonical')) else 'false'}")
+        else:
+            parts.append("Assistant")
+            model = (meta.get("model") or "").strip()
+            if model:
+                parts.append("provider=OpenAI")
+                parts.append(f"model={model}")
+
+    elif role == "system":
+        parts.append("System Message")
+    else:
+        parts.append(role.title() if role else "Message")
+
+    msg_id = row.get("id")
+    if msg_id is not None:
+        parts.append(f"msg_id={msg_id}")
+
+    utc_stamp = _format_utc_header_stamp(created_at)
+    local_stamp = _format_local_header_stamp(created_at, local_timezone)
+
+    if utc_stamp:
+        parts.append(utc_stamp)
+    if local_stamp:
+        parts.append(local_stamp)
+
+    return "[" + " | ".join(parts) + "]"
+
+
+def _render_conversation_transcript_block(row: dict, *, local_timezone: str) -> str:
+    body = _strip_transcript_prefixes((row.get("content") or "").rstrip())
+    if not body.strip():
+        return ""
+
+    header = _transcript_header_for_message(row, local_timezone=local_timezone)
+    return f"{header}\n{body}"
+
+
+def _get_conversation_transcript_status_conn(conn: sqlite3.Connection, conversation_id: str) -> dict:
+    msg_state = _get_latest_message_state_conn(conn, conversation_id)
+
+    row = conn.execute(
+        """
+        SELECT id, updated_at, meta_json
+        FROM artifacts
+        WHERE source_kind = ?
+          AND source_id = ?
+          AND (is_deleted IS NULL OR is_deleted = 0)
+        LIMIT 1
+        """,
+        (TRANSCRIPT_SOURCE_KIND, conversation_id),
+    ).fetchone()
+
+    artifact_missing = row is None
+    artifact_id = row["id"] if row else None
+    artifact_updated_at = row["updated_at"] if row else None
+    meta = _json_loads_or_empty_dict(row["meta_json"] if row else None)
+
+    last_indexed_id = int(meta.get("last_message_id_indexed") or 0)
+    dirty = bool(meta.get("dirty"))
+
+    latest_message_id = int(msg_state["latest_message_id"] or 0)
+    latest_message_created_at = msg_state["latest_message_created_at"]
+    message_count = int(msg_state["message_count"] or 0)
+
+    stale = artifact_missing or dirty or (latest_message_id > last_indexed_id)
+
+    # Optional timestamp backup check
+    if not stale and latest_message_created_at and artifact_updated_at:
+        dt_latest = _parse_dt_loose(latest_message_created_at)
+        dt_art = _parse_dt_loose(artifact_updated_at)
+        if dt_latest and dt_art and dt_latest > dt_art:
+            stale = True
+
+    return {
+        "conversation_id": conversation_id,
+        "artifact_id": artifact_id,
+        "artifact_missing": artifact_missing,
+        "artifact_updated_at": artifact_updated_at,
+        "dirty": dirty,
+        "last_message_id_indexed": last_indexed_id,
+        "latest_message_id": latest_message_id,
+        "latest_message_created_at": latest_message_created_at,
+        "message_count": message_count,
+        "stale": stale,
+    }
+
+
+def get_conversation_transcript_status(conversation_id: str) -> dict:
+    conversation_id = (conversation_id or "").strip()
+    if not conversation_id:
+        raise ValueError("conversation_id is required.")
+    with db_session() as conn:
+        _ensure_conversation_exists(conn, conversation_id)
+        return _get_conversation_transcript_status_conn(conn, conversation_id)
+
+
+def mark_conversation_transcript_dirty(
+    conversation_id: str,
+    *,
+    latest_message_id: int | None = None,
+    latest_message_created_at: str | None = None,
+) -> str:
+    conversation_id = (conversation_id or "").strip()
+    if not conversation_id:
+        raise ValueError("conversation_id is required.")
+
+    #core_cfg = load_core_config()
+    ui_cfg = load_ui_config()
+    local_timezone = ui_cfg.local_timezone
+
+    with db_session() as conn:
+        _ensure_conversation_exists(conn, conversation_id)
+        title = _get_conversation_title_conn(conn, conversation_id) or f"Transcript: {conversation_id}"
+        artifact_id = _ensure_conversation_transcript_artifact_row(
+            conn,
+            conversation_id,
+            title=f"Transcript: {title}",
+        )
+
+        meta = _artifact_meta_json(conn, artifact_id)
+        meta.setdefault("conversation_id", conversation_id)
+        meta.setdefault("transcript_format_version", TRANSCRIPT_FORMAT_VERSION)
+        meta.setdefault("local_timezone", local_timezone)
+        meta["dirty"] = True
+
+        if latest_message_id is not None:
+            meta["latest_message_id_seen"] = int(latest_message_id)
+        if latest_message_created_at:
+            meta["latest_message_created_at_seen"] = latest_message_created_at
+
+        _set_artifact_meta_json(conn, artifact_id, meta)
+
+    return artifact_id
+
+
+def reindex_conversation_transcript_artifact(
+    artifact_id: str,
+    *,
+    tail_rechunk: bool = False,
+) -> dict:
+    """
+    3A.5 hook:
+    today this still falls back to full artifact reindex.
+    Later this becomes the place to swap in tail-only chunk rebuild logic.
+    """
+    return reindex_artifact_by_id(artifact_id)
+
+
+def refresh_conversation_transcript_artifact(
+    conversation_id: str,
+    *,
+    force_full: bool = False,
+    reason: str | None = None,
+) -> dict:
+    conversation_id = (conversation_id or "").strip()
+    if not conversation_id:
+        raise ValueError("conversation_id is required.")
+
+    #core_cfg = load_core_config()
+    ui_cfg = load_ui_config()
+    local_timezone = ui_cfg.local_timezone
+
+    artifact_id = conversation_transcript_artifact_id(conversation_id)
+    latest_seen_id = 0
+    latest_seen_created_at = None
+    did_full_rebuild = False
+    appended_message_count = 0
+
+    with db_session() as conn:
+        _ensure_conversation_exists(conn, conversation_id)
+
+        status = _get_conversation_transcript_status_conn(conn, conversation_id)
+        title = _get_conversation_title_conn(conn, conversation_id) or f"Conversation {conversation_id}"
+
+        _ensure_conversation_transcript_artifact_row(
+            conn,
+            conversation_id,
+            title=f"Transcript: {title}",
+        )
+
+        meta = _artifact_meta_json(conn, artifact_id)
+        existing_text = hydrate_artifact_content_text(conn, artifact_id)
+
+        if not force_full and not status["stale"]:
+            meta.setdefault("conversation_id", conversation_id)
+            meta.setdefault("transcript_format_version", TRANSCRIPT_FORMAT_VERSION)
+            meta.setdefault("local_timezone", local_timezone)
+            meta["last_staleness_check_at"] = _utc_now_iso()
+            _set_artifact_meta_json(conn, artifact_id, meta)
+        else:
+            last_indexed = int(meta.get("last_message_id_indexed") or 0)
+            need_full = (
+                force_full
+                or status["artifact_missing"]
+                or not existing_text.strip()
+                or int(meta.get("transcript_format_version") or 0) != TRANSCRIPT_FORMAT_VERSION
+                or last_indexed <= 0
+            )
+
+            rows = _get_messages_raw_for_transcript_conn(
+                conn,
+                conversation_id,
+                after_message_id=None if need_full else last_indexed,
+            )
+
+            latest_seen_id = last_indexed
+            latest_seen_created_at = meta.get("last_message_created_at_utc")
+
+            rendered_blocks: list[str] = []
+            for row in rows:
+                latest_seen_id = max(latest_seen_id, int(row.get("id") or 0))
+                latest_seen_created_at = row.get("created_at") or latest_seen_created_at
+
+                if _transcript_should_skip_message(row):
+                    continue
+
+                block = _render_conversation_transcript_block(row, local_timezone=local_timezone)
+                if block:
+                    rendered_blocks.append(block)
+
+            rendered_tail = "\n\n".join(rendered_blocks).strip()
+
+            if need_full:
+                new_text = rendered_tail
+                did_full_rebuild = True
+            else:
+                if rendered_tail and existing_text.strip():
+                    new_text = existing_text.rstrip() + "\n\n" + rendered_tail
+                elif rendered_tail:
+                    new_text = rendered_tail
+                else:
+                    new_text = existing_text or ""
+
+            msg_state = _get_latest_message_state_conn(conn, conversation_id)
+            latest_message_id = int(msg_state["latest_message_id"] or latest_seen_id or 0)
+            latest_message_created = msg_state["latest_message_created_at"] or latest_seen_created_at
+
+            meta.update(
+                {
+                    "conversation_id": conversation_id,
+                    "conversation_title": title,
+                    "transcript_format_version": TRANSCRIPT_FORMAT_VERSION,
+                    "dirty": False,
+                    "last_message_id_indexed": latest_message_id,
+                    "last_message_created_at_utc": latest_message_created,
+                    "message_count_indexed": int(msg_state["message_count"] or 0),
+                    "summary_artifact_id": conversation_summary_artifact_id(conversation_id),
+                    "local_timezone": local_timezone,
+                    "last_incremental_append_at": None if did_full_rebuild else _utc_now_iso(),
+                    "last_full_rebuild_at": _utc_now_iso() if did_full_rebuild else meta.get("last_full_rebuild_at"),
+                    "last_staleness_check_at": _utc_now_iso(),
+                    "chunking_mode": "full",
+                    "tail_rechunk_ready": False,  # 3A.5 rail
+                }
+            )
+
+            _set_artifact_text_payload(
+                conn,
+                artifact_id=artifact_id,
+                source_kind=TRANSCRIPT_SOURCE_KIND,
+                text=new_text,
+            )
+            _set_artifact_meta_json(conn, artifact_id, meta)
+            appended_message_count = len(rows)
+
+    reindex_info = reindex_conversation_transcript_artifact(
+        artifact_id,
+        tail_rechunk=False,
+    )
+
+    final_status = get_conversation_transcript_status(conversation_id)
+    return {
+        "ok": True,
+        "conversation_id": conversation_id,
+        "artifact_id": artifact_id,
+        "force_full": bool(force_full),
+        "reason": reason,
+        "full_rebuild": did_full_rebuild,
+        "appended_message_count": appended_message_count,
+        "latest_message_id": final_status["latest_message_id"],
+        "last_message_id_indexed": final_status["last_message_id_indexed"],
+        "stale_after_refresh": final_status["stale"],
+        "reindex": reindex_info,
+    }
+
+
+def ensure_conversation_transcript_artifact_fresh(
+    conversation_id: str,
+    *,
+    force_full: bool = False,
+    reason: str | None = None,
+) -> dict:
+    status = get_conversation_transcript_status(conversation_id)
+    if force_full or status["stale"]:
+        return refresh_conversation_transcript_artifact(
+            conversation_id,
+            force_full=force_full,
+            reason=reason or "lazy-repair",
+        )
+    return {
+        "ok": True,
+        "conversation_id": conversation_id,
+        "artifact_id": status["artifact_id"],
+        "refreshed": False,
+        "stale": status["stale"],
+        "latest_message_id": status["latest_message_id"],
+        "last_message_id_indexed": status["last_message_id_indexed"],
+    }
+
+
+def export_conversation_transcript_markdown(
+    conversation_id: str,
+    *,
+    refresh_if_stale: bool = True,
+    force_full: bool = False,
+) -> str:
+    conversation_id = (conversation_id or "").strip()
+    if not conversation_id:
+        raise ValueError("conversation_id is required.")
+
+    if refresh_if_stale or force_full:
+        ensure_conversation_transcript_artifact_fresh(
+            conversation_id,
+            force_full=force_full,
+            reason="export",
+        )
+
+    artifact_id = conversation_transcript_artifact_id(conversation_id)
+    with db_session() as conn:
+        _ensure_conversation_exists(conn, conversation_id)
+        return hydrate_artifact_content_text(conn, artifact_id)
+
+
+def list_stale_conversation_transcripts(limit: int = 200) -> list[dict]:
+    with db_session() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                c.id AS conversation_id,
+                c.title AS conversation_title,
+                a.id AS artifact_id,
+                a.updated_at AS artifact_updated_at,
+                a.meta_json AS artifact_meta_json,
+                x.latest_message_id,
+                x.latest_message_created_at,
+                x.message_count
+            FROM conversations c
+            LEFT JOIN artifacts a
+              ON a.source_kind = ?
+             AND a.source_id = c.id
+             AND (a.is_deleted IS NULL OR a.is_deleted = 0)
+            LEFT JOIN (
+                SELECT
+                    conversation_id,
+                    MAX(id) AS latest_message_id,
+                    MAX(created_at) AS latest_message_created_at,
+                    COUNT(*) AS message_count
+                FROM messages
+                GROUP BY conversation_id
+            ) x
+              ON x.conversation_id = c.id
+            ORDER BY COALESCE(c.updated_at, c.created_at) DESC
+            LIMIT ?
+            """,
+            (TRANSCRIPT_SOURCE_KIND, int(limit)),
+        ).fetchall()
+
+        out: list[dict] = []
+        for r in rows:
+            meta = _json_loads_or_empty_dict(r["artifact_meta_json"])
+            latest_message_id = int(r["latest_message_id"] or 0)
+            last_indexed = int(meta.get("last_message_id_indexed") or 0)
+            dirty = bool(meta.get("dirty"))
+            artifact_missing = r["artifact_id"] is None
+            stale = artifact_missing or dirty or (latest_message_id > last_indexed)
+
+            out.append(
+                {
+                    "conversation_id": r["conversation_id"],
+                    "conversation_title": r["conversation_title"],
+                    "artifact_id": r["artifact_id"],
+                    "artifact_updated_at": r["artifact_updated_at"],
+                    "latest_message_id": latest_message_id,
+                    "latest_message_created_at": r["latest_message_created_at"],
+                    "message_count": int(r["message_count"] or 0),
+                    "last_message_id_indexed": last_indexed,
+                    "dirty": dirty,
+                    "artifact_missing": artifact_missing,
+                    "stale": stale,
+                }
+            )
+
+        return [x for x in out if x["stale"]]
+
+# endregion
+
 # region Context Cache
 
 def get_context_cache(conversation_id: str, cache_key: str = "default") -> dict | None:
@@ -1386,18 +2159,27 @@ def add_message(
         content: str,
         meta: dict | None = None,
         author_meta: dict | None = None,
-        ) -> None:
+        ) -> int:
+    """
+    Adds a new message to a chat conversation, then
+    dirties the transcript artifact for the
+    conversation, so it will get appended/refreshed.
+    """
     now = _utc_now_iso()
     meta_json = json.dumps(meta) if meta is not None else None
     author_meta_json = json.dumps(author_meta) if author_meta is not None else None
+
+    new_message_id = 0
+
     with db_session() as conn:
-        conn.execute(
+        cur = conn.execute(
             """
             INSERT INTO messages(conversation_id, role, content, created_at, meta, author_meta)
             VALUES(?, ?, ?, ?, ?, ?)
             """,
             (conversation_id, role, content, now, meta_json, author_meta_json),
         )
+        new_message_id = int(cur.lastrowid or 0)
 
         if role == "user":
             count = _message_count(conn, conversation_id)
@@ -1416,6 +2198,54 @@ def add_message(
                         (t, _utc_now_iso(), conversation_id),
                     )
 
+    # Mark transcript dirty outside the insert transaction
+    try:
+        mark_conversation_transcript_dirty(
+            conversation_id,
+            latest_message_id=new_message_id if new_message_id > 0 else None,
+            latest_message_created_at=now,
+        )
+    except Exception as exc:
+        log_debug("mark_conversation_transcript_dirty failed cid=%s err=%r", conversation_id, exc)
+
+    return new_message_id
+
+if (False):
+    def add_message(
+            conversation_id: str,
+            role: str,
+            content: str,
+            meta: dict | None = None,
+            author_meta: dict | None = None,
+            ) -> None:
+        now = _utc_now_iso()
+        meta_json = json.dumps(meta) if meta is not None else None
+        author_meta_json = json.dumps(author_meta) if author_meta is not None else None
+        with db_session() as conn:
+            conn.execute(
+                """
+                INSERT INTO messages(conversation_id, role, content, created_at, meta, author_meta)
+                VALUES(?, ?, ?, ?, ?, ?)
+                """,
+                (conversation_id, role, content, now, meta_json, author_meta_json),
+            )
+
+            if role == "user":
+                count = _message_count(conn, conversation_id)
+                if count == 1:
+                    row = conn.execute(
+                        "SELECT title FROM conversations WHERE id = ?",
+                        (conversation_id,),
+                    ).fetchone()
+                    current_title = (row["title"] if row else None) or ""
+                    if current_title.strip() == "" or current_title.strip().lower() == "new chat":
+                        t = content.strip().replace("\n", " ")
+                        if len(t) > 60:
+                            t = t[:57] + "…"
+                        conn.execute(
+                            "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?",
+                            (t, _utc_now_iso(), conversation_id),
+                        )
 
 def get_messages_raw(conversation_id: str, limit: int = 200) -> list[dict]:
     with db_session() as conn:
@@ -1844,15 +2674,32 @@ def search_corpus(*, scope_keys: list[str], query: str, limit: int = 10) -> list
               c.filename,
               c.mime_type,
               c.text,
+
               a.title AS artifact_title,
               a.updated_at AS artifact_updated_at,
+
               f.created_at AS file_created_at,
               f.updated_at AS file_updated_at,
+
+              conv.id AS conversation_id,
+              conv.title AS conversation_title,
+              substr(COALESCE(sumart.summary_text, ''), 1, 220) AS conversation_summary_excerpt,
+
               bm25(corpus_fts) AS score
             FROM corpus_fts
             JOIN corpus_chunks c ON corpus_fts.rowid = c.id
             LEFT JOIN artifacts a ON a.id = c.artifact_id
             LEFT JOIN files f ON f.id = c.file_id
+
+            LEFT JOIN conversations conv
+              ON c.source_kind = '{TRANSCRIPT_SOURCE_KIND}'
+             AND c.source_id = conv.id
+
+            LEFT JOIN artifacts sumart
+              ON sumart.source_kind = 'conversation:summary'
+             AND sumart.source_id = conv.id
+             AND (sumart.is_deleted IS NULL OR sumart.is_deleted = 0)
+
             WHERE corpus_fts MATCH ?
               AND c.scope_key IN ({placeholders})
             ORDER BY score ASC
@@ -1860,6 +2707,36 @@ def search_corpus(*, scope_keys: list[str], query: str, limit: int = 10) -> list
             """,
             tuple(params),
         ).fetchall()
+        if (False):
+            rows = conn.execute(        
+                f"""
+                SELECT
+                c.id AS chunk_id,
+                c.scope_key,
+                c.artifact_id,
+                c.chunk_index,
+                c.source_kind,
+                c.source_id,
+                c.file_id,
+                c.filename,
+                c.mime_type,
+                c.text,
+                a.title AS artifact_title,
+                a.updated_at AS artifact_updated_at,
+                f.created_at AS file_created_at,
+                f.updated_at AS file_updated_at,
+                bm25(corpus_fts) AS score
+                FROM corpus_fts
+                JOIN corpus_chunks c ON corpus_fts.rowid = c.id
+                LEFT JOIN artifacts a ON a.id = c.artifact_id
+                LEFT JOIN files f ON f.id = c.file_id
+                WHERE corpus_fts MATCH ?
+                AND c.scope_key IN ({placeholders})
+                ORDER BY score ASC
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
 
         return [dict(r) for r in rows]
 

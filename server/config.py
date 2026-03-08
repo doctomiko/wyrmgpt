@@ -29,9 +29,9 @@ def _env_bool(name: str, default: bool) -> bool:
 
 @dataclass(frozen=True)
 class CoreConfig:
-    local_timezone: str = "America/Los_Angeles" # America/New_York etc
     system_prompt_file: str = ".\\prompts\\_default_system_prompt.txt"
     default_system_prompt: str = "You are a helpful assistant operating in a locally hosted scaffolding called WyrmGPT. Be concise, candid, and technically accurate."
+    debug_mode: bool = False
 CORE_DEFAULTS: CoreConfig = CoreConfig()
 
 @dataclass(frozen=True)
@@ -40,6 +40,17 @@ class OpenAIConfig:
     open_ai_model: str = "gpt-5.4"
     summary_model: str = "gpt-5-mini" # The model to use for summary generation - pick a cheap one
 OPENAI_DEFAULTS: OpenAIConfig = OpenAIConfig()
+
+@dataclass(frozen=True)
+class UIConfig:
+    local_timezone: str = "America/Los_Angeles" # America/New_York etc
+    context_preview_limit_min: int = 20
+    context_preview_limit_max: int = 200
+    min_rag_query_text_len: int = 5
+    context_idle_ms: int = 5000
+    transcript_idle_ms: int = 120000
+    debug_boot: bool = True
+UI_DEFAULTS: UIConfig = UIConfig()
 
 @dataclass(frozen=True)
 class SummaryConfig:
@@ -136,7 +147,42 @@ def load_core_config() -> CoreConfig:
     return CoreConfig(
         system_prompt_file=_env_str("SYSTEM_PROMPT_FILE", CORE_DEFAULTS.system_prompt_file),
         default_system_prompt=_env_str("SYSTEM_PROMPT", CORE_DEFAULTS.default_system_prompt),
-        local_timezone=_env_str("LOCAL_TIMEZONE", CORE_DEFAULTS.local_timezone),
+        debug_mode=_env_bool("DEBUG_MODE", CORE_DEFAULTS.debug_mode)
+    )
+
+def load_ui_config() -> UIConfig:
+    core_cfg = load_core_config()
+    return UIConfig(
+        local_timezone=_env_str("LOCAL_TIMEZONE",
+            # Alternate naming
+            _env_str("UI_TIMEZONE",
+            _env_str("APP_TIMEZONE",
+            _env_str("TZ", UI_DEFAULTS.local_timezone))),
+        ),
+        context_preview_limit_min=_env_int(
+            "UI_CONTEXT_PREVIEW_LIMIT_MIN",
+            UI_DEFAULTS.context_preview_limit_min,
+        ),
+        context_preview_limit_max=_env_int(
+            "UI_CONTEXT_PREVIEW_LIMIT_MAX",
+            UI_DEFAULTS.context_preview_limit_max,
+        ),
+        min_rag_query_text_len=_env_int(
+            "UI_MIN_RAG_QUERY_TEXT_LEN",
+            UI_DEFAULTS.min_rag_query_text_len,
+        ),
+        context_idle_ms=_env_int(
+            "UI_CONTEXT_IDLE_MS",
+            UI_DEFAULTS.context_idle_ms,
+        ),
+        transcript_idle_ms=_env_int(
+            "UI_TRANSCRIPT_IDLE_MS",
+            UI_DEFAULTS.transcript_idle_ms,
+        ),
+        debug_boot=_env_bool(
+            "UI_DEBUG_BOOT",
+            UI_DEFAULTS.debug_boot,
+        ),
     )
 
 def load_openai_config() -> OpenAIConfig:

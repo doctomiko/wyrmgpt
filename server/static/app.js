@@ -5,14 +5,17 @@
 
 // Usually const but some are reassigned later
 
-const modelSelectA = document.getElementById("modelSelectA");
-const modelSelectB = document.getElementById("modelSelectB");
-
+// Inside the Chat Window
 const chatEl = document.getElementById("chat");
 const inputEl = document.getElementById("input");
+const sendBtn = document.getElementById("send");
+
+// Top Left
 const newBtn = document.getElementById("newChat");
 const manageFilesTopBtn = document.getElementById("manageFilesTop");
-const sendBtn = document.getElementById("send");
+// TODO where is the projects button?
+
+// Top of Chat Menu
 const chatMenuButton = document.getElementById("chatMenuButton");
 const chatMenu = document.getElementById("chatMenu");
 const advancedCheckbox = document.getElementById("advancedCheckbox");
@@ -20,19 +23,11 @@ const convListEl = document.getElementById("convList");
 const chatTitleEl = document.getElementById("chatTitle");
 const renameBtn = document.getElementById("renameChat");
 const suggestBtn = document.getElementById("suggestChat");
-const pinTextEl = document.getElementById("pinText");
-const addPinBtn = document.getElementById("addPin");
-const pinListEl = document.getElementById("pinList");
-const memoryTextEl = document.getElementById("memoryText");
-const memoryTagsEl = document.getElementById("memoryTags");
-const memoryImportanceEl = document.getElementById("memoryImportance");
-const saveMemoryBtn = document.getElementById("saveMemory");
+// Model Selectors (at top)
+const modelSelectA = document.getElementById("modelSelectA");
+const modelSelectB = document.getElementById("modelSelectB");
 
-const convMenuEl = document.getElementById("convMenu");
-const menuRenameBtn = document.getElementById("menuRename");
-const menuSuggestBtn = document.getElementById("menuSuggest");
-
-const menuMoveToBtn = document.getElementById("menuMoveTo");
+// Move To... modal
 const moveToModal = document.getElementById("moveToModal");
 const moveToInput = document.getElementById("moveToInput");
 const moveToDatalist = document.getElementById("moveToDatalist");
@@ -42,29 +37,51 @@ const moveToClear = document.getElementById("moveToClear");
 const moveToApply = document.getElementById("moveToApply");
 const moveToBackdrop = moveToModal ? moveToModal.querySelector(".modalBackdrop") : null;
 
+// Conversation Context Menu
+const convMenuEl = document.getElementById("convMenu");
+const menuRenameBtn = document.getElementById("menuRename");
+const menuSuggestBtn = document.getElementById("menuSuggest");
+const menuMoveToBtn = document.getElementById("menuMoveTo");
+const convViewFilesBtn = document.getElementById("menuConvViewFiles");
+const menuExportTranscriptBtn = document.getElementById("menuExportTranscript");
 const menuSummarizeBtn = document.getElementById("menuSummarize");
 const menuArchiveBtn = document.getElementById("menuArchive");
 const menuDeleteBtn = document.getElementById("menuDelete");
 
+// Projects
 const projectListEl = document.getElementById("projectList");
 const conversationListEl = convListEl; // document.getElementById("conversationList");
 const newProjectBtn = document.getElementById("newProjectBtn");
+const projMenuEl = document.getElementById("projMenu");
+const projRenameBtn = document.getElementById("projRename");
+const projDescBtn = document.getElementById("projDesc");
+const projUploadBtn = document.getElementById("projUpload");
+const projFilesBtn = document.getElementById("projFiles");
+
+// Context Diagnostic Panel
 const toggleContextBtn = document.getElementById("toggleContext");
 const contextPreviewEl = document.getElementById("contextPreview");
 
-const openMemoryBtn = document.getElementById("openMemory");
+// Memory Pins
+const pinTextEl = document.getElementById("pinText");
+const addPinBtn = document.getElementById("addPin");
+const pinListEl = document.getElementById("pinList");
+const memoryTextEl = document.getElementById("memoryText");
+const memoryTagsEl = document.getElementById("memoryTags");
+const memoryImportanceEl = document.getElementById("memoryImportance");
+const saveMemoryBtn = document.getElementById("saveMemory");
+
+// Memories Modal
 const memoryModal = document.getElementById("memoryModal");
+const openMemoryBtn = document.getElementById("openMemory");
 const closeMemoryBtn = document.getElementById("closeMemory");
 const memoryBackdrop = memoryModal
   ? memoryModal.querySelector(".modalBackdrop")
   : null;
 
-const projMenuEl = document.getElementById("projMenu");
-const projRenameBtn = document.getElementById("projRename");
-const projDescBtn = document.getElementById("projDesc");
-const projUploadBtn = document.getElementById("projUpload");
-
+// File Uploads and Management
 const attachBtn = document.getElementById("attachButton");
+
 const uploadModal = document.getElementById("uploadModal");
 const uploadScopeEl = document.getElementById("uploadScope");
 const uploadFilesEl = document.getElementById("uploadFiles");
@@ -76,16 +93,14 @@ const uploadBackdrop = uploadModal
   ? uploadModal.querySelector(".modalBackdrop")
   : null;
 
-const convViewFilesBtn = document.getElementById("menuConvViewFiles");
-const projFilesBtn = document.getElementById("projFiles");
-
 const filesModal = document.getElementById("filesModal");
 const filesListEl = document.getElementById("filesList");
 const filesCloseBtn = document.getElementById("filesClose");
 const filesSaveBtn = document.getElementById("filesSave");
 const filesCloseBottomBtn = document.getElementById("filesCloseBottom");
 const filesBackdrop = filesModal ? filesModal.querySelector(".modalBackdrop") : null;
-// artifact debug modal and launch buttons
+
+// Artifact debug modal and launch buttons
 const artifactsDebugTopBtn = document.getElementById("artifactsDebugTop");
 const artifactsDebugModal = document.getElementById("artifactsDebugModal");
 const artifactsDebugCloseBtn = document.getElementById("artifactsDebugClose");
@@ -96,6 +111,8 @@ const artifactsDebugPre = document.getElementById("artifactsDebugPre");
 // ----------------------------------
 
 // Note: Some globals are in the regions where their functions use them.
+
+// #region State Maintenance
 
 // Conversation state:
 let conversationMap = new Map(); // id -> {id,title,created_at}
@@ -120,26 +137,45 @@ let filesModalMode = null; // "conversation" | "project" | "global" | "all"
 let filesModalConversationId = null;
 let filesModalProjectId = null;
 let hasAnyFiles = false;
-let UI_TIMEZONE = null; // TZ for display
-const ZEIT_PREFIX_RE = /^\s*(?:⟂ts=\d+|⟂t=\d{8}T\d{6}Z(?:\s+⟂age=-?\d+)?)\s*\n/;
-//const ZEIT_PREFIX_RE = /^\s*(?:⟂ts=\d+|⟂t=\d{8}T\d{6}Z(?:\s+⟂age=\d+)?)\s*\n/;
-const LEGACY_PREFIX_RE = /^\s*\[20\d\d-[^\]]+\]\s*\n/;
-// real-time RAG query update timer
-// These limits appear to not have any impact
-const CONTEXT_PREVIEW_LIMIT_LOW = 20;
-const CONTEXT_PREVIEW_LIMIT_MAX = 200;
-// how long user should idle typing before we refresh context preview
-const CONTEXT_IDLE_MS = 5000;
-// minimum size of text input to matter for previews
-const MIN_RAG_QUERY_TEXT_LEN = 5;
-// state maintenance for preview and trigger
+// Context preview and trigger state:
 let contextRefreshTimer = null;
 let contextRefreshing = false;
 let lastContextDraftSent = "";
+// chat transcript re-generation/append state:
+let transcriptRefreshTimer = null;
+
+// #endregion
+
+// Zeitgeber hints - used to let ChatGPT know the time of a chat
+const ZEIT_PREFIX_RE = /^\s*(?:⟂ts=\d+|⟂t=\d{8}T\d{6}Z(?:\s+⟂age=-?\d+)?)\s*\n/;
+//const ZEIT_PREFIX_RE = /^\s*(?:⟂ts=\d+|⟂t=\d{8}T\d{6}Z(?:\s+⟂age=\d+)?)\s*\n/;
+const LEGACY_PREFIX_RE = /^\s*\[20\d\d-[^\]]+\]\s*\n/;
+
+// #region Configuration
+
+// TODO pull these from config objects/API
+
+let UI_TIMEZONE = null; // TZ for display
+
+// These limits appear to not have any impact
+let CONTEXT_PREVIEW_LIMIT_MIN = 20;
+let CONTEXT_PREVIEW_LIMIT_MAX = 200;
+
+// config for real-time Context Preview + RAG query update timer
+let MIN_RAG_QUERY_TEXT_LEN = 5; // minimum size of text input to matter for previews
+let CONTEXT_IDLE_MS = 5000; // How long user should idle typing before we refresh context preview
+// config for chat transcript re-generation/append
+let TRANSCRIPT_IDLE_MS = 120000; // 2 minutes
+
+let DEBUG_BOOT = true;
+
+// #endregion
 
 // ----------------------------------
 // Helpers for UI state management and updates. 
 // ----------------------------------
+
+// #region Context Refresh Helpers
 
 function setContextRefreshing(isRefreshing) {
   contextRefreshing = !!isRefreshing;
@@ -181,6 +217,99 @@ function scheduleContextRefresh() {
   }, CONTEXT_IDLE_MS);
 }
 
+// #endregion
+
+// #region Transcript Generation Helpers
+
+function cancelScheduledTranscriptRefresh() {
+  if (transcriptRefreshTimer) {
+    clearTimeout(transcriptRefreshTimer);
+    transcriptRefreshTimer = null;
+  }
+}
+
+async function flushConversationTranscriptArtifact(cid, reason = "manual", useBeacon = false) {
+  if (!cid) return;
+
+  const url = `/api/conversation/${encodeURIComponent(cid)}/refresh_transcript_artifact?reason=${encodeURIComponent(reason)}`;
+
+  if (useBeacon && navigator.sendBeacon) {
+    try {
+      const ok = navigator.sendBeacon(url, new Blob([], { type: "text/plain" }));
+      if (ok) return;
+    } catch (e) {
+      // fall through to fetch
+    }
+  }
+
+  try {
+    await fetch(url, {
+      method: "POST",
+      keepalive: reason === "unload",
+    });
+  } catch (e) {
+    console.warn("flushConversationTranscriptArtifact failed", e);
+  }
+}
+
+function scheduleTranscriptRefresh(cid = conversationId) {
+  if (!cid) return;
+
+  cancelScheduledTranscriptRefresh();
+
+  transcriptRefreshTimer = setTimeout(async () => {
+    transcriptRefreshTimer = null;
+    try {
+      await flushConversationTranscriptArtifact(cid, "idle");
+    } catch (e) {
+      console.warn("scheduled transcript refresh failed", e);
+    }
+  }, TRANSCRIPT_IDLE_MS);
+}
+
+// #endregion
+
+function pickPositiveInt(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : fallback;
+}
+
+// TODO make this a class instead of a bunch of global vars
+async function fetchUiConfig() {
+  try {
+    const cfg = await fetchJsonDebug("/api/ui_config");
+
+    UI_TIMEZONE = (cfg && cfg.timezone) ? String(cfg.timezone) : null;
+
+    CONTEXT_PREVIEW_LIMIT_MIN = pickPositiveInt(
+      cfg?.context_preview_limit_min,
+      CONTEXT_PREVIEW_LIMIT_MIN
+    );
+    CONTEXT_PREVIEW_LIMIT_MAX = pickPositiveInt(
+      cfg?.context_preview_limit_max,
+      CONTEXT_PREVIEW_LIMIT_MAX
+    );
+    MIN_RAG_QUERY_TEXT_LEN = pickPositiveInt(
+      cfg?.min_rag_query_text_len,
+      MIN_RAG_QUERY_TEXT_LEN
+    );
+    CONTEXT_IDLE_MS = pickPositiveInt(
+      cfg?.context_idle_ms,
+      CONTEXT_IDLE_MS
+    );
+    TRANSCRIPT_IDLE_MS = pickPositiveInt(
+      cfg?.transcript_idle_ms,
+      TRANSCRIPT_IDLE_MS
+    );
+
+    if (typeof cfg?.debug_boot === "boolean") {
+      DEBUG_BOOT = cfg.debug_boot;
+    }
+  } catch {
+    UI_TIMEZONE = null;
+  }
+}
+/*
 async function fetchUiConfig() {
   try {
     const cfg = await fetchJsonDebug("/api/ui_config");
@@ -189,6 +318,7 @@ async function fetchUiConfig() {
     UI_TIMEZONE = null;
   }
 }
+*/
 
 // These are usually called by event handlers or after API calls to update the screen based on the current app state.
 
@@ -471,8 +601,6 @@ function openMetaInfo(title, obj) {
 // #endregion
 
 // #region Debug Helpers
-
-const DEBUG_BOOT = true;
 
 function bootLog(...args) {
   if (DEBUG_BOOT) console.log(...args);
@@ -1182,6 +1310,39 @@ function updateChatTitle() {
 }
 
 async function selectConversation(cid) {
+  const previousCid = conversationId;
+
+  cancelScheduledContextRefresh();
+  cancelScheduledTranscriptRefresh();
+
+  if (previousCid && previousCid !== cid) {
+    // best-effort flush of old conversation transcript before switching away
+    void flushConversationTranscriptArtifact(previousCid, "switch");
+  }
+
+  conversationId = cid;
+  localStorage.setItem("callie_mvp_conversation_id", conversationId);
+
+  await refreshConversationLists();
+
+  clearChat();
+
+  const msgs = await loadMessages(cid);
+  if (!msgs.length) {
+    addMsg("assistant", "Empty chat. Say something mean to the void.");
+  } else {
+    renderMessagesWithAB(msgs);
+  }
+
+  await refreshContext();
+
+  // start a new transcript idle timer for the newly selected conversation
+  scheduleTranscriptRefresh(cid);
+}
+
+// Updated version includes transcript regen logic
+/*
+async function selectConversation(cid) {
   conversationId = cid;
   localStorage.setItem("callie_mvp_conversation_id", conversationId);
 
@@ -1200,6 +1361,7 @@ async function selectConversation(cid) {
 
   await refreshContext();
 }
+*/
 
 // #endregion
 
@@ -1558,7 +1720,7 @@ async function refreshContext() {
 
 async function refreshContext() {
   if (!conversationId) return;
-  const limit = contextExpanded ? CONTEXT_PREVIEW_LIMIT_MAX : CONTEXT_PREVIEW_LIMIT_LOW;
+  const limit = contextExpanded ? CONTEXT_PREVIEW_LIMIT_MAX : CONTEXT_PREVIEW_LIMIT_MIN;
   const draft = (inputEl?.value || "").trim();
 
   setContextRefreshing(true);
@@ -1667,6 +1829,7 @@ async function sendSingle(text, model) {
   //renderConversations(conversations);
   await refreshConversationLists();
   await refreshContext();
+  scheduleTranscriptRefresh();
 }
 
 async function sendAB(text, modelA, modelB) {
@@ -1753,6 +1916,7 @@ async function sendAB(text, modelA, modelB) {
 
     await refreshConversationLists();
     await refreshContext();
+    scheduleTranscriptRefresh();
   } catch (e) {
     console.error("Failed A/B send", e);
     msgAEl.classList.add("error");
@@ -3236,14 +3400,23 @@ if (menuDeleteBtn) {
   });
 }
 
+if (menuExportTranscriptBtn) {
+  menuExportTranscriptBtn.addEventListener("click", async () => {
+    const cid = getMenuCid();
+    if (!cid) return;
+    hideConvMenu();
+    window.location = `/api/conversation/${encodeURIComponent(cid)}/export_transcript`;
+  });
+}
+
+// #endregion
+
 if (toggleContextBtn) {
   toggleContextBtn.addEventListener("click", async () => {
     contextExpanded = !contextExpanded;
     await refreshContext();
   });
 }
-
-// #endregion
 
 // #region Model select event bindings
 
@@ -3350,17 +3523,7 @@ if (artifactsDebugCloseBtn) {
 
 // #endregion
 
-// bind send to enter when chat input is focused, but allow shift+enter for newlines
-inputEl.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) {
-    e.preventDefault();
-    send();
-  }
-});
-// tell the RAG timer not to fire while typing actively.
-inputEl.addEventListener("input", () => {
-  scheduleContextRefresh();
-});
+// #region Unfocus/Close on Click Outside bindings
 
 document.addEventListener("click", (e) => {
   if (!convMenuEl.classList.contains("hidden") && !convMenuEl.contains(e.target))
@@ -3372,6 +3535,18 @@ document.addEventListener("click", (e) => {
   toggleChatMenu(false);
 });
 
+// #endregion
+
+// #region Key Bindings for Esc and Enter
+
+// bind send to enter when chat input is focused, but allow shift+enter for newlines
+inputEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    send();
+  }
+});
+
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") hideConvMenu();
   // optional: Esc closes modal
@@ -3379,6 +3554,28 @@ document.addEventListener("keydown", (e) => {
     closeMemoryModal();
   }
 });
+
+// #endregion
+
+// #region Context Menu Refresh Binding based on text input
+
+// tell the RAG timer not to fire while typing actively.
+inputEl.addEventListener("input", () => {
+  scheduleContextRefresh();
+});
+
+// #endregion
+
+// #region Transcript Regen Bindings
+
+window.addEventListener("beforeunload", () => {
+  cancelScheduledTranscriptRefresh();
+  if (conversationId) {
+    flushConversationTranscriptArtifact(conversationId, "unload", true);
+  }
+});
+
+// #endregion
 
 // #endregion
 

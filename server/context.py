@@ -15,7 +15,8 @@ from .db import (
     # list_all_files,
     list_artifacts_for_file,
     ensure_artifacts_for_files,
-    gather_scoped_files
+    gather_scoped_files,
+    ensure_conversation_transcript_artifact_fresh,
 )
 from .config import ContextConfig, CoreConfig, QueryConfig, load_context_config, load_core_config, load_query_config
 # TODO untagle dependencies later if needed
@@ -292,6 +293,16 @@ def build_context(
         ) -> dict:
     ctx_cfg = ctx_cfg or load_context_config()
     query_cfg = query_cfg or load_query_config()
+
+    # 3A lazy repair: keep the conversation transcript artifact reasonably fresh
+    try:
+        ensure_conversation_transcript_artifact_fresh(
+            conversation_id,
+            force_full=False,
+            reason="build_context",
+        )
+    except Exception as exc:
+        log_warn("Transcript lazy repair failed for %s: %s", conversation_id, exc)
 
     has_user_text = bool((user_text or "").strip())
     do_include_files = has_user_text and query_cfg.query_mode in ("FILES", "ALL")

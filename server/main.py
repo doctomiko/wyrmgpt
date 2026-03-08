@@ -23,7 +23,20 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from server.logging_helper import log_warn
-from .config import ContextConfig, QueryConfig, SummaryConfig, load_context_config, load_openai_config, load_query_config, load_summary_config
+from .config import (
+    #CoreConfig,
+    ContextConfig,
+    OpenAIConfig,
+    QueryConfig,
+    SummaryConfig,
+    UIConfig,
+    load_context_config,
+    load_openai_config,
+    load_query_config,
+    load_summary_config,
+    load_ui_config,
+)
+#from .config import ContextConfig, QueryConfig, SummaryConfig, load_context_config, load_openai_config, load_query_config, load_summary_config
 from .context import _get_prompt, build_context, build_context_panel_payload, build_model_input, estimate_context_tokens
 from .markdown_helper import apply_house_markdown_normalization, autolink_text
 from .summary_helper import summarize_conversation_text
@@ -33,18 +46,15 @@ from .query_retrieval import retrieve_chunks_for_message
 
 from .db import (
     # Schema and connection
-    FileDeleteAction,
-    delete_file_cascade,
-    find_same_scope_same_name_file,
     init_schema,
     db_debug_info,
+    # Shared paths
+    # Shared data dir
+    DATA_DIR,
     # Chat Messages
     add_message,
     get_messages,
     get_messages_raw,
-    list_files_by_sha256,
-    list_files_same_name_any_scope,
-    replace_file_in_place,
     save_conversation_summary_artifact,
     scope_rank,
     update_ab_canonical,
@@ -56,8 +66,6 @@ from .db import (
     get_conversation_title,
     update_conversation_title,
     get_conversation_context,
-    get_transcript_for_summary,
-    # save_conversation_summary,
     # Projects and subordinate entities
     list_projects,
     get_or_create_project,
@@ -66,10 +74,12 @@ from .db import (
     project_import as db_project_import,
     set_conversation_project,  # assign_conversation_project,
     update_project,
-    # Files and Artifacts
+    # Files
+    list_files_by_sha256,
+    list_files_same_name_any_scope,
+    replace_file_in_place,
     register_file as db_register_file,
     project_add_file as db_project_add_file,
-    artifact_file,
     register_scoped_file,
     update_file_description,
     conversation_link_file,
@@ -77,21 +87,31 @@ from .db import (
     list_files_for_project,
     list_all_files,
     get_files_summary,
-    ensure_files_artifacted_for_conversation,
+    FileDeleteAction,
+    delete_file_cascade,
+    find_same_scope_same_name_file,
+    # Artifacts
     get_scoped_artifact_debug,
+    # File Artifacts
+    artifact_file,
+    ensure_files_artifacted_for_conversation,
+    # Conversation Artifacts - Transcripts and Summaries
+    get_transcript_for_summary, # save_conversation_summary,
+    ensure_conversation_transcript_artifact_fresh,
+    refresh_conversation_transcript_artifact,
+    export_conversation_transcript_markdown,
+    # Artifacts for Memories TBD
     # Context cache
     invalidate_context_cache_for_conversation,
     invalidate_context_cache_for_project,
-    # Memory Pins
+    # Memory Pins - assumed to define scope
     add_memory_pin,
     list_memory_pins,
     delete_memory_pin,
     # Memories
     create_memory as db_create_memory,
     memory_link_project as db_memory_link_project,
-    memory_link_conversation as db_memory_link_conversation,# Shared paths
-    # Shared data dir
-    DATA_DIR,
+    memory_link_conversation as db_memory_link_conversation,
 )
 
 # endregion
@@ -102,27 +122,26 @@ load_dotenv()
 
 # region Model Catalog and Caching
 
+# TODO refactor to include many providers
 MODEL_CATALOG: dict[str, dict] = {}
 
 # add near your OpenAI client init (or near globals)
 _MODELS_CACHE: dict[str, Any] | None = None
 _MODELS_CACHE_TS: float = 0.0
+
+# TODO make this part of future model selector config
 _MODELS_TTL_SECONDS = 300  # 5 minutes
 
+# TODO make this part of OpenAIConfig
 _ALLOWED_MODEL_PREFIXES = ("gpt-", "o1", "o3", "o4")
 
-MODEL = os.getenv("OPENAI_MODEL", "gpt-5.1")
-TITLE_MODEL = os.getenv("OPENAI_TITLE_MODEL", MODEL)
+# load from OpenAIConfig
+oai_cfg = load_openai_config()
+MODEL = oai_cfg.open_ai_model
+# TODO decide if TITLE_MODEL should have its own setting
+TITLE_MODEL = oai_cfg.summary_model
 
 # endregion
-
-# UI helpers
-UI_TIMEZONE = (
-    os.getenv("UI_TIMEZONE")
-    or os.getenv("APP_TIMEZONE")
-    or os.getenv("TZ")
-    or "America/New_York"
-)
 
 ZEIT_PREFIX_RE = re.compile(
     r"^\s*(?:"
@@ -371,8 +390,24 @@ def health():
 
 @app.get("/api/ui_config")
 def api_ui_config():
-    """Small UI config surface so the static frontend can format timestamps."""
-    return JSONResponse({"timezone": UI_TIMEZONE})
+    cfg = load_ui_config()
+    return JSONResponse(
+        {
+            "local_timezone": cfg.local_timezone,
+            "context_preview_limit_min": cfg.context_preview_limit_min,
+            "context_preview_limit_max": cfg.context_preview_limit_max,
+            "min_rag_query_text_len": cfg.min_rag_query_text_len,
+            "context_idle_ms": cfg.context_idle_ms,
+            "transcript_idle_ms": cfg.transcript_idle_ms,
+            "debug_boot": cfg.debug_boot,
+        }
+    )
+
+if (False):
+    @app.get("/api/ui_config")
+    def api_ui_config():
+        """Small UI config surface so the static frontend can format timestamps."""
+        return JSONResponse({"timezone": UI_TIMEZONE})
 
 # region Chat Endpoints
 
@@ -959,6 +994,30 @@ def api_delete_conversation(conversation_id: str):
     delete_conversation(conversation_id)
     return {"deleted": True, "conversation_id": conversation_id}
 
+# region Conversation Title Endpoints
+# generally used in left-hand nav
+
+@app.put("/api/conversation/{conversation_id}/title")
+def api_set_title(conversation_id: str, req: TitleRequest):
+    """
+    app.js calls this as: PUT /api/conversation/{cid}/title { "title": "..." }
+    """
+    title = (req.title or "").strip() or "New chat"
+    updated = update_conversation_title(conversation_id, title)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    return JSONResponse({"ok": True, "title": title})
+
+# Optional but handy for debugging / sanity:
+@app.get("/api/conversation/{conversation_id}/title")
+def api_get_title(conversation_id: str):
+    t = get_conversation_title(conversation_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    return JSONResponse({"title": t})
+
+# endregion
+
 @app.post("/api/conversations/{conversation_id}/summarize")
 def api_summarize_conversation(conversation_id: str, sum_cfg: SummaryConfig | None = None):
     sum_cfg = sum_cfg or load_summary_config()
@@ -1022,24 +1081,59 @@ def api_summarize_conversation(conversation_id: str, sum_cfg: SummaryConfig | No
 
     return {"conversation_id": conversation_id, "summary": summary_text, "model": model}
 
-@app.put("/api/conversation/{conversation_id}/title")
-def api_set_title(conversation_id: str, req: TitleRequest):
-    """
-    app.js calls this as: PUT /api/conversation/{cid}/title { "title": "..." }
-    """
-    title = (req.title or "").strip() or "New chat"
-    updated = update_conversation_title(conversation_id, title)
-    if not updated:
-        raise HTTPException(status_code=404, detail="Conversation not found.")
-    return JSONResponse({"ok": True, "title": title})
+# region Conversation Transcript Endpoints
 
-# Optional but handy for debugging / sanity:
-@app.get("/api/conversation/{conversation_id}/title")
-def api_get_title(conversation_id: str):
-    t = get_conversation_title(conversation_id)
-    if t is None:
-        raise HTTPException(status_code=404, detail="Conversation not found.")
-    return JSONResponse({"title": t})
+@app.post("/api/conversation/{conversation_id}/refresh_transcript_artifact")
+def api_refresh_transcript_artifact(
+    conversation_id: str,
+    force_full: bool = False,
+    reason: str = "manual",
+):
+    try:
+        out = refresh_conversation_transcript_artifact(
+            conversation_id,
+            force_full=bool(force_full),
+            reason=reason,
+        )
+        return JSONResponse(out)
+    except ValueError as e:
+        _http_from_value_error(e)
+
+
+@app.get("/api/conversation/{conversation_id}/export_transcript")
+def api_export_transcript(
+    conversation_id: str,
+    force_full: bool = False,
+):
+    try:
+        # repair first so export reflects latest SQL state
+        refresh_conversation_transcript_artifact(
+            conversation_id,
+            force_full=bool(force_full),
+            reason="export",
+        )
+
+        title = get_conversation_title(conversation_id) or f"Conversation {conversation_id}"
+        body = export_conversation_transcript_markdown(
+            conversation_id,
+            refresh_if_stale=False,
+            force_full=False,
+        )
+
+        safe_title = re.sub(r"[^A-Za-z0-9._-]+", "_", title).strip("_") or conversation_id
+        filename = f"{safe_title}.transcript.md"
+
+        return Response(
+            content=body,
+            media_type="text/markdown; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"'
+            },
+        )
+    except ValueError as e:
+        _http_from_value_error(e)
+
+# endregion
 
 @app.get("/api/conversation/{conversation_id}/context")
 def api_conversation_context(
@@ -1868,6 +1962,8 @@ def corpus_search(req: CorpusSearchRequest):
         include_global=cfg.query_global_artifacts
     # Optional: self-heal missing artifacts before searching
     ensure_files_artifacted_for_conversation(conversation_id=cid, limit_per_scope=5, include_global=include_global)
+    # 3A lazy repair for conversation transcript artifacts
+    ensure_conversation_transcript_artifact_fresh(cid, force_full=False, reason="corpus_search")
 
     rows = search_corpus_for_conversation(
         conversation_id=cid,
