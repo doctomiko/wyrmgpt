@@ -45,12 +45,18 @@
             ☰
           </button>
           <div id="chatMenu" class="chatMenu hidden">
-            <button id="renameChat">Rename</button>
+            <button id="renameChat">Rename Conversation</button>
             <button id="suggestChat">Suggest Title</button>
+            <hr />
             <button id="openMemory">Memory &amp; Context…</button>
             <label class="menuAdvanced">
+              <input type="checkbox" id="searchChatHistoryToggle" />
+              Search Chat History
+            </label>
+            <hr />
+            <label class="menuAdvanced">
               <input type="checkbox" id="advancedCheckbox" />
-              Advanced A/B controls
+              Enable Advanced A/B Chat
             </label>
           </div>
         </div>
@@ -202,11 +208,15 @@
     <button id="menuDelete">Delete</button>
   </div>
   <div id="projMenu" class="convMenu hidden">
-    <button id="projNewChat" class="not-implemented">New Chat in Project</button>
+    <button id="projNewChat">New Chat in Project</button>
+    <hr />
     <button id="projRename">Rename Project</button>
     <button id="projDesc">Edit description…</button>
+    <button id="projToggleVisibility">Toggle Global Availability</button>
+    <hr />
     <button id="projUpload">Add files…</button>
     <button id="projFiles">Manage files…</button>
+    <hr />
     <button id="projArchive" class="not-implemented">Archive</button>
     <button id="projDelete" class="not-implemented">Delete</button>
   </div>

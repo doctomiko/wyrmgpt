@@ -64,7 +64,10 @@ def _parse_filler_words(text: str) -> Set[str]:
 
 
 @lru_cache(maxsize=16)
-def _load_filler_words_cached(filepath: str, fallback_text: str) -> frozenset[str]:
+def load_filler_words_cached(filepath: str | None = None, fallback_text: str | None = None, cfg: QueryConfig | None = None) -> frozenset[str]:
+    cfg = cfg or load_query_config()
+    filepath = filepath or cfg.filler_words_file
+    fallback_text = fallback_text or cfg.filler_words
     # 1) file wins if present and readable
     if filepath:
         for p in _resolve_path(filepath):
@@ -86,7 +89,7 @@ def _load_filler_words_cached(filepath: str, fallback_text: str) -> frozenset[st
 
 
 def _get_filler_words(cfg: QueryConfig) -> Set[str]:
-    return set(_load_filler_words_cached(cfg.filler_words_file or "", cfg.filler_words or ""))
+    return set(load_filler_words_cached(cfg.filler_words_file or "", cfg.filler_words or ""))
 
 
 def _is_interesting_token(tok: str, filler_words: Set[str]) -> bool:

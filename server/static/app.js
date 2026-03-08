@@ -6,26 +6,30 @@
 // Usually const but some are reassigned later
 
 // Inside the Chat Window
-const chatEl = document.getElementById("chat");
-const inputEl = document.getElementById("input");
-const sendBtn = document.getElementById("send");
+const chatWindow = document.getElementById("chat");
+const chatWindowInputTextbox = document.getElementById("input");
+const chatWindowInputSendBtn = document.getElementById("send");
 
 // Top Left
-const newBtn = document.getElementById("newChat");
-const manageFilesTopBtn = document.getElementById("manageFilesTop");
-// TODO where is the projects button?
+const topLeftNewChatBtn = document.getElementById("newChat");
+const topLeftNewProjBtn = document.getElementById("newProjectBtn");
+const topLeftManageFilesBtn = document.getElementById("manageFilesTop");
+// Conversation and Project List
+const sideBarProjListEl = document.getElementById("projectList");
+const sideBarConvListEl = document.getElementById("convList");
 
-// Top of Chat Menu
-const chatMenuButton = document.getElementById("chatMenuButton");
-const chatMenu = document.getElementById("chatMenu");
-const advancedCheckbox = document.getElementById("advancedCheckbox");
-const convListEl = document.getElementById("convList");
-const chatTitleEl = document.getElementById("chatTitle");
-const renameBtn = document.getElementById("renameChat");
-const suggestBtn = document.getElementById("suggestChat");
-// Model Selectors (at top)
-const modelSelectA = document.getElementById("modelSelectA");
-const modelSelectB = document.getElementById("modelSelectB");
+// Top of Paga/Chat Bar and Menu
+const topBarChatTitleEl = document.getElementById("chatTitle");
+const topBarChatMenu = document.getElementById("chatMenu");
+// Model Selectors
+const topBarModelSelectA = document.getElementById("modelSelectA");
+const topBarModelSelectB = document.getElementById("modelSelectB");
+// the underlying menu
+const topBarChatMenuBtn = document.getElementById("chatMenuButton");
+const topMenuRenameChatBtn = document.getElementById("renameChat");
+const topMenuSuggestTitleBtn = document.getElementById("suggestChat");
+const topMenuAdvancedABToggle = document.getElementById("advancedCheckbox");
+const topMenuSearchChatHistoryToggle = document.getElementById("searchChatHistoryToggle");
 
 // Move To... modal
 const moveToModal = document.getElementById("moveToModal");
@@ -39,27 +43,26 @@ const moveToBackdrop = moveToModal ? moveToModal.querySelector(".modalBackdrop")
 
 // Conversation Context Menu
 const convMenuEl = document.getElementById("convMenu");
-const menuRenameBtn = document.getElementById("menuRename");
-const menuSuggestBtn = document.getElementById("menuSuggest");
-const menuMoveToBtn = document.getElementById("menuMoveTo");
-const convViewFilesBtn = document.getElementById("menuConvViewFiles");
-const menuExportTranscriptBtn = document.getElementById("menuExportTranscript");
-const menuSummarizeBtn = document.getElementById("menuSummarize");
-const menuArchiveBtn = document.getElementById("menuArchive");
-const menuDeleteBtn = document.getElementById("menuDelete");
+const convMenuRenameBtn = document.getElementById("menuRename");
+const convMenuSuggestTitleBtn = document.getElementById("menuSuggest");
+const convMenuMoveToBtn = document.getElementById("menuMoveTo");
+const convMenuManageFilesBtn = document.getElementById("menuConvViewFiles");
+const convMenuExportTranscriptBtn = document.getElementById("menuExportTranscript");
+const convMenuSummarizeBtn = document.getElementById("menuSummarize");
+const convMenuArchiveBtn = document.getElementById("menuArchive");
+const convMenuDeleteBtn = document.getElementById("menuDelete");
 
 // Projects
-const projectListEl = document.getElementById("projectList");
-const conversationListEl = convListEl; // document.getElementById("conversationList");
-const newProjectBtn = document.getElementById("newProjectBtn");
 const projMenuEl = document.getElementById("projMenu");
-const projRenameBtn = document.getElementById("projRename");
-const projDescBtn = document.getElementById("projDesc");
-const projUploadBtn = document.getElementById("projUpload");
-const projFilesBtn = document.getElementById("projFiles");
+const projMenuNewChatBtn = document.getElementById("projNewChat");
+const projMenuRenameBtn = document.getElementById("projRename");
+const projMenuDescriptionBtn = document.getElementById("projDesc");
+const projMenuFileUploadBtn = document.getElementById("projUpload");
+const projMenuManageFilesBtn = document.getElementById("projFiles");
+const projMenuToggleVisibility = document.getElementById("projToggleVisibility");
 
 // Context Diagnostic Panel
-const toggleContextBtn = document.getElementById("toggleContext");
+const contextPreviewToggleBtn = document.getElementById("toggleContext");
 const contextPreviewEl = document.getElementById("contextPreview");
 
 // Memory Pins
@@ -80,7 +83,7 @@ const memoryBackdrop = memoryModal
   : null;
 
 // File Uploads and Management
-const attachBtn = document.getElementById("attachButton");
+const chatWindowInputAddFilesBtn = document.getElementById("attachButton");
 
 const uploadModal = document.getElementById("uploadModal");
 const uploadScopeEl = document.getElementById("uploadScope");
@@ -155,19 +158,32 @@ const LEGACY_PREFIX_RE = /^\s*\[20\d\d-[^\]]+\]\s*\n/;
 
 // TODO pull these from config objects/API
 
-let UI_TIMEZONE = null; // TZ for display
+let APP_CONFIG = {
+  search_chat_history: true,
+};
+// TODO implement me per comment below
+let UI_CONFIG = {
+  local_timezone: null, // TZ for display
+  // Context preview settings
+  context_preview_limit_min: 20,
+  context_preview_limit_max: 200,
+  // Real-time Context Preview + RAG query update timer config
+  min_rag_query_text_len: 5, // minimum size of text input to matter for previews
+  context_idle_ms: 5000, // How long user should idle typing before we refresh context preview
+  // Chat transcript re-generation/append config
+  transcript_idle_ms: 120000, // 2 minutes
+  debug_boot: true,
+}
 
-// These limits appear to not have any impact
-let CONTEXT_PREVIEW_LIMIT_MIN = 20;
-let CONTEXT_PREVIEW_LIMIT_MAX = 200;
-
-// config for real-time Context Preview + RAG query update timer
-let MIN_RAG_QUERY_TEXT_LEN = 5; // minimum size of text input to matter for previews
-let CONTEXT_IDLE_MS = 5000; // How long user should idle typing before we refresh context preview
-// config for chat transcript re-generation/append
-let TRANSCRIPT_IDLE_MS = 120000; // 2 minutes
-
-let DEBUG_BOOT = true;
+/*
+let UI_CONFIG.local_timezone = null; 
+let UI_CONFIG.context_preview_limit_min = 20;
+let UI_CONFIG.context_preview_limit_max = 200;
+let UI_CONFIG.min_rag_query_text_len = 5;
+let UI_CONFIG.context_idle_ms = 5000; 
+let UI_CONFIG.transcript_idle_ms = 120000; 
+let UI_CONFIG.debug_boot = true;
+*/
 
 // #endregion
 
@@ -203,8 +219,8 @@ function scheduleContextRefresh() {
   contextRefreshTimer = setTimeout(async () => {
     contextRefreshTimer = null;
 
-    const draft = (inputEl?.value || "").trim();
-    if (draft.length < MIN_RAG_QUERY_TEXT_LEN) return;
+    const draft = (chatWindowInputTextbox?.value || "").trim();
+    if (draft.length < UI_CONFIG.min_rag_query_text_len) return;
     // Don't re-query if the draft hasn't changed since the last preview refresh.
     if (draft === lastContextDraftSent) return;
 
@@ -214,7 +230,7 @@ function scheduleContextRefresh() {
     } catch (e) {
       console.warn("debounced refreshContext failed", e);
     }
-  }, CONTEXT_IDLE_MS);
+  }, UI_CONFIG.context_idle_ms);
 }
 
 // #endregion
@@ -264,7 +280,7 @@ function scheduleTranscriptRefresh(cid = conversationId) {
     } catch (e) {
       console.warn("scheduled transcript refresh failed", e);
     }
-  }, TRANSCRIPT_IDLE_MS);
+  }, UI_CONFIG.transcript_idle_ms);
 }
 
 // #endregion
@@ -279,46 +295,69 @@ async function fetchUiConfig() {
   try {
     const cfg = await fetchJsonDebug("/api/ui_config");
 
-    UI_TIMEZONE = (cfg && cfg.timezone) ? String(cfg.timezone) : null;
+    UI_CONFIG.local_timezone = (cfg && cfg.local_timezone) ? String(cfg.local_timezone) : null;
 
-    CONTEXT_PREVIEW_LIMIT_MIN = pickPositiveInt(
+    UI_CONFIG.context_preview_limit_min = pickPositiveInt(
       cfg?.context_preview_limit_min,
-      CONTEXT_PREVIEW_LIMIT_MIN
+      UI_CONFIG.context_preview_limit_min
     );
-    CONTEXT_PREVIEW_LIMIT_MAX = pickPositiveInt(
+    UI_CONFIG.context_preview_limit_max = pickPositiveInt(
       cfg?.context_preview_limit_max,
-      CONTEXT_PREVIEW_LIMIT_MAX
+      UI_CONFIG.context_preview_limit_max
     );
-    MIN_RAG_QUERY_TEXT_LEN = pickPositiveInt(
+    UI_CONFIG.min_rag_query_text_len = pickPositiveInt(
       cfg?.min_rag_query_text_len,
-      MIN_RAG_QUERY_TEXT_LEN
+      UI_CONFIG.min_rag_query_text_len
     );
-    CONTEXT_IDLE_MS = pickPositiveInt(
+    UI_CONFIG.context_idle_ms = pickPositiveInt(
       cfg?.context_idle_ms,
-      CONTEXT_IDLE_MS
+      UI_CONFIG.context_idle_ms
     );
-    TRANSCRIPT_IDLE_MS = pickPositiveInt(
+    UI_CONFIG.transcript_idle_ms = pickPositiveInt(
       cfg?.transcript_idle_ms,
-      TRANSCRIPT_IDLE_MS
+      UI_CONFIG.transcript_idle_ms
     );
 
     if (typeof cfg?.debug_boot === "boolean") {
-      DEBUG_BOOT = cfg.debug_boot;
+      UI_CONFIG.debug_boot = cfg.debug_boot;
     }
   } catch {
-    UI_TIMEZONE = null;
+    UI_CONFIG.local_timezone = null;
   }
 }
-/*
-async function fetchUiConfig() {
+
+async function fetchAppConfig() {
   try {
-    const cfg = await fetchJsonDebug("/api/ui_config");
-    UI_TIMEZONE = (cfg && cfg.timezone) ? String(cfg.timezone) : null;
-  } catch {
-    UI_TIMEZONE = null;
+    const cfg = await fetchJsonDebug("/api/app_config");
+    APP_CONFIG = {
+      search_chat_history: !!cfg?.search_chat_history,
+    };
+
+    if (topMenuSearchChatHistoryToggle) {
+      topMenuSearchChatHistoryToggle.checked = APP_CONFIG.search_chat_history;
+    }
+  } catch (e) {
+    console.warn("fetchAppConfig failed", e);
   }
 }
-*/
+
+async function saveAppConfig(patch) {
+  const cfg = await fetchJsonDebug("/api/app_config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch || {}),
+  });
+
+  APP_CONFIG = {
+    search_chat_history: !!cfg?.search_chat_history,
+  };
+
+  if (topMenuSearchChatHistoryToggle) {
+    topMenuSearchChatHistoryToggle.checked = APP_CONFIG.search_chat_history;
+  }
+
+  return APP_CONFIG;
+}
 
 // These are usually called by event handlers or after API calls to update the screen based on the current app state.
 
@@ -344,8 +383,8 @@ function formatReadableDateTime(iso) {
       minute: "2-digit",
     };
 
-    if (UI_TIMEZONE) {
-      return new Intl.DateTimeFormat(undefined, { ...opts, timeZone: UI_TIMEZONE }).format(d);
+    if (UI_CONFIG.local_timezone) {
+      return new Intl.DateTimeFormat(undefined, { ...opts, timeZone: UI_CONFIG.local_timezone }).format(d);
     }
     return new Intl.DateTimeFormat(undefined, opts).format(d);
   } catch {
@@ -501,14 +540,14 @@ async function newChat() {
 }
 
 function toggleChatMenu(forceState) {
-  if (!chatMenu) return;
+  if (!topBarChatMenu) return;
   const shouldShow = forceState !== undefined
     ? forceState
-    : chatMenu.classList.contains("hidden");
+    : topBarChatMenu.classList.contains("hidden");
   if (shouldShow) {
-    chatMenu.classList.remove("hidden");
+    topBarChatMenu.classList.remove("hidden");
   } else {
-    chatMenu.classList.add("hidden");
+    topBarChatMenu.classList.add("hidden");
   }
 }
 
@@ -603,7 +642,7 @@ function openMetaInfo(title, obj) {
 // #region Debug Helpers
 
 function bootLog(...args) {
-  if (DEBUG_BOOT) console.log(...args);
+  if (UI_CONFIG.debug_boot) console.log(...args);
 }
 
 async function fetchJsonDebug(url, opts) {
@@ -683,8 +722,8 @@ function addMsgTextOnly(role, text) {
   const div = document.createElement("div");
   div.className = `msg ${role}`;
   div.textContent = text;
-  chatEl.appendChild(div);
-  chatEl.scrollTop = chatEl.scrollHeight;
+  chatWindow.appendChild(div);
+  chatWindow.scrollTop = chatWindow.scrollHeight;
   return div;
 }
 
@@ -730,8 +769,8 @@ function addAssistantMsgWithModel(modelId, initialText, createdAtIso, metaObj = 
   bubble.appendChild(body);
   wrapper.appendChild(bubble);
 
-  chatEl.appendChild(wrapper);
-  chatEl.scrollTop = chatEl.scrollHeight;
+  chatWindow.appendChild(wrapper);
+  chatWindow.scrollTop = chatWindow.scrollHeight;
 
   // Streaming code updates the body only
   return body;
@@ -749,8 +788,8 @@ function addUserMsgWithTime(text, createdAtIso) {
   bubble.innerHTML = renderMarkdown(stripZeit(text));
 
   wrapper.appendChild(bubble);
-  chatEl.appendChild(wrapper);
-  chatEl.scrollTop = chatEl.scrollHeight;
+  chatWindow.appendChild(wrapper);
+  chatWindow.scrollTop = chatWindow.scrollHeight;
   return bubble;
 }
 
@@ -759,13 +798,13 @@ function addMsg(role, text) {
   div.className = `msg ${role}`;
   div.innerHTML = renderMarkdown(stripZeit(text));
 
-  chatEl.appendChild(div);
-  chatEl.scrollTop = chatEl.scrollHeight;
+  chatWindow.appendChild(div);
+  chatWindow.scrollTop = chatWindow.scrollHeight;
   return div;
 }
 
 function clearChat() {
-  chatEl.innerHTML = "";
+  chatWindow.innerHTML = "";
 }
 
 function renderMessagesWithAB(rows) {
@@ -944,8 +983,8 @@ function addABRow(modelA, modelB, createdAtIsoA = null, createdAtIsoB = null) {
   row.appendChild(A.col);
   row.appendChild(B.col);
 
-  chatEl.appendChild(row);
-  chatEl.scrollTop = chatEl.scrollHeight;
+  chatWindow.appendChild(row);
+  chatWindow.scrollTop = chatWindow.scrollHeight;
 
   return {
     rowEl: row,
@@ -1293,12 +1332,12 @@ async function fetchConversations() {
 }
 
 function renderConversations(conversations) {
-  convListEl.innerHTML = "";
+  sideBarConvListEl.innerHTML = "";
 
   const unassigned = (conversations || []).filter(c => c.project_id == null);
 
   unassigned.forEach(c => {
-    convListEl.appendChild(makeConversationItem(c));
+    sideBarConvListEl.appendChild(makeConversationItem(c));
   });
 
   updateChatTitle();
@@ -1306,7 +1345,7 @@ function renderConversations(conversations) {
 
 function updateChatTitle() {
   const meta = conversationMap.get(conversationId);
-  chatTitleEl.textContent = meta?.title || "…";
+  topBarChatTitleEl.textContent = meta?.title || "…";
 }
 
 async function selectConversation(cid) {
@@ -1496,9 +1535,14 @@ function renderContext(ctx) {
   lines.push(`  RAG final hits: ${((ctx.retrieved_chunks_final || []).length)}`);
   lines.push("");
 
+  /*
   // 3) System + project prompt
   lines.push("SYSTEM + PROJECT PROMPT:");
   lines.push(ctx.effective_system_prompt || "(none)");
+  */
+  // 3) Actual system text sent to the model
+  lines.push("SYSTEM TEXT SENT TO MODEL:");
+  lines.push(ctx.system_text || ctx.effective_system_prompt || "(none)");
   lines.push("");
 
   // 4) Conversation summary
@@ -1589,6 +1633,7 @@ function renderContext(ctx) {
   }
   lines.push("");
 
+  /*
   // 10) RAG final hits (after dedupe/diversify/suppression)
   const finalRows = ctx.retrieved_chunk_meta || [];
   lines.push(`RAG FINAL HITS (${finalRows.length}):`);
@@ -1597,6 +1642,27 @@ function renderContext(ctx) {
       const src = r.filename || r.scope_key || r.source_kind || "source";
       const ts = r.artifact_updated_at || r.file_updated_at || r.file_created_at || "";
       lines.push(`- ${src}#${r.chunk_index} chunk_id=${r.chunk_id} score=${r.score} ts=${ts}`);
+    }
+  } else {
+    lines.push("(none)");
+  }
+  lines.push("");
+  */
+  // 10) RAG final hits (after dedupe/diversify/suppression)
+  const finalRows = ctx.retrieved_chunks_final || ctx.retrieved_chunk_meta || [];
+  lines.push(`RAG FINAL HITS (${finalRows.length}):`);
+  if (finalRows.length) {
+    for (const r of finalRows) {
+      const src = r.filename || r.scope_key || r.source_kind || "source";
+      const ts = r.artifact_updated_at || r.file_updated_at || r.file_created_at || "";
+      const snippetRaw = r.preview_text || r.text || "";
+      const snippet = snippetRaw.length > 900
+        ? `${snippetRaw.slice(0, 900)}\n[...truncated for preview...]`
+        : snippetRaw;
+
+      lines.push(`- ${src}#${r.chunk_index} chunk_id=${r.chunk_id} score=${r.score} ts=${ts}`);
+      if (snippet) lines.push(snippet);
+      lines.push("");
     }
   } else {
     lines.push("(none)");
@@ -1720,15 +1786,15 @@ async function refreshContext() {
 
 async function refreshContext() {
   if (!conversationId) return;
-  const limit = contextExpanded ? CONTEXT_PREVIEW_LIMIT_MAX : CONTEXT_PREVIEW_LIMIT_MIN;
-  const draft = (inputEl?.value || "").trim();
+  const limit = contextExpanded ? UI_CONFIG.context_preview_limit_max : UI_CONFIG.context_preview_limit_min;
+  const draft = (chatWindowInputTextbox?.value || "").trim();
 
   setContextRefreshing(true);
   try {
     const ctx = await fetchContext(conversationId, limit, draft);
     setContextRefreshing(false);
     renderContext(ctx);
-    toggleContextBtn.textContent = contextExpanded ? "Show less" : "Show more";
+    contextPreviewToggleBtn.textContent = contextExpanded ? "Show less" : "Show more";
   } catch (e) {
     console.error("refreshContext failed", e);
     setContextRefreshing(false);
@@ -1745,40 +1811,40 @@ async function refreshContext() {
 // #region Sending messages
 
 async function send() {
-  const text = inputEl.value.trim();
+  const text = chatWindowInputTextbox.value.trim();
   if (!text) return;
-  inputEl.value = "";
+  chatWindowInputTextbox.value = "";
   // Reset the RAG timer
   cancelScheduledContextRefresh();
   lastContextDraftSent = "";
 
   // Base model from A
-  const modelA = modelSelectA?.value || null;
+  const modelA = topBarModelSelectA?.value || null;
   let modelB = modelA;
   // If B is visible and has a value, use it
-  if (modelSelectB && modelSelectB.style.display !== "none") {
-    const v = (modelSelectB.value || "").trim();
+  if (topBarModelSelectB && topBarModelSelectB.style.display !== "none") {
+    const v = (topBarModelSelectB.value || "").trim();
     if (v) modelB = v;
   }
 
-  const mA = findModelById(modelSelectA.value);
+  const mA = findModelById(topBarModelSelectA.value);
   const metaA = {
     ab_group: "A",
     canonical: true,
-    model: mA ? mA.display_name : modelSelectA.value
+    model: mA ? mA.display_name : topBarModelSelectA.value
   };
-  const mB = findModelById(modelSelectB.value);
+  const mB = findModelById(topBarModelSelectB.value);
   const metaB = {
     ab_group: "B",
     canonical: false,
-    model: mB ? mB.display_name : modelSelectB.value
+    model: mB ? mB.display_name : topBarModelSelectB.value
   };
 
   const useAB =
     typeof advancedMode !== "undefined" &&
     advancedMode &&
-    modelSelectB &&
-    modelSelectB.style.display !== "none" &&
+    topBarModelSelectB &&
+    topBarModelSelectB.style.display !== "none" &&
     modelA && modelB &&
     modelA !== modelB;
 
@@ -1822,7 +1888,7 @@ async function sendSingle(text, model) {
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     assistantBody.innerHTML = renderMarkdown(stripZeit(buffer));
-    chatEl.scrollTop = chatEl.scrollHeight;
+    chatWindow.scrollTop = chatWindow.scrollHeight;
   }
 
   //const conversations = await fetchConversations();
@@ -2364,9 +2430,9 @@ async function deleteConversationWithConfirmation(cid, title) {
     if (cid === conversationId) {
       conversationId = null;
       try { localStorage.removeItem("callie_mvp_conversation_id"); } catch {}
-      chatEl.innerHTML = "";
+      chatWindow.innerHTML = "";
       contextPreviewEl.textContent = "Loading…";
-      chatTitleEl.textContent = "New chat";
+      topBarChatTitleEl.textContent = "New chat";
     }
 
     const [projects, conversations] = await Promise.all([fetchProjects(), fetchConversations()]);
@@ -2467,9 +2533,9 @@ async function archiveConversation(conversationId, archived) {
 function showConvMenu(e, targetId) {
   menuTargetConversationId = targetId;
   positionMenu(convMenuEl, e.clientX, e.clientY);
-  if (convViewFilesBtn) {
+  if (convMenuManageFilesBtn) {
     // pessimistically disable, then re-enable if we find files
-    setFilesButtonEnabled(convViewFilesBtn, false);
+    setFilesButtonEnabled(convMenuManageFilesBtn, false);
     refreshConversationFilesState(targetId);
   }
 }
@@ -2514,8 +2580,8 @@ async function renameChat() {
 async function suggestChatTitle() {
   if (!conversationId) return;
 
-  suggestBtn.disabled = true;
-  suggestBtn.textContent = "Thinking…";
+  topMenuSuggestTitleBtn.disabled = true;
+  topMenuSuggestTitleBtn.textContent = "Thinking…";
   try {
     const res = await fetch(`/api/conversation/${conversationId}/suggest_title`, { method: "POST" });
     const data = await res.json();
@@ -2526,8 +2592,8 @@ async function suggestChatTitle() {
       await refreshContext();
     }
   } finally {
-    suggestBtn.disabled = false;
-    suggestBtn.textContent = "Suggest";
+    topMenuSuggestTitleBtn.disabled = false;
+    topMenuSuggestTitleBtn.textContent = "Suggest";
   }
 }
 
@@ -2579,10 +2645,10 @@ function setProjectExpanded(pid, expanded) {
 }
 
 function renderProjects(projects, conversations) {
-  if (!projectListEl) return;
+  if (!sideBarProjListEl) return;
 
   projectsCache = projects || [];
-  projectListEl.innerHTML = "";
+  sideBarProjListEl.innerHTML = "";
 
   // Group conversations by project_id, preserving whatever order /api/conversations returned
   const byPid = new Map();
@@ -2636,15 +2702,34 @@ function renderProjects(projects, conversations) {
       ev.preventDefault();
       ev.stopPropagation();
       menuTargetProjectId = p.id;
+
+      if (projMenuToggleVisibility) {
+        projMenuToggleVisibility.textContent =
+          p.visibility === "global" ? "Make Private" : "Make Global";
+      }
+
+      positionMenu(projMenuEl, ev.clientX, ev.clientY);
+
+      if (projMenuManageFilesBtn) {
+        setFilesButtonEnabled(projMenuManageFilesBtn, false);
+        refreshProjectFilesState(p.id);
+      }
+    });
+    /*
+    header.addEventListener("contextmenu", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      menuTargetProjectId = p.id;
       positionMenu(projMenuEl, ev.clientX, ev.clientY);
       //projMenuEl.style.left = `${ev.clientX}px`;
       //projMenuEl.style.top = `${ev.clientY}px`;
       //projMenuEl.classList.remove("hidden");
-      if (projFilesBtn) {
-        setFilesButtonEnabled(projFilesBtn, false);
+      if (projMenuManageFilesBtn) {
+        setFilesButtonEnabled(projMenuManageFilesBtn, false);
         refreshProjectFilesState(p.id);
       }
     });
+    */
 
     const children = document.createElement("div");
     children.className = "projConvs";
@@ -2656,7 +2741,7 @@ function renderProjects(projects, conversations) {
 
     block.appendChild(header);
     block.appendChild(children);
-    projectListEl.appendChild(block);
+    sideBarProjListEl.appendChild(block);
   });
 }
 
@@ -2851,13 +2936,13 @@ async function startUpload() {
   if (payloadConversationId) params.set("conversation_id", payloadConversationId);
   if (payloadProjectId != null) params.set("project_id", String(payloadProjectId));
 
-  const prevSendDisabled = sendBtn.disabled;
-  const prevInputDisabled = inputEl.disabled;
-  const prevAttachDisabled = attachBtn ? attachBtn.disabled : false;
+  const prevSendDisabled = chatWindowInputSendBtn.disabled;
+  const prevInputDisabled = chatWindowInputTextbox.disabled;
+  const prevAttachDisabled = chatWindowInputAddFilesBtn ? chatWindowInputAddFilesBtn.disabled : false;
 
-  sendBtn.disabled = true;
-  inputEl.disabled = true;
-  if (attachBtn) attachBtn.disabled = true;
+  chatWindowInputSendBtn.disabled = true;
+  chatWindowInputTextbox.disabled = true;
+  if (chatWindowInputAddFilesBtn) chatWindowInputAddFilesBtn.disabled = true;
   if (uploadStartBtn) uploadStartBtn.disabled = true;
   if (uploadStatusEl) uploadStatusEl.textContent = "Uploading…";
 
@@ -2892,9 +2977,9 @@ async function startUpload() {
       console.warn("refreshContext after upload failed", e);
     }
   } finally {
-    sendBtn.disabled = prevSendDisabled;
-    inputEl.disabled = prevInputDisabled;
-    if (attachBtn) attachBtn.disabled = prevAttachDisabled;
+    chatWindowInputSendBtn.disabled = prevSendDisabled;
+    chatWindowInputTextbox.disabled = prevInputDisabled;
+    if (chatWindowInputAddFilesBtn) chatWindowInputAddFilesBtn.disabled = prevAttachDisabled;
     if (uploadStartBtn) uploadStartBtn.disabled = false;
   }
 }
@@ -2934,19 +3019,21 @@ function openFilesModalAll() {
 async function loadFilesModal() {
   if (!filesModal || !filesListEl) return;
 
-  let url;
+  let url = null;
+
   if (filesModalMode === "conversation") {
     if (!filesModalConversationId) return;
     url = `/api/conversations/${encodeURIComponent(filesModalConversationId)}/files`;
   } else if (filesModalMode === "project") {
     if (filesModalProjectId == null) return;
     url = `/api/projects/${encodeURIComponent(filesModalProjectId)}/files`;
+  } else if (filesModalMode === "global") {
+    url = "/api/files/global";
   } else if (filesModalMode === "all") {
     url = "/api/files";
   } else {
     return;
   }
-  // TODO change above branches to also support "global" and sandbox+id
 
   filesListEl.textContent = "Loading…";
   filesModal.classList.remove("hidden");
@@ -2959,8 +3046,9 @@ async function loadFilesModal() {
       filesListEl.textContent = "Failed to load files.";
       return;
     }
-    const data = await res.json();
-    const files = data.files || [];
+
+    const data = await res.json().catch(() => ({}));
+    const files = Array.isArray(data.files) ? data.files : [];
 
     if (!files.length) {
       filesListEl.textContent = "No files yet.";
@@ -2970,7 +3058,7 @@ async function loadFilesModal() {
     const container = document.createElement("div");
     container.className = "filesListTable";
 
-      files.forEach(file => {
+    files.forEach((file) => {
       const row = document.createElement("div");
       row.className = "filesRow";
 
@@ -2983,10 +3071,26 @@ async function loadFilesModal() {
       descInput.type = "text";
       descInput.placeholder = "Description / what this file is for…";
       descInput.value = file.description || "";
-      descInput.dataset.fileId = file.id;   // IMPORTANT: this was missing
+      descInput.dataset.fileId = file.id;
       descInput.addEventListener("change", () => {
         saveFileDescription(file.id, descInput.value);
       });
+
+      let moveBtn = null;
+      const canMoveToGlobal = (file.scope_type || "") === "project";
+      if (canMoveToGlobal) {
+        moveBtn = document.createElement("button");
+        moveBtn.className = "filesMoveBtn";
+        moveBtn.textContent = "Move to Global";
+        moveBtn.addEventListener("click", async () => {
+          try {
+            await moveFileToGlobal(file);
+          } catch (err) {
+            console.error("move file failed", err);
+            alert("Move failed: " + (err?.message || err));
+          }
+        });
+      }
 
       const deleteBtn = document.createElement("button");
       deleteBtn.className = "filesDeleteBtn";
@@ -2999,20 +3103,45 @@ async function loadFilesModal() {
           const res = await fetch(`/api/files/${encodeURIComponent(file.id)}`, {
             method: "DELETE",
           });
+
           if (!res.ok) {
             const txt = await res.text().catch(() => "");
             alert(`Delete failed (HTTP ${res.status}). ${txt.slice(0, 200)}`);
             return;
           }
 
-          // remove row from UI immediately
           row.remove();
 
-          // refresh context because this can change prompt inputs
+          if (!container.children.length) {
+            filesListEl.textContent = "No files yet.";
+          }
+
           try {
             await refreshContext();
           } catch (e) {
             console.warn("refreshContext after file delete failed", e);
+          }
+
+          try {
+            await refreshTopLeftManageFilesState();
+          } catch (e) {
+            console.warn("refreshTopLeftManageFilesState failed", e);
+          }
+
+          if (filesModalProjectId != null) {
+            try {
+              await refreshProjectFilesState(filesModalProjectId);
+            } catch (e) {
+              console.warn("refreshProjectFilesState failed", e);
+            }
+          }
+
+          if (filesModalConversationId) {
+            try {
+              await refreshConversationFilesState(filesModalConversationId);
+            } catch (e) {
+              console.warn("refreshConversationFilesState failed", e);
+            }
           }
         } catch (err) {
           console.error("delete file failed", err);
@@ -3022,32 +3151,11 @@ async function loadFilesModal() {
 
       row.appendChild(nameSpan);
       row.appendChild(descInput);
+      if (moveBtn) row.appendChild(moveBtn);
       row.appendChild(deleteBtn);
+
       container.appendChild(row);
     });
-    /*
-    files.forEach(file => {
-      const row = document.createElement("div");
-      row.className = "filesRow";
-
-      const nameSpan = document.createElement("span");
-      nameSpan.className = "filesName";
-      nameSpan.textContent = file.name || file.path || file.id;
-
-      const descInput = document.createElement("input");
-      descInput.className = "filesDescInput";
-      descInput.type = "text";
-      descInput.placeholder = "Description / what this file is for…";
-      descInput.value = file.description || "";
-      descInput.addEventListener("change", () => {
-        saveFileDescription(file.id, descInput.value);
-      });
-
-      row.appendChild(nameSpan);
-      row.appendChild(descInput);
-      container.appendChild(row);
-    });
-    */
 
     filesListEl.innerHTML = "";
     filesListEl.appendChild(container);
@@ -3070,6 +3178,55 @@ function closeFilesModal(save = true) {
   filesModalMode = null;
   filesModalConversationId = null;
   filesModalProjectId = null;
+}
+
+async function moveFileToGlobal(file) {
+  const ok = confirm(`Move file "${file.name || file.id}" to Global files?`);
+  if (!ok) return false;
+
+  const res = await fetch(`/api/files/${encodeURIComponent(file.id)}/move_scope`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ scope_type: "global" }),
+  });
+
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    alert(`Move failed (HTTP ${res.status}). ${txt.slice(0, 200)}`);
+    return false;
+  }
+
+  await loadFilesModal();
+
+  try {
+    await refreshContext();
+  } catch (e) {
+    console.warn("refreshContext after file move failed", e);
+  }
+
+  try {
+    await refreshTopLeftManageFilesState();
+  } catch (e) {
+    console.warn("refreshTopLeftManageFilesState failed", e);
+  }
+
+  if (filesModalProjectId != null) {
+    try {
+      await refreshProjectFilesState(filesModalProjectId);
+    } catch (e) {
+      console.warn("refreshProjectFilesState failed", e);
+    }
+  }
+
+  if (filesModalConversationId) {
+    try {
+      await refreshConversationFilesState(filesModalConversationId);
+    } catch (e) {
+      console.warn("refreshConversationFilesState failed", e);
+    }
+  }
+
+  return true;
 }
 
 async function saveFileDescription(fileId, description) {
@@ -3101,44 +3258,44 @@ function setFilesButtonEnabled(btn, enabled) {
 
 async function refreshGlobalFilesState() {
   // Uses the new /api/files/summary endpoint (we'll add it below)
-  if (!manageFilesTopBtn) return;
+  if (!topLeftManageFilesBtn) return;
   try {
     const data = await fetchJsonDebug("/api/files/summary");
     const total = data?.total ?? 0;
     hasAnyFiles = total > 0;
-    setFilesButtonEnabled(manageFilesTopBtn, hasAnyFiles);
+    setFilesButtonEnabled(topLeftManageFilesBtn, hasAnyFiles);
   } catch (err) {
     console.error("files summary error", err);
     // On error, don't hard-disable the button
-    setFilesButtonEnabled(manageFilesTopBtn, true);
+    setFilesButtonEnabled(topLeftManageFilesBtn, true);
   }
 }
 
 async function refreshConversationFilesState(convId) {
-  if (!convViewFilesBtn || !convId) return;
+  if (!convMenuManageFilesBtn || !convId) return;
   try {
     const res = await fetch(`/api/conversations/${encodeURIComponent(convId)}/files`);
     if (!res.ok) throw new Error("status " + res.status);
     const data = await res.json();
     const hasFiles = (data.files || []).length > 0;
-    setFilesButtonEnabled(convViewFilesBtn, hasFiles);
+    setFilesButtonEnabled(convMenuManageFilesBtn, hasFiles);
   } catch (err) {
     console.error("conv files state error", err);
-    setFilesButtonEnabled(convViewFilesBtn, false);
+    setFilesButtonEnabled(convMenuManageFilesBtn, false);
   }
 }
 
 async function refreshProjectFilesState(projectId) {
-  if (!projFilesBtn || projectId == null) return;
+  if (!projMenuManageFilesBtn || projectId == null) return;
   try {
     const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/files`);
     if (!res.ok) throw new Error("status " + res.status);
     const data = await res.json();
     const hasFiles = (data.files || []).length > 0;
-    setFilesButtonEnabled(projFilesBtn, hasFiles);
+    setFilesButtonEnabled(projMenuManageFilesBtn, hasFiles);
   } catch (err) {
     console.error("project files state error", err);
-    setFilesButtonEnabled(projFilesBtn, false);
+    setFilesButtonEnabled(projMenuManageFilesBtn, false);
   }
 }
 
@@ -3150,10 +3307,14 @@ async function refreshProjectFilesState(projectId) {
 
 // #region Event bindings
 
+chatWindowInputSendBtn.addEventListener("click", send);
+
+topLeftNewChatBtn.addEventListener("click", newChat);
+
 // #region File upload event bindings
 
-if (attachBtn && uploadModal) {
-  attachBtn.addEventListener("click", () => {
+if (chatWindowInputAddFilesBtn && uploadModal) {
+  chatWindowInputAddFilesBtn.addEventListener("click", () => {
     if (!conversationId) {
       alert("Start a chat first, then attach files.");
       return;
@@ -3187,8 +3348,8 @@ if (uploadStartBtn) {
 }
 
 // Project right-click: always project scoped
-if (projUploadBtn) {
-  projUploadBtn.addEventListener("click", () => {
+if (projMenuFileUploadBtn) {
+  projMenuFileUploadBtn.addEventListener("click", () => {
     const pid = menuTargetProjectId;
     projMenuEl.classList.add("hidden");
     if (!pid) return;
@@ -3200,8 +3361,8 @@ if (projUploadBtn) {
 
 // #region File management event bindings
 
-if (convViewFilesBtn) {
-  convViewFilesBtn.addEventListener("click", () => {
+if (convMenuManageFilesBtn) {
+  convMenuManageFilesBtn.addEventListener("click", () => {
     convMenuEl.classList.add("hidden");
     const cid = menuTargetConversationId || conversationId;
     if (!cid) {
@@ -3212,8 +3373,8 @@ if (convViewFilesBtn) {
   });
 }
 
-if (projFilesBtn) {
-  projFilesBtn.addEventListener("click", () => {
+if (projMenuManageFilesBtn) {
+  projMenuManageFilesBtn.addEventListener("click", () => {
     projMenuEl.classList.add("hidden");
     const pid = menuTargetProjectId;
     if (!pid) {
@@ -3224,9 +3385,9 @@ if (projFilesBtn) {
   });
 }
 
-if (manageFilesTopBtn) {
-  manageFilesTopBtn.addEventListener("click", () => {
-    if (manageFilesTopBtn.classList.contains("files-disabled")) {
+if (topLeftManageFilesBtn) {
+  topLeftManageFilesBtn.addEventListener("click", () => {
+    if (topLeftManageFilesBtn.classList.contains("files-disabled")) {
       return;
     }
     openFilesModalAll();
@@ -3247,26 +3408,6 @@ if (filesSaveBtn) {
 if (filesBackdrop) {
   filesBackdrop.addEventListener("click", closeFilesModal);
 }
-
-// #endregion
-
-// #region Conversation & chat menu event bindings
-
-if (chatMenuButton) {
-  chatMenuButton.addEventListener("click", (e) => {
-    e.stopPropagation();
-    toggleChatMenu();
-  });
-}
-if (chatMenu) {
-  chatMenu.addEventListener("click", (e) => {
-    // don't let clicks inside menu bubble up and close it
-    e.stopPropagation();
-  });
-}
-
-sendBtn.addEventListener("click", send);
-newBtn.addEventListener("click", newChat);
 
 // #endregion
 
@@ -3297,19 +3438,10 @@ if (memoryBackdrop) {
 
 // #endregion
 
-// #region Chat buttons in the top panel (now hidden)
-if (renameBtn) {
-  renameBtn.addEventListener("click", renameChat);
-}
-if (suggestBtn) {
-  suggestBtn.addEventListener("click", suggestChatTitle);
-}
-// #endregion
+// #region Conversation Menu event bindings
 
-// #region Conversation context menu event bindings
-
-if (menuRenameBtn) {
-  menuRenameBtn.addEventListener("click", async () => {
+if (convMenuRenameBtn) {
+  convMenuRenameBtn.addEventListener("click", async () => {
     const cid = menuTargetConversationId;
     if (!cid) return;
 
@@ -3335,18 +3467,18 @@ if (menuRenameBtn) {
   });
 }
 
-if (menuSuggestBtn) {
-  menuSuggestBtn.addEventListener("click", async () => {
+if (convMenuSuggestTitleBtn) {
+  convMenuSuggestTitleBtn.addEventListener("click", async () => {
     const cid = menuTargetConversationId;
     if (!cid) return;
 
-    menuSuggestBtn.disabled = true;
-    menuSuggestBtn.textContent = "Thinking…";
+    convMenuSuggestTitleBtn.disabled = true;
+    convMenuSuggestTitleBtn.textContent = "Thinking…";
     try {
       await fetch(`/api/conversation/${cid}/suggest_title`, { method: "POST" });
     } finally {
-      menuSuggestBtn.disabled = false;
-      menuSuggestBtn.textContent = "Suggest";
+      convMenuSuggestTitleBtn.disabled = false;
+      convMenuSuggestTitleBtn.textContent = "Suggest";
     }
 
     hideConvMenu();
@@ -3360,8 +3492,8 @@ if (menuSuggestBtn) {
   });
 }
 
-if (menuSummarizeBtn) {
-  menuSummarizeBtn.addEventListener("click", async () => {
+if (convMenuSummarizeBtn) {
+  convMenuSummarizeBtn.addEventListener("click", async () => {
     const cid = getMenuCid();
     if (!cid) return;
     hideConvMenu();
@@ -3369,8 +3501,8 @@ if (menuSummarizeBtn) {
   });
 }
 
-if (menuMoveToBtn) {
-  menuMoveToBtn.addEventListener("click", async () => {
+if (convMenuMoveToBtn) {
+  convMenuMoveToBtn.addEventListener("click", async () => {
     const cid = getMenuCid();
     if (!cid) return;
     hideConvMenu();
@@ -3382,8 +3514,8 @@ if (menuMoveToBtn) {
   });
 }
 
-if (menuArchiveBtn) {
-  menuArchiveBtn.addEventListener("click", async () => {
+if (convMenuArchiveBtn) {
+  convMenuArchiveBtn.addEventListener("click", async () => {
     const cid = getMenuCid();
     if (!cid) return;
     hideConvMenu();
@@ -3391,8 +3523,8 @@ if (menuArchiveBtn) {
   });
 }
 
-if (menuDeleteBtn) {
-  menuDeleteBtn.addEventListener("click", async () => {
+if (convMenuDeleteBtn) {
+  convMenuDeleteBtn.addEventListener("click", async () => {
     const cid = getMenuCid();
     if (!cid) return;
     hideConvMenu();
@@ -3400,8 +3532,8 @@ if (menuDeleteBtn) {
   });
 }
 
-if (menuExportTranscriptBtn) {
-  menuExportTranscriptBtn.addEventListener("click", async () => {
+if (convMenuExportTranscriptBtn) {
+  convMenuExportTranscriptBtn.addEventListener("click", async () => {
     const cid = getMenuCid();
     if (!cid) return;
     hideConvMenu();
@@ -3409,36 +3541,125 @@ if (menuExportTranscriptBtn) {
   });
 }
 
+if (projMenuNewChatBtn) {
+  projMenuNewChatBtn.addEventListener("click", async () => {
+    const pid = menuTargetProjectId;
+    projMenuEl.classList.add("hidden");
+    if (!pid) return;
+
+    try {
+      const res = await fetch("/api/new", { method: "POST" });
+      if (!res.ok) {
+        throw new Error(`new chat failed: HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      const cid = data.conversation_id;
+
+      const moveRes = await fetch(`/api/conversations/${encodeURIComponent(cid)}/project`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project_id: pid }),
+      });
+
+      if (!moveRes.ok) {
+        const err = await moveRes.json().catch(() => ({}));
+        throw new Error(err.detail || `assign failed: HTTP ${moveRes.status}`);
+      }
+
+      conversationId = cid;
+      localStorage.setItem("callie_mvp_conversation_id", conversationId);
+
+      const [projects, conversations] = await Promise.all([
+        fetchProjects(),
+        fetchConversations(),
+      ]);
+      renderProjects(projects, conversations);
+      renderConversations(conversations);
+
+      await selectConversation(cid);
+    } catch (e) {
+      console.error("New Chat in Project failed", e);
+      alert("Failed to create new chat in project.");
+    }
+  });
+}
+
 // #endregion
 
-if (toggleContextBtn) {
-  toggleContextBtn.addEventListener("click", async () => {
+// #region Context Preview Pane Bindings
+
+if (contextPreviewToggleBtn) {
+  contextPreviewToggleBtn.addEventListener("click", async () => {
     contextExpanded = !contextExpanded;
     await refreshContext();
   });
 }
 
-// #region Model select event bindings
+// #endregion
 
-if (advancedCheckbox) {
+// #region Chat buttons in the top panel (now hidden)
+if (topMenuRenameChatBtn) {
+  topMenuRenameChatBtn.addEventListener("click", renameChat);
+}
+if (topMenuSuggestTitleBtn) {
+  topMenuSuggestTitleBtn.addEventListener("click", suggestChatTitle);
+}
+// #endregion
+// #region Top Bar event bindings
+
+if (topBarChatMenuBtn) {
+  topBarChatMenuBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    toggleChatMenu();
+  });
+}
+if (topBarChatMenu) {
+  topBarChatMenu.addEventListener("click", (e) => {
+    // don't let clicks inside menu bubble up and close it
+    e.stopPropagation();
+  });
+}
+
+// #endregion
+// #region Top Menu Bindings
+
+if (topMenuAdvancedABToggle) {
   // restore saved setting
   advancedMode = localStorage.getItem("chatoss.advanced") === "1";
-  advancedCheckbox.checked = advancedMode;
+  topMenuAdvancedABToggle.checked = advancedMode;
 
-  advancedCheckbox.addEventListener("change", () => {
-    advancedMode = advancedCheckbox.checked;
+  topMenuAdvancedABToggle.addEventListener("change", () => {
+    advancedMode = topMenuAdvancedABToggle.checked;
     localStorage.setItem("chatoss.advanced", advancedMode ? "1" : "0");
     applyAdvancedVisibility();
   });
 }
 
-if (modelSelectA) {
-  modelSelectA.addEventListener("change", () =>
+if (topMenuSearchChatHistoryToggle) {
+  topMenuSearchChatHistoryToggle.addEventListener("change", async () => {
+    try {
+      await saveAppConfig({
+        search_chat_history: !!topMenuSearchChatHistoryToggle.checked,
+      });
+      await refreshContext();
+    } catch (e) {
+      console.error("save app config failed", e);
+      alert("Failed to save Search Chat History setting.");
+    }
+  });
+}
+
+// #endregion
+// #region Top Menu Model select event bindings
+
+if (topBarModelSelectA) {
+  topBarModelSelectA.addEventListener("change", () =>
     updateModelInfo("A")
   );
 }
-if (modelSelectB) {
-  modelSelectB.addEventListener("change", () =>
+if (topBarModelSelectB) {
+  topBarModelSelectB.addEventListener("change", () =>
     updateModelInfo("B")
   );
 }
@@ -3447,8 +3668,33 @@ if (modelSelectB) {
 
 // #region Project management menu event bindings
 
-if (newProjectBtn) {
-  newProjectBtn.addEventListener("click", async () => {
+if (projMenuToggleVisibility) {
+  projMenuToggleVisibility.addEventListener("click", async () => {
+    const pid = menuTargetProjectId;
+    projMenuEl.classList.add("hidden");
+    if (!pid) return;
+
+    const proj = projectsCache.find(p => p.id === pid);
+    if (!proj) return;
+
+    const nextVisibility = proj.visibility === "global" ? "private" : "global";
+
+    if (await updateProject(pid, { visibility: nextVisibility })) {
+      const [p2, c2] = await Promise.all([fetchProjects(), fetchConversations()]);
+      renderProjects(p2, c2);
+      renderConversations(c2);
+
+      try {
+        await refreshContext();
+      } catch (e) {
+        console.warn("refreshContext after project visibility change failed", e);
+      }
+    }
+  });
+}
+
+if (topLeftNewProjBtn) {
+  topLeftNewProjBtn.addEventListener("click", async () => {
     const name = prompt("New project name:", "");
     if (!name || !name.trim()) return;
     try {
@@ -3474,8 +3720,8 @@ if (newProjectBtn) {
   });
 }
 
-if (projRenameBtn) {
-  projRenameBtn.addEventListener("click", async () => {
+if (projMenuRenameBtn) {
+  projMenuRenameBtn.addEventListener("click", async () => {
     const pid = menuTargetProjectId;
     projMenuEl.classList.add("hidden");
     if (!pid) return;
@@ -3492,8 +3738,8 @@ if (projRenameBtn) {
   });
 }
 
-if (projDescBtn) {
-  projDescBtn.addEventListener("click", async () => {
+if (projMenuDescriptionBtn) {
+  projMenuDescriptionBtn.addEventListener("click", async () => {
     const pid = menuTargetProjectId;
     projMenuEl.classList.add("hidden");
     if (!pid) return;
@@ -3540,7 +3786,7 @@ document.addEventListener("click", (e) => {
 // #region Key Bindings for Esc and Enter
 
 // bind send to enter when chat input is focused, but allow shift+enter for newlines
-inputEl.addEventListener("keydown", (e) => {
+chatWindowInputTextbox.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     send();
@@ -3560,7 +3806,7 @@ document.addEventListener("keydown", (e) => {
 // #region Context Menu Refresh Binding based on text input
 
 // tell the RAG timer not to fire while typing actively.
-inputEl.addEventListener("input", () => {
+chatWindowInputTextbox.addEventListener("input", () => {
   scheduleContextRefresh();
 });
 
@@ -3584,6 +3830,8 @@ window.addEventListener("beforeunload", () => {
   try {
     bootLog("[boot] fetchUiConfig");
     await fetchUiConfig();
+    bootLog("[boot] fetchAppConfig");
+    await fetchAppConfig();
 
     bootLog("[boot] initABUI");
     initABUI();

@@ -17,6 +17,9 @@ PROSE_CHUNK_HARD_MAX_CHARS = 9000
 CODE_CHUNK_TARGET_CHARS = 5200
 CODE_CHUNK_HARD_MAX_CHARS = 7800
 
+TRANSCRIPT_CHUNK_TARGET_CHARS = 2200
+TRANSCRIPT_CHUNK_HARD_MAX_CHARS = 3200
+
 # When a trailing chunk is tiny, merge it into the previous chunk if it fits.
 TRAILING_MERGE_MIN_CHARS = 800
 
@@ -166,6 +169,26 @@ def chunk_code(text: str, *, lang_hint: str = "") -> List[str]:
     )
     return _merge_tiny_trailing(chunks, hard_max=CODE_CHUNK_HARD_MAX_CHARS)
 
+
+def chunk_transcript(text: str) -> List[str]:
+    """
+    Conversation transcripts are rendered as repeated message blocks separated by blank lines.
+    Keep these chunks materially smaller than generic prose so retrieval lands near the
+    actual turn that matched, rather than swallowing half the conversation.
+    """
+    text = _normalize_newlines(text).strip()
+    if not text:
+        return []
+
+    blocks = [b.strip() for b in text.split("\n\n") if b.strip()]
+    chunks = _pack_blocks(
+        blocks=blocks,
+        target=TRANSCRIPT_CHUNK_TARGET_CHARS,
+        hard_max=TRANSCRIPT_CHUNK_HARD_MAX_CHARS,
+        splitter=_fallback_split_prose_block,
+        joiner="\n\n",
+    )
+    return _merge_tiny_trailing(chunks, hard_max=TRANSCRIPT_CHUNK_HARD_MAX_CHARS)
 
 # -----------------------------
 # Markdown helpers
@@ -540,6 +563,7 @@ def _merge_tiny_trailing(chunks: List[str], *, hard_max: int) -> List[str]:
 def _normalize_newlines(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
+
 def chunk_text_with_hints(
     text: str,
     *,
@@ -550,6 +574,7 @@ def chunk_text_with_hints(
     """
     Chunk text using whatever hints we have.
 
+    - Conversation transcripts get their own smaller chunking strategy.
     - If we have a filename/path, use chunk_text_for_file() (best behavior: code vs md vs prose).
     - Otherwise, pick markdown vs prose vs code using light heuristics.
     """
@@ -557,24 +582,25 @@ def chunk_text_with_hints(
     if not text:
         return []
 
+    sk = (source_kind or "").lower()
+
+    if sk == "conversation:transcript":
+        return chunk_transcript(text)
+
     # Best case: we have a path hint.
     if filename:
         try:
             p = Path(filename)
             return chunk_text_for_file(text, path=p, mime_type=mime_type)
         except Exception:
-            # fall back to heuristics below
             pass
 
-    # Heuristics if no path: decide markdown/code/prose
     # Markdown signals
     if re.search(r"(?m)^\s{0,3}#{1,6}\s+\S", text) or "```" in text or re.search(r"\[[^\]]+\]\([^)]+\)", text):
         return chunk_markdown(text)
 
-    # Code-ish signals
-    sk = (source_kind or "").lower()
+    # Code-ish source kind signals
     if "code" in sk or "python" in sk or "javascript" in sk or "typescript" in sk:
-        # try to chunk as code with language hint if we can infer
         lang = ""
         if "python" in sk:
             lang = "py"
@@ -584,9 +610,60 @@ def chunk_text_with_hints(
             lang = "ts"
         return chunk_code(text, lang_hint=lang)
 
-    # More code heuristics (lightweight)
+    # Lightweight code heuristics
     if re.search(r"(?m)^\s*(def|class)\s+\w+", text) or re.search(r"(?m)^\s*(function\s+\w+|\w+\s*=>)\s*", text):
         return chunk_code(text)
 
-    # Default prose
     return chunk_prose(text)
+
+if (False):
+    def chunk_text_with_hints(
+        text: str,
+        *,
+        source_kind: str | None = None,
+        filename: str | None = None,
+        mime_type: str | None = None,
+    ) -> List[str]:
+        """
+        Chunk text using whatever hints we have.
+
+        - If we have a filename/path, use chunk_text_for_file() (best behavior: code vs md vs prose).
+        - Otherwise, pick markdown vs prose vs code using light heuristics.
+        """
+        text = (text or "").strip()
+        if not text:
+            return []
+
+        # Best case: we have a path hint.
+        if filename:
+            try:
+                p = Path(filename)
+                return chunk_text_for_file(text, path=p, mime_type=mime_type)
+            except Exception:
+                # fall back to heuristics below
+                pass
+
+        # Heuristics if no path: decide markdown/code/prose
+        # Markdown signals
+        if re.search(r"(?m)^\s{0,3}#{1,6}\s+\S", text) or "```" in text or re.search(r"\[[^\]]+\]\([^)]+\)", text):
+            return chunk_markdown(text)
+
+        # Code-ish signals
+        sk = (source_kind or "").lower()
+        if "code" in sk or "python" in sk or "javascript" in sk or "typescript" in sk:
+            # try to chunk as code with language hint if we can infer
+            lang = ""
+            if "python" in sk:
+                lang = "py"
+            elif "javascript" in sk:
+                lang = "js"
+            elif "typescript" in sk:
+                lang = "ts"
+            return chunk_code(text, lang_hint=lang)
+
+        # More code heuristics (lightweight)
+        if re.search(r"(?m)^\s*(def|class)\s+\w+", text) or re.search(r"(?m)^\s*(function\s+\w+|\w+\s*=>)\s*", text):
+            return chunk_code(text)
+
+        # Default prose
+        return chunk_prose(text)

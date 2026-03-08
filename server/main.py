@@ -26,15 +26,18 @@ from server.logging_helper import log_warn
 from .config import (
     #CoreConfig,
     ContextConfig,
-    OpenAIConfig,
-    QueryConfig,
-    SummaryConfig,
-    UIConfig,
     load_context_config,
+    OpenAIConfig,
     load_openai_config,
+    QueryConfig,
     load_query_config,
+    SummaryConfig,
     load_summary_config,
+    UIConfig,
     load_ui_config,
+    # app_settings access
+    APP_KEYS,
+    load_app_config,
 )
 #from .config import ContextConfig, QueryConfig, SummaryConfig, load_context_config, load_openai_config, load_query_config, load_summary_config
 from .context import _get_prompt, build_context, build_context_panel_payload, build_model_input, estimate_context_tokens
@@ -51,12 +54,15 @@ from .db import (
     # Shared paths
     # Shared data dir
     DATA_DIR,
+    # this is the reverse end of AppConfig
+    set_app_setting,
     # Chat Messages
     add_message,
     get_messages,
     get_messages_raw,
     save_conversation_summary_artifact,
     scope_rank,
+    
     update_ab_canonical,
     # Converstaions
     list_conversations,
@@ -90,6 +96,8 @@ from .db import (
     FileDeleteAction,
     delete_file_cascade,
     find_same_scope_same_name_file,
+    list_global_files,
+    move_file_scope,
     # Artifacts
     get_scoped_artifact_debug,
     # File Artifacts
@@ -220,12 +228,21 @@ _MODELS_TTL_SECONDS = 300  # 5 minutes
 
 # region API Contracts (class definitions)
 
+class AppConfigUpdateRequest(BaseModel):
+    search_chat_history: Optional[bool] = None
+
 class FileDescriptionUpdate(BaseModel):
     description: str | None = None
+
+class FileMoveScopeRequest(BaseModel):
+    scope_type: str
+    scope_id: int | None = None
+    scope_uuid: str | None = None
 
 class ProjectUpdateRequest(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+    visibility: str | None = None
 
 class TitleRequest(BaseModel):
     title: str
@@ -276,6 +293,7 @@ class ProjectCreateRequest(BaseModel):
     name: str
     description: str | None = None
     system_prompt: str | None = None
+    visibility: str = "private"
     override_core_prompt: bool = False
     default_advanced_mode: bool = False
 
@@ -403,11 +421,34 @@ def api_ui_config():
         }
     )
 
-if (False):
-    @app.get("/api/ui_config")
-    def api_ui_config():
-        """Small UI config surface so the static frontend can format timestamps."""
-        return JSONResponse({"timezone": UI_TIMEZONE})
+# region App Config Endpoints
+
+@app.get("/api/app_config")
+def api_app_config():
+    cfg = load_app_config()
+    return JSONResponse(
+        {
+            "search_chat_history": cfg.search_chat_history,
+        }
+    )
+
+@app.post("/api/app_config")
+def api_update_app_config(req: AppConfigUpdateRequest):
+    if req.search_chat_history is not None:
+        set_app_setting(
+            APP_KEYS.search_chat_history,
+            "1" if req.search_chat_history else "0",
+        )
+
+    cfg = load_app_config()
+    return JSONResponse(
+        {
+            "ok": True,
+            "search_chat_history": cfg.search_chat_history,
+        }
+    )
+
+# endregion
 
 # region Chat Endpoints
 
@@ -1320,7 +1361,7 @@ def api_delete_memory_pin(pin_id: int):
 @app.put("/api/projects/{project_id}")
 def api_update_project(project_id: int, req: ProjectUpdateRequest):
     try:
-        return JSONResponse(update_project(project_id, name=req.name, description=req.description))
+        return JSONResponse(update_project(project_id, name=req.name, visibility=req.visibility, description=req.description))
     except ValueError as e:
         _http_from_value_error(e)
 
@@ -1331,7 +1372,8 @@ def api_get_projects():
 @app.post("/api/projects")
 def api_create_project(req: ProjectCreateRequest):
     try:
-        proj = get_or_create_project(req.name)
+        # TODO add description
+        proj = get_or_create_project(req.name, req.visibility)
         return proj
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1663,6 +1705,10 @@ def api_list_files():
     files = list_all_files()
     return JSONResponse({"files": files})
 
+@app.get("/api/files/global")
+def api_list_global_files():
+    return JSONResponse({"files": list_global_files()})
+
 @app.get("/api/files/summary")
 def api_files_summary():
     """
@@ -1685,6 +1731,19 @@ def api_update_file_description(file_id: str, body: FileDescriptionUpdate):
             "description": body.description or "",
         }
     )
+
+@app.post("/api/files/{file_id}/move_scope")
+def api_move_file_scope(file_id: str, body: FileMoveScopeRequest):
+    try:
+        out = move_file_scope(
+            file_id,
+            scope_type=body.scope_type,
+            scope_id=body.scope_id,
+            scope_uuid=body.scope_uuid,
+        )
+        return JSONResponse(out)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/api/files")
 def api_register_file(req: FileRegister):

@@ -3,6 +3,8 @@ from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
+# from server.db import get_app_setting_bool
+
 load_dotenv()
 
 def _env_int(name: str, default: int) -> int:
@@ -21,11 +23,18 @@ def _env_str(name: str, default: str) -> str:
     v = os.getenv(name)
     return default if v is None else v.strip()
 
+def _bool_to_str(val: bool) -> str:
+    return str(val)
+def _str_to_bool(val: str) -> bool:
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
+    # be consistent with logic in other modules
+    #return val.strip().lower() not in ("0", "false", "no", "off", "")
+
 def _env_bool(name: str, default: bool) -> bool:
     v = os.getenv(name)
     if v is None:
         return default
-    return v.strip().lower() not in ("0", "false", "no", "off", "")
+    return _str_to_bool(v)
 
 @dataclass(frozen=True)
 class CoreConfig:
@@ -141,7 +150,42 @@ class QueryConfig:
     # “Keep what we loaded” cache
     retrieval_cache_ttl_sec: float = 180.0
     retrieval_cache_max_entries: int = 64
+
+    # Scoping of conversation transcripts
+    query_include_project_conversation_transcripts: bool = True
+    query_include_global_conversation_transcripts: bool = True
+    query_include_recent_conversation_transcripts: bool = True
+    recent_conversation_transcript_limit: int = 40
+
 QUERY_DEFAULTS: QueryConfig = QueryConfig()
+
+# intentionally not frozen because these can change at runtime
+@dataclass
+class AppConfig:
+    search_chat_history: bool = True
+APP_DEFAULTS: AppConfig = AppConfig()
+
+class AppConfigKeys:
+    search_chat_history: str = "search_chat_history"
+APP_KEYS: AppConfigKeys = AppConfigKeys()
+
+# Helper to prep the database
+def ensure_default_app_settings() -> None:
+    # keep it local to avoid circular imports
+    from .db import ensure_default_app_setting
+
+    scope_type = "global"
+    scope_id = ""
+    enable_search_chat_history = _env_bool("SEARCH_CHAT_HISTORY_ENABLED", APP_DEFAULTS.search_chat_history)
+    ensure_default_app_setting(APP_KEYS.search_chat_history, _bool_to_str(enable_search_chat_history), scope_type, scope_id)
+
+def load_app_config() -> AppConfig:
+    from .db import get_app_setting, get_app_setting_bool, init_schema
+    init_schema() # just in case, should be FINE
+    ensure_default_app_settings()
+    return AppConfig(
+        search_chat_history=get_app_setting_bool(APP_KEYS.search_chat_history)
+    )
 
 def load_core_config() -> CoreConfig:
     return CoreConfig(
@@ -235,4 +279,21 @@ def load_query_config() -> QueryConfig:
 
         retrieval_cache_ttl_sec=_env_float("QUERY_CACHE_TTL_SEC", QUERY_DEFAULTS.retrieval_cache_ttl_sec),
         retrieval_cache_max_entries=_env_int("QUERY_CACHE_MAX", QUERY_DEFAULTS.retrieval_cache_max_entries),
+
+        query_include_project_conversation_transcripts=_env_bool(
+            "QUERY_INCLUDE_PROJECT_CONVERSATION_TRANSCRIPTS",
+            QUERY_DEFAULTS.query_include_project_conversation_transcripts,
+        ),
+        query_include_global_conversation_transcripts=_env_bool(
+            "QUERY_INCLUDE_GLOBAL_CONVERSATION_TRANSCRIPTS",
+            QUERY_DEFAULTS.query_include_global_conversation_transcripts,
+        ),
+        query_include_recent_conversation_transcripts=_env_bool(
+            "QUERY_INCLUDE_RECENT_CONVERSATION_TRANSCRIPTS",
+            QUERY_DEFAULTS.query_include_recent_conversation_transcripts,
+        ),
+        recent_conversation_transcript_limit=_env_int(
+            "QUERY_RECENT_CONVERSATION_TRANSCRIPT_LIMIT",
+            QUERY_DEFAULTS.recent_conversation_transcript_limit,
+        ),
     )

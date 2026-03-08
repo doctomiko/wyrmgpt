@@ -15,7 +15,16 @@ from contextlib import contextmanager
 from typing import Any, Iterable, Iterator
 
 from .logging_helper import log_debug
-from .config import QueryConfig, CoreConfig, load_query_config, load_core_config, load_ui_config
+from .config import (
+    AppConfig,
+    load_app_config,
+    UIConfig,
+    load_ui_config,
+    CoreConfig, 
+    load_core_config, 
+    QueryConfig, 
+    load_query_config, 
+)
 from .markdown_helper import autolink_text, apply_house_markdown_normalization
 from .chunking import chunk_text_with_hints
 # Support legacy migrations from v1-v7. You can remove this after a few releases once most users have migrated or started fresh.
@@ -27,7 +36,7 @@ DB_PATH = DATA_DIR / "callie_mvp.sqlite3"
 _VALID_TABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 SIDECAR_THRESHOLD_BYTES = 500 * 1024 # 500KB default threshold for when to use sidecar files for artifact content
 
@@ -275,6 +284,16 @@ def _migrate_schema_v8(conn: sqlite3.Connection) -> None:
         END;
     END;
 
+    -- v14 app_settings
+    CREATE TABLE IF NOT EXISTS app_settings (
+        scope_type TEXT NOT NULL DEFAULT 'global',
+        scope_id TEXT NOT NULL DEFAULT '',
+        key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (scope_type, scope_id, key)
+    );
+                       
     CREATE INDEX IF NOT EXISTS idx_artifacts_scope ON artifacts(scope_type, scope_id);
     CREATE INDEX IF NOT EXISTS idx_artifacts_source ON artifacts(source_kind, source_id);
     CREATE INDEX IF NOT EXISTS idx_artifacts_hash ON artifacts(content_hash);
@@ -536,6 +555,15 @@ def _apply_schema_v8(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (project_id) REFERENCES projects(id),
             FOREIGN KEY (source_project_id) REFERENCES projects(id)
         );
+
+        CREATE TABLE IF NOT EXISTS app_settings (
+            scope_type TEXT NOT NULL DEFAULT 'global',
+            scope_id TEXT NOT NULL DEFAULT '',
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (scope_type, scope_id, key)
+        );
         """
     )
 
@@ -643,6 +671,26 @@ def _migrate_schema_v11(conn) -> None:
 def _migrate_schema_v12(conn) -> None:
     _add_column_if_missing(conn, "artifacts", "meta_json", "TEXT")
 
+def _migrate_schema_v13(conn) -> None:
+    _add_column_if_missing(conn, "projects", "visibility", "TEXT NOT NULL DEFAULT 'private'")
+    conn.execute("""
+        UPDATE projects
+        SET visibility = 'private'
+        WHERE visibility IS NULL OR TRIM(visibility) = ''
+    """)
+                 
+def _migrate_schema_v14(conn) -> None:
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS app_settings (
+        scope_type TEXT NOT NULL DEFAULT 'global',
+        scope_id TEXT NOT NULL DEFAULT '',
+        key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (scope_type, scope_id, key)
+    );
+    """)
+
 # endregion
 
 # region Clean builds for new databases
@@ -688,6 +736,8 @@ def init_schema() -> None:
             _migrate_schema_v10(conn)
             _migrate_schema_v11(conn)
             _migrate_schema_v12(conn)
+            _migrate_schema_v13(conn)
+            _migrate_schema_v14(conn)
             _end_schema_init(conn, current)
             return
 
@@ -714,14 +764,7 @@ def init_schema() -> None:
             resp = input("Type MIGRATE to attempt legacy migration anyway, or anything else to abort: ").strip().upper()
             if resp != "MIGRATE":
                 raise RuntimeError("Aborted legacy migration. Delete DB and restart.")
-
             _migrate_schema_legacy(conn)
-            if (False):
-                _migrate_schema_v8(conn)
-                _migrate_schema_v9(conn)
-                _migrate_schema_v10(conn)
-                _migrate_schema_v11(conn)
-                _migrate_schema_v12(conn)
         if current < 8:
             _migrate_schema_v8(conn)
         if current < 9:
@@ -732,7 +775,93 @@ def init_schema() -> None:
             _migrate_schema_v11(conn)
         if current < 12:
             _migrate_schema_v12(conn)
+        if current < 13:
+            _migrate_schema_v13(conn)
+        if current < 14:
+            _migrate_schema_v14(conn)
         _end_schema_init(conn, current)
+
+# endregion
+
+# region App Configuration
+
+def get_app_setting(
+    key: str,
+    default: str | None = None,
+    scope_type: str = "global",
+    scope_id: str = "",
+) -> str | None:
+    with db_session() as conn:
+        row = conn.execute(
+            """
+            SELECT value
+            FROM app_settings
+            WHERE scope_type = ? AND scope_id = ? AND key = ?
+            """,
+            ((scope_type or "global").strip(), (scope_id or "").strip(), key.strip()),
+        ).fetchone()
+        return row["value"] if row else default
+
+
+def set_app_setting(
+    key: str,
+    value: str,
+    scope_type: str = "global",
+    scope_id: str = "",
+) -> None:
+    now = _utc_now_iso()
+    with db_session() as conn:
+        conn.execute(
+            """
+            INSERT INTO app_settings (scope_type, scope_id, key, value, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(scope_type, scope_id, key)
+            DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at
+            """,
+            (
+                (scope_type or "global").strip(),
+                (scope_id or "").strip(),
+                key.strip(),
+                value,
+                now,
+            ),
+        )
+
+
+def get_app_setting_bool(
+    key: str,
+    scope_type: str = "global",
+    scope_id: str = "",
+    default: bool = False,
+) -> bool:
+    raw = get_app_setting(key, None, scope_type, scope_id)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+def ensure_default_app_setting(
+    key: str,
+    value: str,
+    scope_type: str = "global",
+    scope_id: str = "",
+) -> None:
+    now = _utc_now_iso()
+    with db_session() as conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO app_settings (scope_type, scope_id, key, value, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                (scope_type or "global").strip(),
+                (scope_id or "").strip(),
+                key.strip(),
+                value,
+                now,
+            ),
+        )
 
 # endregion
 
@@ -757,6 +886,7 @@ def list_projects() -> list[dict]:
             {
                 "id": int(r["id"]),
                 "name": r["name"],
+                "visibility": r["visibility"],
                 "description": r["description"],
                 "created_at": r["created_at"],
                 "updated_at": r["updated_at"],
@@ -799,20 +929,21 @@ def get_conversation_project_id(conn, conversation_id: str) -> int | None:
     pid = row["project_id"]
     return int(pid) if pid not in (None, "") else None
 
-def get_or_create_project(name: str) -> dict:
+def get_or_create_project(name: str, visibility: str = "private") -> dict:
     name = (name or "").strip()
     if not name:
         raise ValueError("Project name cannot be empty.")
 
     with db_session() as conn:
         row = conn.execute(
-            "SELECT id, name, created_at, updated_at FROM projects WHERE name = ?",
+            "SELECT id, name, visibility, created_at, updated_at FROM projects WHERE name = ?",
             (name,),
         ).fetchone()
         if row:
             return {
                 "id": int(row["id"]),
                 "name": row["name"],
+                "visibility": row["visibility"],
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
             }
@@ -821,18 +952,19 @@ def get_or_create_project(name: str) -> dict:
         now = _utc_now_iso()
         conn.execute(
             """
-            INSERT INTO projects (uuid, name, created_at, updated_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO projects (uuid, name, visibility, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (puuid, name, now, now),
+            (puuid, name, visibility, now, now),
         )
         row2 = conn.execute(
-            "SELECT id, name, created_at, updated_at FROM projects WHERE name = ?",
+            "SELECT id, name, visibility, created_at, updated_at FROM projects WHERE name = ?",
             (name,),
         ).fetchone()
         return {
             "id": int(row2["id"]),
             "name": row2["name"],
+            "visibility": row2["visibility"],
             "created_at": row2["created_at"],
             "updated_at": row2["updated_at"],
         }
@@ -861,9 +993,10 @@ def project_add_conversation(project_id: int, conversation_id: str, set_primary:
                 (int(project_id), _utc_now_iso(), conversation_id),
             )
 
-def update_project(project_id: int, name: str | None = None, description: str | None = None) -> dict:
+def update_project(project_id: int, name: str | None = None, visibility: str | None = None, description: str | None = None) -> dict:
     sets = []
     params = []
+    visibility_changed = visibility is not None
 
     if name is not None:
         n = (name or "").strip()
@@ -876,6 +1009,13 @@ def update_project(project_id: int, name: str | None = None, description: str | 
         sets.append("description = ?")
         params.append(description)
 
+    if visibility is not None:
+        v = (visibility or "").strip().lower()
+        if v not in ("private", "global"):
+            raise ValueError("visibility must be 'private' or 'global'")
+        sets.append("visibility = ?")
+        params.append(v)
+
     if not sets:
         raise ValueError("No changes provided.")
 
@@ -887,17 +1027,65 @@ def update_project(project_id: int, name: str | None = None, description: str | 
         _ensure_project_exists(conn, int(project_id))
         conn.execute(f"UPDATE projects SET {', '.join(sets)} WHERE id = ?", tuple(params))
         row = conn.execute(
-            "SELECT id, name, description, created_at, updated_at FROM projects WHERE id = ?",
+            "SELECT id, name, visibility, description, created_at, updated_at FROM projects WHERE id = ?",
             (int(project_id),),
         ).fetchone()
+
+    if visibility_changed:
+        invalidate_all_context_cache()
 
     return {
         "id": int(row["id"]),
         "name": row["name"],
+        "visibility": row["visibility"],
         "description": row["description"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
+
+if (False):
+    def update_project(project_id: int, name: str | None = None, visibility: str | None = None, description: str | None = None) -> dict:
+        sets = []
+        params = []
+
+        if name is not None:
+            n = (name or "").strip()
+            if not n:
+                raise ValueError("Project name cannot be empty.")
+            sets.append("name = ?")
+            params.append(n)
+
+        if description is not None:
+            sets.append("description = ?")
+            params.append(description)
+
+        if visibility is not None:
+            sets.append("visibility = ?")
+            params.append(visibility)
+
+        if not sets:
+            raise ValueError("No changes provided.")
+
+        sets.append("updated_at = ?")
+        params.append(_utc_now_iso())
+        params.append(int(project_id))
+
+        with db_session() as conn:
+            _ensure_project_exists(conn, int(project_id))
+            conn.execute(f"UPDATE projects SET {', '.join(sets)} WHERE id = ?", tuple(params))
+            row = conn.execute(
+                "SELECT id, name, visibility, description, created_at, updated_at FROM projects WHERE id = ?",
+                (int(project_id),),
+            ).fetchone()
+
+        return {
+            "id": int(row["id"]),
+            "name": row["name"],
+            "visibility": row["visibility"],
+            "description": row["description"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
 
 def project_import(
     project_id: int,
@@ -940,16 +1128,49 @@ def project_import(
 
 def _scope_keys_for_conversation(conn, conversation_id: str, include_global: bool = False) -> list[str]:
     cid = (conversation_id or "").strip()
-    keys = [f"conversation:{cid}", f"chat:{cid}"]  # TODO remove chat alias after DB cleanup
+    keys = [f"conversation:{cid}", f"chat:{cid}"]
 
-    row = conn.execute("SELECT project_id FROM conversations WHERE id = ?", (cid,)).fetchone()
-    if row and row["project_id"] is not None:
-        keys.append(f"project:{int(row['project_id'])}")
+    row = conn.execute(
+        "SELECT project_id FROM conversations WHERE id = ?",
+        (cid,),
+    ).fetchone()
+    current_pid = int(row["project_id"]) if row and row["project_id"] is not None else None
+
+    if current_pid is not None:
+        keys.append(f"project:{current_pid}")
+
+    global_rows = conn.execute(
+        """
+        SELECT id
+        FROM projects
+        WHERE visibility = 'global'
+          AND (is_hidden IS NULL OR is_hidden = 0)
+          AND (is_global IS NULL OR is_global = 0)
+        """
+    ).fetchall()
+    for r in global_rows:
+        pid = int(r["id"])
+        if pid != current_pid:
+            keys.append(f"project:{pid}")
 
     if include_global:
         keys.append("global")
 
     return keys
+
+if (False):
+    def _scope_keys_for_conversation(conn, conversation_id: str, include_global: bool = False) -> list[str]:
+        cid = (conversation_id or "").strip()
+        keys = [f"conversation:{cid}", f"chat:{cid}"]  # TODO remove chat alias after DB cleanup
+
+        row = conn.execute("SELECT project_id FROM conversations WHERE id = ?", (cid,)).fetchone()
+        if row and row["project_id"] is not None:
+            keys.append(f"project:{int(row['project_id'])}")
+
+        if include_global:
+            keys.append("global")
+
+        return keys
 
 if (False):
     def _scope_keys_for_conversation(conn, conversation_id: str, include_global: bool = False) -> list[str]:
@@ -1433,14 +1654,21 @@ def _ensure_conversation_transcript_artifact_row(
     now = _utc_now_iso()
     title = (title or "").strip() or f"Transcript: {conversation_id}"
 
+    proj_row = conn.execute(
+        "SELECT project_id FROM conversations WHERE id = ?",
+        (conversation_id,),
+    ).fetchone()
+    project_id = int(proj_row["project_id"]) if proj_row and proj_row["project_id"] is not None else None
+
     conn.execute(
         """
         INSERT OR IGNORE INTO artifacts
-        (id, source_kind, source_id, title, scope_type, scope_uuid, updated_at)
-        VALUES (?, ?, ?, ?, 'conversation', ?, ?)
+        (id, project_id, source_kind, source_id, title, scope_type, scope_uuid, updated_at)
+        VALUES (?, ?, ?, ?, ?, 'conversation', ?, ?)
         """,
         (
             artifact_id,
+            project_id,
             TRANSCRIPT_SOURCE_KIND,
             conversation_id,
             title,
@@ -1454,6 +1682,7 @@ def _ensure_conversation_transcript_artifact_row(
         UPDATE artifacts
         SET source_kind = ?,
             source_id = ?,
+            project_id = ?,
             title = ?,
             scope_type = 'conversation',
             scope_uuid = ?,
@@ -1463,12 +1692,14 @@ def _ensure_conversation_transcript_artifact_row(
         (
             TRANSCRIPT_SOURCE_KIND,
             conversation_id,
+            project_id,
             title,
             conversation_id,
             now,
             artifact_id,
         ),
     )
+
     return artifact_id
 
 if (False): # table does not have created_at
@@ -2136,6 +2367,17 @@ def invalidate_context_cache_for_project(project_id: int) -> None:
             (int(project_id),),
         )
 
+def invalidate_all_context_cache() -> None:
+    """
+    Drop the entire context cache.
+    Use this for changes that can affect many conversations at once,
+    such as global/private project visibility changes or global file scope moves.
+    """
+    with db_session() as conn:
+        if not _table_exists(conn, "context_cache"):
+            return
+        conn.execute("DELETE FROM context_cache")
+
 # endregion
 
 # endregion
@@ -2652,6 +2894,174 @@ def reindex_artifact_by_id(artifact_id: str) -> dict:
 # endregion
 # region Corpus FTS Query
 
+def _visible_transcript_conversation_ids_for_conversation(
+    conn: sqlite3.Connection,
+    conversation_id: str,
+    *,
+    cfg: QueryConfig,
+) -> list[str]:
+    cid = (conversation_id or "").strip()
+    ids: list[str] = []
+    seen: set[str] = set()
+
+    def _add(x: str | None) -> None:
+        x = (x or "").strip()
+        if not x or x in seen:
+            return
+        seen.add(x)
+        ids.append(x)
+
+    _add(cid)
+
+    row = conn.execute(
+        "SELECT project_id FROM conversations WHERE id = ?",
+        (cid,),
+    ).fetchone()
+    project_id = int(row["project_id"]) if row and row["project_id"] is not None else None
+
+    # The current project's conversations
+    if cfg.query_include_project_conversation_transcripts and project_id is not None:
+        rows = conn.execute(
+            """
+            SELECT id
+            FROM conversations
+            WHERE project_id = ?
+            ORDER BY updated_at DESC
+            """,
+            (project_id,),
+        ).fetchall()
+        for r in rows:
+            _add(r["id"])
+
+    # Conversations without a project (global chats)
+    if cfg.query_include_global_conversation_transcripts:
+        rows = conn.execute(
+            """
+            SELECT id
+            FROM conversations
+            WHERE project_id IS NULL
+            ORDER BY updated_at DESC
+            """
+        ).fetchall()
+        for r in rows:
+            _add(r["id"])
+
+    global_proj_rows = conn.execute(
+        """
+        SELECT c.id
+        FROM conversations c
+        JOIN projects p ON p.id = c.project_id
+        WHERE p.visibility = 'global'
+        AND (p.is_hidden IS NULL OR p.is_hidden = 0)
+        AND (p.is_global IS NULL OR p.is_global = 0)
+        ORDER BY c.updated_at DESC
+        """
+    ).fetchall()
+    for r in global_proj_rows:
+        _add(r["id"])
+
+    # Any recently had conversations
+    # TODO should we hide those in private projects
+    if cfg.query_include_recent_conversation_transcripts:
+        rows = conn.execute(
+            """
+            SELECT id
+            FROM conversations
+            WHERE id <> ?
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (cid, int(cfg.recent_conversation_transcript_limit)),
+        ).fetchall()
+        for r in rows:
+            _add(r["id"])
+
+    return ids
+
+def search_corpus_for_conversation(
+    *,
+    conversation_id: str,
+    query: str,
+    limit: int = 10,
+    cfg: QueryConfig | None = None,
+) -> list[dict]:
+    cid = (conversation_id or "").strip()
+    q = (query or "").strip()
+    if not cid or not q:
+        return []
+
+    cfg = cfg or load_query_config()
+    app_cfg = load_app_config()
+
+    with db_session() as conn:
+        scope_keys = _scope_keys_for_conversation(conn, cid, include_global=cfg.query_global_artifacts)
+
+        # transcript_cids = _visible_transcript_conversation_ids_for_conversation(conn, cid, cfg=cfg)
+        transcript_cids: list[str] = []
+        if app_cfg.search_chat_history:
+            transcript_cids = _visible_transcript_conversation_ids_for_conversation(conn, cid, cfg=cfg)
+
+        scope_placeholders = ",".join("?" * len(scope_keys)) if scope_keys else "NULL"
+        transcript_placeholders = ",".join("?" * len(transcript_cids)) if transcript_cids else "NULL"
+
+        params: list[Any] = [q]
+        params.extend(scope_keys)
+        params.append(TRANSCRIPT_SOURCE_KIND)
+        params.extend(transcript_cids)
+        params.append(int(limit))
+
+        rows = conn.execute(
+            f"""
+            SELECT
+              c.id AS chunk_id,
+              c.scope_key,
+              c.artifact_id,
+              c.chunk_index,
+              c.source_kind,
+              c.source_id,
+              c.file_id,
+              c.filename,
+              c.mime_type,
+              c.text,
+
+              a.title AS artifact_title,
+              a.updated_at AS artifact_updated_at,
+
+              f.created_at AS file_created_at,
+              f.updated_at AS file_updated_at,
+
+              conv.id AS conversation_id,
+              conv.title AS conversation_title,
+              substr(COALESCE(sumart.summary_text, ''), 1, 220) AS conversation_summary_excerpt,
+
+              bm25(corpus_fts) AS score
+            FROM corpus_fts
+            JOIN corpus_chunks c ON corpus_fts.rowid = c.id
+            LEFT JOIN artifacts a ON a.id = c.artifact_id
+            LEFT JOIN files f ON f.id = c.file_id
+            LEFT JOIN conversations conv
+              ON c.source_kind = '{TRANSCRIPT_SOURCE_KIND}'
+             AND c.source_id = conv.id
+            LEFT JOIN artifacts sumart
+              ON sumart.source_kind = 'conversation:summary'
+             AND sumart.source_id = conv.id
+             AND (sumart.is_deleted IS NULL OR sumart.is_deleted = 0)
+            WHERE corpus_fts MATCH ?
+              AND (
+                    c.scope_key IN ({scope_placeholders})
+                    OR (
+                        c.source_kind = ?
+                        AND c.source_id IN ({transcript_placeholders})
+                    )
+                  )
+            ORDER BY score ASC
+            LIMIT ?
+            """,
+            tuple(params),
+        ).fetchall()
+
+        return [dict(r) for r in rows]
+
 def search_corpus(*, scope_keys: list[str], query: str, limit: int = 10) -> list[dict]:
     q = (query or "").strip()
     if not q or not scope_keys:
@@ -2740,24 +3150,25 @@ def search_corpus(*, scope_keys: list[str], query: str, limit: int = 10) -> list
 
         return [dict(r) for r in rows]
 
-def search_corpus_for_conversation(
-    *,
-    conversation_id: str,
-    query: str,
-    limit: int = 10,
-    cfg: QueryConfig | None = None,
-    #include_global: bool = False,
-) -> list[dict]:
-    cid = (conversation_id or "").strip()
-    if not cid:
-        return []
+if (False):
+    def search_corpus_for_conversation(
+        *,
+        conversation_id: str,
+        query: str,
+        limit: int = 10,
+        cfg: QueryConfig | None = None,
+        #include_global: bool = False,
+    ) -> list[dict]:
+        cid = (conversation_id or "").strip()
+        if not cid:
+            return []
 
-    cfg = cfg or load_query_config()
+        cfg = cfg or load_query_config()
 
-    with db_session() as conn:
-        scope_keys = _scope_keys_for_conversation(conn, cid, include_global=cfg.query_global_artifacts)
-    log_debug("RAG scope keys for cid=%s include_global=%s keys=%r", cid, cfg.query_global_artifacts, scope_keys)
-    return search_corpus(scope_keys=scope_keys, query=query, limit=limit)
+        with db_session() as conn:
+            scope_keys = _scope_keys_for_conversation(conn, cid, include_global=cfg.query_global_artifacts)
+        log_debug("RAG scope keys for cid=%s include_global=%s keys=%r", cid, cfg.query_global_artifacts, scope_keys)
+        return search_corpus(scope_keys=scope_keys, query=query, limit=limit)
 
 if (False):
     def search_corpus_for_conversation(
@@ -2988,6 +3399,41 @@ def list_all_files(include_deleted: bool = False) -> list[dict]:
     print(f"[db] list_all_files(include_deleted={include_deleted}) -> {len(rows)} rows")
     return [dict(r) for r in rows]
 
+def list_global_files(include_deleted: bool = False) -> list[dict]:
+    """
+    Returns all globally scoped files.
+    A more robust version that is agnostic about what method was used to mark a file.
+    Respects the global project id.
+    Treats explicit scope_type='global' and legacy unscoped rows as global.
+    """
+    global_id: int = get_global_project_id()
+    with db_session() as conn:
+        sql = f"""
+            SELECT *
+            FROM files
+            WHERE (
+                project_id = {global_id}
+                OR scope_type IS NULL
+                OR scope_type = ''
+                OR scope_type = 'global'
+            )
+        """
+        if not include_deleted:
+            sql += " AND (is_deleted IS NULL OR is_deleted = 0)"
+        sql += " ORDER BY COALESCE(updated_at, created_at, '') DESC, name COLLATE NOCASE"
+
+        rows = conn.execute(sql).fetchall()
+
+    return [dict(r) for r in rows]
+
+if (False):
+    def list_global_files(include_deleted: bool = False) -> list[dict]:
+        id: int = get_global_project_id()
+        return list_files_for_project(
+            project_id = id,
+            include_deleted = include_deleted,
+        )
+
 def get_files_summary() -> dict:
     """
     Return a simple summary: total file count and counts grouped by scope_type.
@@ -3200,6 +3646,117 @@ def update_file_description(file_id: str, description: str | None) -> None:
             """,
             (file_id,),
         )        
+
+def move_file_scope(
+    file_id: str,
+    *,
+    scope_type: str,
+    scope_id: int | None = None,
+    scope_uuid: str | None = None,
+) -> dict:
+    """
+    Move a file between scopes.
+
+    Current UI use-case:
+      project -> global
+
+    Supported targets:
+      - global
+      - project (requires scope_id)
+      - conversation (requires scope_uuid)
+    """
+    file_id = (file_id or "").strip()
+    target_scope_type = (scope_type or "").strip().lower()
+    target_scope_uuid = (scope_uuid or "").strip() or None
+
+    if not file_id:
+        raise ValueError("file_id is required.")
+
+    if target_scope_type not in ("global", "project", "conversation"):
+        raise ValueError("scope_type must be 'global', 'project', or 'conversation'.")
+
+    if target_scope_type == "project" and scope_id is None:
+        raise ValueError("scope_id is required for project scope.")
+    if target_scope_type == "conversation" and not target_scope_uuid:
+        raise ValueError("scope_uuid is required for conversation scope.")
+
+    with db_session() as conn:
+        _ensure_file_exists(conn, file_id)
+
+        row = conn.execute("SELECT * FROM files WHERE id = ?", (file_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"File not found: {file_id}")
+
+        file_row = dict(row)
+        old_scope_type = (file_row.get("scope_type") or "").strip().lower() or "global"
+        old_scope_id = file_row.get("scope_id")
+        old_scope_uuid = (file_row.get("scope_uuid") or "").strip() or None
+
+        if target_scope_type == "project":
+            if scope_id is None:
+                raise ValueError("scope_id is required for project scope.")
+            _ensure_project_exists(conn, int(scope_id))
+        elif target_scope_type == "conversation":
+            if target_scope_uuid is None:
+                raise ValueError("scope_uuid is required for conversation scope.")
+            _ensure_conversation_exists(conn, target_scope_uuid)
+
+        # Remove old links no matter what.
+        conn.execute("DELETE FROM project_files WHERE file_id = ?", (file_id,))
+        conn.execute("DELETE FROM conversation_files WHERE file_id = ?", (file_id,))
+
+        new_scope_id = int(scope_id) if target_scope_type == "project" and scope_id is not None else None
+        new_scope_uuid = target_scope_uuid if target_scope_type == "conversation" else None
+
+        conn.execute(
+            """
+            UPDATE files
+            SET scope_type = ?, scope_id = ?, scope_uuid = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                target_scope_type,
+                new_scope_id,
+                new_scope_uuid,
+                _utc_now_iso(),
+                file_id,
+            ),
+        )
+
+        if target_scope_type == "project":
+            conn.execute(
+                "INSERT OR IGNORE INTO project_files (project_id, file_id) VALUES (?, ?)",
+                (new_scope_id, file_id),
+            )
+        elif target_scope_type == "conversation":
+            conn.execute(
+                "INSERT OR IGNORE INTO conversation_files (conversation_id, file_id) VALUES (?, ?)",
+                (new_scope_uuid, file_id),
+            )
+
+        updated_row = conn.execute("SELECT * FROM files WHERE id = ?", (file_id,)).fetchone()
+
+    if updated_row is None:
+        raise ValueError(f"File not found after move: {file_id}")
+
+    updated_file = dict(updated_row)
+
+    # Rebuild artifact scope to match the file's new scope.
+    artifact_file(updated_file)
+
+    # Scope changes can affect many contexts, especially when moving into global scope.
+    invalidate_all_context_cache()
+
+    return {
+        "id": updated_file["id"],
+        "name": updated_file.get("name"),
+        "scope_type": updated_file.get("scope_type"),
+        "scope_id": updated_file.get("scope_id"),
+        "scope_uuid": updated_file.get("scope_uuid"),
+        "old_scope_type": old_scope_type,
+        "old_scope_id": old_scope_id,
+        "old_scope_uuid": old_scope_uuid,
+    }
 
 def get_file_by_id(file_id: str) -> dict:
     """

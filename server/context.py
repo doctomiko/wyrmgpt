@@ -3,6 +3,7 @@ import json
 import os
 #from typing import cast
 from pathlib import Path
+import re
 
 from .logging_helper import log_debug, log_warn
 from .db import (
@@ -31,6 +32,11 @@ except ImportError:
 
 # From openai/types/responses/response_create_params.py
 # from openai.types.responses import ResponseInputParam
+
+from .query_shaper import WORD_RE, load_filler_words_cached
+
+_QUERY_WORD_RE = WORD_RE
+_QUERY_STOP = load_filler_words_cached()
 
 def _get_prompt(default_prompt: str, filepath: str = "", cfg_default="(cfg default)", cfg_filepath="(cfg filepath name)") -> str:
     """
@@ -123,24 +129,78 @@ def iso_to_age_seconds(iso: str) -> int:
     now = datetime.now(timezone.utc)
     return max(0, int((now - dt).total_seconds()))
 
-def _format_retrieved_chunks(rows: list[dict], *, max_chunks: int = 8, max_chars: int = 1200) -> tuple[str, list[dict], list[str]]:
+def _excerpt_around_query(text: str, query: str | None, *, max_chars: int) -> str:
+    full = (text or "").strip()
+    if len(full) <= max_chars:
+        return full
+
+    q = (query or "").strip()
+    candidates: list[str] = []
+
+    if q:
+        for m in re.finditer(r"\"([^\"]+)\"|'([^']+)'", q):
+            phrase = (m.group(1) or m.group(2) or "").strip()
+            if len(phrase) >= 4:
+                candidates.append(phrase)
+
+        for tok in _QUERY_WORD_RE.findall(q):
+            tl = tok.lower()
+            if len(tok) >= 3 and tl not in _QUERY_STOP:
+                candidates.append(tok)
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for c in candidates:
+        key = c.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(c)
+
+    hay = full.lower()
+    for needle in sorted(ordered, key=len, reverse=True):
+        idx = hay.find(needle.lower())
+        if idx < 0:
+            continue
+
+        half = max_chars // 2
+        start = max(0, idx - half)
+        end = min(len(full), start + max_chars)
+        start = max(0, end - max_chars)
+
+        snippet = full[start:end].strip()
+        if start > 0:
+            snippet = "[...]\n" + snippet
+        if end < len(full):
+            snippet = snippet + "\n[...]"
+        return snippet
+
+    return full[:max_chars] + f"\n[...truncated chunk; max_chars={max_chars}]"
+
+
+def _format_retrieved_chunks(
+    rows: list[dict],
+    *,
+    max_chunks: int = 8,
+    max_chars: int = 2200,
+    excerpt_query: str | None = None,
+) -> tuple[str, list[dict], list[str]]:
     """
     Returns:
       - block_text: ready to paste into system prompt (includes provenance headers + chunk text)
       - meta: structured per-chunk metadata for UI / later expansion
-      - cites: short single-line citations (back-compat with your retrieved_memories list usage)
+      - cites: short single-line citations
     """
     block_parts: list[str] = []
     meta: list[dict] = []
     cites: list[str] = []
 
     for r in (rows or [])[:max_chunks]:
-        text = (r.get("text") or "").strip()
-        if not text:
+        full_text = (r.get("text") or "").strip()
+        if not full_text:
             continue
 
-        if len(text) > max_chars:
-            text = text[:max_chars] + f"\n[...truncated chunk; max_chars={max_chars}]"
+        text = _excerpt_around_query(full_text, excerpt_query, max_chars=max_chars)
 
         chunk_id = r.get("chunk_id")
         artifact_id = r.get("artifact_id")
@@ -159,7 +219,6 @@ def _format_retrieved_chunks(rows: list[dict], *, max_chunks: int = 8, max_chars
         file_created_at = r.get("file_created_at")
         file_updated_at = r.get("file_updated_at")
 
-        # Best “source timestamp” we can show:
         ts = artifact_updated_at or file_updated_at or file_created_at
         age = None
         if ts:
@@ -172,7 +231,6 @@ def _format_retrieved_chunks(rows: list[dict], *, max_chunks: int = 8, max_chars
             f"[chunk_id={chunk_id} score={score} ts={ts} age={age} "
             f"src={src_label} artifact_id={artifact_id} chunk_index={chunk_index} file_id={file_id}]"
         )
-        #header = f"[chunk_id={chunk_id} score={score} src={src_label} artifact_id={artifact_id} chunk_index={chunk_index} file_id={file_id}]"
 
         block_parts.append(header + "\n" + text)
 
@@ -191,11 +249,88 @@ def _format_retrieved_chunks(rows: list[dict], *, max_chunks: int = 8, max_chars
             "file_created_at": file_created_at,
             "file_updated_at": file_updated_at,
             "mime_type": mime_type,
+            "preview_text": text,
+            "full_text_chars": len(full_text),
         })
 
         cites.append(f"{src_label}#{chunk_index} (chunk_id={chunk_id})")
 
     return ("\n\n".join(block_parts)).strip(), meta, cites
+
+if (False):
+    def _format_retrieved_chunks(rows: list[dict], *, max_chunks: int = 8, max_chars: int = 1200) -> tuple[str, list[dict], list[str]]:
+        """
+        Returns:
+        - block_text: ready to paste into system prompt (includes provenance headers + chunk text)
+        - meta: structured per-chunk metadata for UI / later expansion
+        - cites: short single-line citations (back-compat with your retrieved_memories list usage)
+        """
+        block_parts: list[str] = []
+        meta: list[dict] = []
+        cites: list[str] = []
+
+        for r in (rows or [])[:max_chunks]:
+            text = (r.get("text") or "").strip()
+            if not text:
+                continue
+
+            if len(text) > max_chars:
+                text = text[:max_chars] + f"\n[...truncated chunk; max_chars={max_chars}]"
+
+            chunk_id = r.get("chunk_id")
+            artifact_id = r.get("artifact_id")
+            chunk_index = r.get("chunk_index")
+            score = r.get("score")
+            filename = r.get("filename")
+            scope_key = r.get("scope_key")
+            source_kind = r.get("source_kind")
+            source_id = r.get("source_id")
+            file_id = r.get("file_id")
+            mime_type = r.get("mime_type")
+            src_label = filename or scope_key or source_kind or "source"
+
+            artifact_title = r.get("artifact_title")
+            artifact_updated_at = r.get("artifact_updated_at")
+            file_created_at = r.get("file_created_at")
+            file_updated_at = r.get("file_updated_at")
+
+            # Best “source timestamp” we can show:
+            ts = artifact_updated_at or file_updated_at or file_created_at
+            age = None
+            if ts:
+                try:
+                    age = iso_to_age_seconds(ts)
+                except Exception:
+                    age = None
+
+            header = (
+                f"[chunk_id={chunk_id} score={score} ts={ts} age={age} "
+                f"src={src_label} artifact_id={artifact_id} chunk_index={chunk_index} file_id={file_id}]"
+            )
+            #header = f"[chunk_id={chunk_id} score={score} src={src_label} artifact_id={artifact_id} chunk_index={chunk_index} file_id={file_id}]"
+
+            block_parts.append(header + "\n" + text)
+
+            meta.append({
+                "chunk_id": chunk_id,
+                "chunk_index": chunk_index,
+                "score": score,
+                "artifact_id": artifact_id,
+                "artifact_title": artifact_title,
+                "artifact_updated_at": artifact_updated_at,
+                "scope_key": scope_key,
+                "source_kind": source_kind,
+                "source_id": source_id,
+                "file_id": file_id,
+                "filename": filename,
+                "file_created_at": file_created_at,
+                "file_updated_at": file_updated_at,
+                "mime_type": mime_type,
+            })
+
+            cites.append(f"{src_label}#{chunk_index} (chunk_id={chunk_id})")
+
+        return ("\n\n".join(block_parts)).strip(), meta, cites
 
 def zeitgeber_prefix(created_at: str, raw_content: str) -> str:
     stamp = iso_to_compact_utc(created_at)
@@ -376,7 +511,8 @@ def build_context(
         retrieved_block, retrieved_meta, retrieved_cites = _format_retrieved_chunks(
             retrieved_rows,
             max_chunks=8,
-            max_chars=1200,
+            max_chars=2200, #1200
+            excerpt_query=user_text,
         )
 
     # We're skipping all searches - say why

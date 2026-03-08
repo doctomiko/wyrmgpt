@@ -3,7 +3,7 @@ import time
 from collections import OrderedDict
 from typing import Dict, List, Tuple
 
-from .config import QueryConfig, load_query_config
+from .config import QueryConfig, load_query_config, load_app_config
 from .query_slicer import slice_user_query
 from .query_shaper import shape_fts_query
 from .logging_helper import log_debug
@@ -76,6 +76,8 @@ def retrieve_chunks_for_message(
     # include_global: bool = False,
 ) -> dict:
     cfg = cfg or load_query_config()
+    app_cfg = load_app_config()
+
     #debug: Dict = {"slices": [], "shapes": []}
     debug: Dict = {
         "query_mode": cfg.query_mode,
@@ -89,7 +91,17 @@ def retrieve_chunks_for_message(
         "llm_expand_terms": [],
         "cache_hit": False,
     }
-    cache_key = (conversation_id, user_message.strip())
+    # cache_key = (conversation_id, user_message.strip())
+    cache_key = (
+        conversation_id,
+        user_message.strip(),
+        cfg.query_global_artifacts,
+        cfg.query_include_project_conversation_transcripts,
+        cfg.query_include_global_conversation_transcripts,
+        cfg.query_include_recent_conversation_transcripts,
+        cfg.recent_conversation_transcript_limit,
+        app_cfg.search_chat_history,
+    )
     cached = _cache_get(cache_key)
     if cached is not None:
         return {
