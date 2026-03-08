@@ -176,13 +176,39 @@ def shape_fts_query(user_text: str, cfg: QueryConfig | None = None) -> QueryShap
 
     # Build MATCH query.
     # In FTS5, space is basically AND. Quotes create phrase queries.
+    
+    # 6am and tired version that quotes everything
+    def _fts_quote(term: str) -> str:
+        return f'"{(term or "").replace(chr(34), chr(34) * 2)}"'
     parts: List[str] = []
     for p in kept_phrases:
-        # escape embedded quotes just in case
-        parts.append(f'"{p.replace(chr(34), chr(34) * 2)}"')
-    parts.extend(kept_terms)
-
+        parts.append(_fts_quote(p))
+    for t in kept_terms:
+        parts.append(_fts_quote(t))
     fts_query = " ".join(parts).strip()
+
+    if (False): # complex only uses quotes when needed
+        def _fts_quote(term: str) -> str:
+            return f'"{(term or "").replace(chr(34), chr(34) * 2)}"'
+        parts: List[str] = []
+        for p in kept_phrases:
+            parts.append(_fts_quote(p))
+        for t in kept_terms:
+            # Quote any term with punctuation/syntax-y characters so FTS treats it as text.
+            # Examples: dual-weilding, ya-basic, foo/bar, x.y, file_name, etc.
+            if re.search(r'[^A-Za-z0-9]', t):
+                parts.append(_fts_quote(t))
+            else:
+                parts.append(t)
+        fts_query = " ".join(parts).strip()
+
+    if (False): # original that breaks on hyphens
+        parts: List[str] = []
+        for p in kept_phrases:
+            # escape embedded quotes just in case
+            parts.append(f'"{p.replace(chr(34), chr(34) * 2)}"')
+        parts.extend(kept_terms)
+        fts_query = " ".join(parts).strip()
 
     return QueryShape(
         fts_query=fts_query,
