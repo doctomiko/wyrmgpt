@@ -7,14 +7,41 @@ This repo exists because the official web UI is… let’s say “enthusiastic a
 ## What you get
 
 - A simple ChatGPT-style web UI you host locally
-- Projects sidebar with expandable/collapsible conversation lists
-- Unassigned chats stay in the main list; once assigned to a Project they disappear from the “All chats” list
-- Conversation actions (right-click): Rename, Suggest Title, Move To…, Summarize, Archive, Delete
 - A/B mode: send one prompt to two models, then click **Use** on the preferred answer to mark it canonical
-- “Context pack” preview panel so you can see what the server is about to send to the model (system prompt + pins + summary + history)
+- “Context pack” preview panel so you can see what the server is about to send to the model (system prompt + summary + memories + conversation history)
 - Pinned “memory” notes (manual, user-curated)
-- Local SQLite storage in `./data/callie_mvp.sqlite3`
 - Model dropdown populated from your OpenAI account, with optional metadata from `server/model_catalog.json`
+
+### Other cool things our app can do (so far)
+
+Usability:
+* The UI is super-fast and effecient. It will not bog down on long chat sessions that go on for days or weeks.
+* Projects sidebar with expandable/collapsible conversation lists* 
+* Unassigned chats stay in the main list; once assigned to a Project they disappear from the “All chats” list
+* Project actions (right-click): New Chat, Edit description…, Make Global/Private, Add files, Manage Files…, Archive, Delete.
+* Conversation actions (right-click): Rename, Suggest Title, Summarize, Move To…, Export Transcript, Archive, Delete. (Add Files for conversation is located near the chat input bar.)
+* Chat navigation includes dynamic summaries and titles, so you have some clue what the chat was about.
+* Can interpret MS Word (docx), PDF, markdown, various source code, and (on OpenAI models) image files.
+
+Data sovereignty:
+* Your chat history and files live on your computer. The only time that data leaves is if you send your chats to a cloud-based API. Local SQLite storage in `./data/callie_mvp.sqlite3`
+* Add as many memories and files as you want. Set your own limits on how much data is sent to the LLM's context.
+* Chat messages include a zeitgeber (time-giver) hint for the bot, so your AI assistant understands when you sent a specific message, even if the API doesn't support it.
+
+Portability:
+* You can export a Markdown transcript of any chat conversation.
+
+Flexible scope:
+* You can dynamically pick the LLM model(s) even mistream during your conversation.
+* Move files between chat, project, and global scope easily.
+* Declare a project as Global or Private () on the fly, at any time. For Global projects, conversations bits appear in RAG queries outside the project. In Private projects, conversations do not appear in RAG queries outside the project.
+* Turn RAG search of global conversations on and off on the fly.
+
+Transparency:
+* We provide a cost table for the available models. Pick what works best for you.
+* See exactly what is being sent to LLM context every time and even before you hit Send. 
+* Chat with two different models at the same time and compare results. Heck, you can try talking to the same model in both A and B channels to see if it is variable.
+* AB mode lets you decide which response is the one you want to keep in the canon conversation context. Change that at any time during your chat session.
 
 ## Quick start
 
@@ -49,20 +76,23 @@ pip install -U pip
 pip install `<insert requires.txt here separated by spaces`>
 ```
 
-Create a .env in the repo root:
+Create your .env file in the repo root (see .env.example for the latest known-good settings):
 
 ```bash
+# Required setting:
 OPENAI_API_KEY=your_key_here
 
-# Optional defaults
-OPENAI_MODEL=gpt-5.1
-OPENAI_TITLE_MODEL=gpt-5.1
+# Optional settings: 
+# Model defaults
+OPENAI_MODEL=gpt-5.4
+OPENAI_TITLE_MODEL=gpt-5-mini
+SUMMARY_MODEL=gpt-5-mini
 
-# Optional: load a system prompt from a file (the repo includes system_prompt.txt)
-SYSTEM_PROMPT_FILE=system_prompt.txt
+# Load a system prompt from a file (the repo includes system_prompt.txt)
+SYSTEM_PROMPT_FILE=.\\prompts\\system_prompt.txt
 
-# Optional: show server exception details (dev only)
-DEBUG_ERRORS=1
+# Show server exception details (dev only)
+DEBUG_MODE=true
 ```
 
 Use the included PowerShell to start the server:

@@ -143,9 +143,24 @@ def retrieve_chunks_for_message(
         debug["slices"].append(s[:160])
         debug["shapes"].append({"fts": qs.fts_query, "terms": qs.kept_terms, "phrases": qs.kept_phrases})
         debug["search_queries"].append(q)
+    try:
         rows = search_corpus_for_conversation(
             conversation_id=conversation_id,
             query=q,
+            limit=per_slice_limit,
+            cfg=cfg,
+        )
+    except Exception as e:
+        log_debug("RAG search failed for shaped query %r: %r", q, e)
+
+        # Last-ditch retry: quote every token from the original slice.
+        safe_q = " ".join(f'"{tok.replace(chr(34), chr(34) * 2)}"' for tok in qs.kept_terms)
+        if not safe_q and qs.kept_phrases:
+            safe_q = " ".join(f'"{p.replace(chr(34), chr(34) * 2)}"' for p in qs.kept_phrases)
+
+        rows = search_corpus_for_conversation(
+            conversation_id=conversation_id,
+            query=safe_q or s,
             limit=per_slice_limit,
             cfg=cfg,
         )
