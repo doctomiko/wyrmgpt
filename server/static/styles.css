@@ -428,6 +428,25 @@ textarea {
   grid-column: 1 / -1;
 }
 
+#projectSettingsSection .checkboxRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.memHint {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 6px;
+  margin-bottom: 10px;
+}
+
+#saveProjectSettings {
+  width: auto;
+  justify-self: start;
+  white-space: nowrap;
+}
+
 #aboutYouOccupation,
 #aboutYouMore {
   width: 100%;

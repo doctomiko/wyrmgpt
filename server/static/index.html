@@ -91,6 +91,39 @@
         <button id="closeMemory" class="iconButton" title="Close">&times;</button>
       </div>
       <div class="modalBody">
+        <div id="projectSettingsSection" class="memSection hidden">
+          <div class="memTitle">Project Settings</div>
+
+          <div class="memAdd">
+            <label class="span2">
+              Project Prompt
+              <textarea id="projectSystemPrompt" rows="6" placeholder="This prompt applies only to this project."></textarea>
+            </label>
+          </div>
+
+          <div class="memGrid2">
+            <label>
+              Visibility
+              <select id="projectVisibility">
+                <option value="private">Private</option>
+                <option value="global">Global</option>
+              </select>
+            </label>
+
+            <label class="checkboxRow">
+              <input id="projectOverrideCorePrompt" type="checkbox" />
+              Override global/core prompt for this project
+            </label>
+          </div>
+
+          <div class="memHint" id="projectSettingsHint">
+            Global “About You” still applies everywhere. Project prompt and project instructions only affect this project.
+          </div>
+
+          <div class="memAdd">
+            <button id="saveProjectSettings">Save Project Settings</button>
+          </div>
+        </div>
         <div class="memSection">
           <div class="memTitle">About You</div>
           <div class="memGrid2">
@@ -252,6 +285,7 @@
     <hr />
     <button id="projRename">Rename Project</button>
     <button id="projDesc">Edit description…</button>
+    <button id="projSettings">Project Settings…</button>
     <button id="projToggleVisibility">Toggle Global Availability</button>
     <hr />
     <button id="projUpload">Add files…</button>

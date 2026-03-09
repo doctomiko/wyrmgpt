@@ -5,15 +5,12 @@
 
 // Usually const but some are reassigned later
 
-// Inside the Chat Window
-const chatWindow = document.getElementById("chat");
-const chatWindowInputTextbox = document.getElementById("input");
-const chatWindowInputSendBtn = document.getElementById("send");
+// LEFT SIDEBAR
 
 // Top Left
 const topLeftNewChatBtn = document.getElementById("newChat");
 const topLeftNewProjBtn = document.getElementById("newProjectBtn");
-
+// #region the Top Menu Hamburger
 // the underlying menu
 const topMenuBtn = document.getElementById("topMenuButton");
 const topMenu = document.getElementById("topMenu");
@@ -23,28 +20,36 @@ const topMenuManageFilesBtn = document.getElementById("manageFilesTop");
 const topMenuOpenMemoryBtn = document.getElementById("openMemory");
 const topMenuAdvancedABToggle = document.getElementById("advancedCheckbox");
 const topMenuSearchChatHistoryToggle = document.getElementById("searchChatHistoryToggle");
+// #endregion
 
 // Conversation and Project List
 const sideBarProjListEl = document.getElementById("projectList");
 const sideBarConvListEl = document.getElementById("convList");
 
-// Top of Paga/Chat Bar and Menu
+// CENTER PAGE
+
+// #region Top of Page/Chat Bar and Menu
 const topBarChatTitleEl = document.getElementById("chatTitle");
 // Model Selectors
 const topBarModelSelectA = document.getElementById("modelSelectA");
 const topBarModelSelectB = document.getElementById("modelSelectB");
+// #endregion
+// #region Inside the Chat Window
+const chatWindow = document.getElementById("chat");
+const chatWindowInputTextbox = document.getElementById("input");
+const chatWindowInputSendBtn = document.getElementById("send");
+// #endregion
 
-// Move To... modal
-const moveToModal = document.getElementById("moveToModal");
-const moveToInput = document.getElementById("moveToInput");
-const moveToDatalist = document.getElementById("moveToDatalist");
-const moveToClose = document.getElementById("moveToClose");
-const moveToCancel = document.getElementById("moveToCancel");
-const moveToClear = document.getElementById("moveToClear");
-const moveToApply = document.getElementById("moveToApply");
-const moveToBackdrop = moveToModal ? moveToModal.querySelector(".modalBackdrop") : null;
+// RIGHT SIDEBAR
 
-// Conversation Context Menu
+// #region Context Diagnostic Panel
+const contextPreviewToggleBtn = document.getElementById("toggleContext");
+const contextPreviewEl = document.getElementById("contextPreview");
+// #endregion
+
+// CONTEXT MENUS
+
+// #region Conversation Context Menu
 const convMenuEl = document.getElementById("convMenu");
 const convMenuRenameBtn = document.getElementById("menuRename");
 const convMenuSuggestTitleBtn = document.getElementById("menuSuggest");
@@ -54,21 +59,33 @@ const convMenuExportTranscriptBtn = document.getElementById("menuExportTranscrip
 const convMenuSummarizeBtn = document.getElementById("menuSummarize");
 const convMenuArchiveBtn = document.getElementById("menuArchive");
 const convMenuDeleteBtn = document.getElementById("menuDelete");
+// #endregion
 
-// Projects
+// #region Project Context Menu
 const projMenuEl = document.getElementById("projMenu");
 const projMenuNewChatBtn = document.getElementById("projNewChat");
 const projMenuRenameBtn = document.getElementById("projRename");
 const projMenuDescriptionBtn = document.getElementById("projDesc");
+const projMenuSettingsBtn = document.getElementById("projSettings");
+const projMenuToggleVisibility = document.getElementById("projToggleVisibility");
 const projMenuFileUploadBtn = document.getElementById("projUpload");
 const projMenuManageFilesBtn = document.getElementById("projFiles");
-const projMenuToggleVisibility = document.getElementById("projToggleVisibility");
+// #endregion
 
-// Context Diagnostic Panel
-const contextPreviewToggleBtn = document.getElementById("toggleContext");
-const contextPreviewEl = document.getElementById("contextPreview");
+// MODAL DIALOGS
 
-// Personalization Modal (Instructions and Memories)
+// #region Move To... modal
+const moveToModal = document.getElementById("moveToModal");
+const moveToInput = document.getElementById("moveToInput");
+const moveToDatalist = document.getElementById("moveToDatalist");
+const moveToClose = document.getElementById("moveToClose");
+const moveToCancel = document.getElementById("moveToCancel");
+const moveToClear = document.getElementById("moveToClear");
+const moveToApply = document.getElementById("moveToApply");
+const moveToBackdrop = moveToModal ? moveToModal.querySelector(".modalBackdrop") : null;
+// #endregion
+
+// #region Personalization Modal (Instructions and Memories)
 const persModal = document.getElementById("memoryModal");
 const persCloseBtn = document.getElementById("closeMemory");
 const persBackdrop = persModal
@@ -79,12 +96,19 @@ const pinListEl = document.getElementById("pinList");
 const pinTextEl = document.getElementById("pinText");
 const pinAddOrSaveBtn = document.getElementById("addPin");
 const pinCancelEditBtn = document.getElementById("cancelPinEdit");
+// Project Settings in Memory model
+const projectSettingsSectionEl = document.getElementById("projectSettingsSection");
+const projectSystemPromptEl = document.getElementById("projectSystemPrompt");
+const projectVisibilityEl = document.getElementById("projectVisibility");
+const projectOverrideCorePromptEl = document.getElementById("projectOverrideCorePrompt");
+const saveProjectSettingsBtn = document.getElementById("saveProjectSettings");
 // About You - Just a special pin really
 const aboutYouNicknameEl = document.getElementById("aboutYouNickname");
 const aboutYouAgeEl = document.getElementById("aboutYouAge");
 const aboutYouOccupationEl = document.getElementById("aboutYouOccupation");
 const aboutYouMoreEl = document.getElementById("aboutYouMore");
 const aboutYouSaveBtn = document.getElementById("saveAboutYou");
+const aboutYouSectionEl = aboutYouNicknameEl ? aboutYouNicknameEl.closest(".memSection") : null;
 // Memories
 const memoryListEl = document.getElementById("memoryList");
 const memoryTextEl = document.getElementById("memoryText");
@@ -92,8 +116,9 @@ const memoryTagsEl = document.getElementById("memoryTags");
 const memoryImportanceEl = document.getElementById("memoryImportance");
 const memorySaveBtn = document.getElementById("saveMemory");
 const memoryCancelEditBtn = document.getElementById("cancelMemoryEdit");
+// #endregion
 
-// File Uploads and Management
+// #region File Uploads and Management
 const chatWindowInputAddFilesBtn = document.getElementById("attachButton");
 
 const uploadModal = document.getElementById("uploadModal");
@@ -113,12 +138,13 @@ const filesCloseBtn = document.getElementById("filesClose");
 const filesSaveBtn = document.getElementById("filesSave");
 const filesCloseBottomBtn = document.getElementById("filesCloseBottom");
 const filesBackdrop = filesModal ? filesModal.querySelector(".modalBackdrop") : null;
-
-// Artifact debug modal and launch buttons
+// #endregion
+// #region Artifact debug modal and launch buttons
 const artifactsDebugTopBtn = document.getElementById("artifactsDebugTop");
 const artifactsDebugModal = document.getElementById("artifactsDebugModal");
 const artifactsDebugCloseBtn = document.getElementById("artifactsDebugClose");
 const artifactsDebugPre = document.getElementById("artifactsDebugPre");
+// #endregion
 
 // ----------------------------------
 // Global variables we'll need later
@@ -157,7 +183,9 @@ let contextRefreshing = false;
 let lastContextDraftSent = "";
 // chat transcript re-generation/append state:
 let transcriptRefreshTimer = null;
-// Memory modal state:
+// Personalization modal state:
+let personalizationMode = "global"; // "global" | "project"
+let personalizationProjectId = null;
 let editingMemoryId = null;
 let memoriesCache = [];
 let editingPinId = null;
@@ -191,21 +219,54 @@ let UI_CONFIG = {
   debug_boot: true,
 }
 
-/*
-let UI_CONFIG.local_timezone = null; 
-let UI_CONFIG.context_preview_limit_min = 20;
-let UI_CONFIG.context_preview_limit_max = 200;
-let UI_CONFIG.min_rag_query_text_len = 5;
-let UI_CONFIG.context_idle_ms = 5000; 
-let UI_CONFIG.transcript_idle_ms = 120000; 
-let UI_CONFIG.debug_boot = true;
-*/
-
 // #endregion
 
 // ----------------------------------
 // Helpers for UI state management and updates. 
 // ----------------------------------
+
+function pickPositiveInt(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : fallback;
+}
+
+// These are usually called by event handlers or after API calls to update the screen based on the current app state.
+
+function formatDate(iso) {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString();
+  } catch {
+    return iso || "";
+  }
+}
+
+function formatReadableDateTime(iso) {
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso || "";
+
+    const opts = {
+      year: "numeric",
+      month: "short",
+      day: "2-digit",
+      hour: "numeric",
+      minute: "2-digit",
+    };
+
+    if (UI_CONFIG.local_timezone) {
+      return new Intl.DateTimeFormat(undefined, { ...opts, timeZone: UI_CONFIG.local_timezone }).format(d);
+    }
+    return new Intl.DateTimeFormat(undefined, opts).format(d);
+  } catch {
+    return iso || "";
+  }
+}
+
+function stripZeit(text) {
+  if (!text) return text;
+  return text.replace(ZEIT_PREFIX_RE, "").replace(LEGACY_PREFIX_RE, "");
+}
 
 // #region Context Refresh Helpers
 
@@ -301,10 +362,7 @@ function scheduleTranscriptRefresh(cid = conversationId) {
 
 // #endregion
 
-function pickPositiveInt(value, fallback) {
-  const n = Number(value);
-  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : fallback;
-}
+// #region app_settings and UI Config Helpers
 
 // TODO make this a class instead of a bunch of global vars
 async function fetchUiConfig() {
@@ -375,131 +433,11 @@ async function saveAppConfig(patch) {
   return APP_CONFIG;
 }
 
-// These are usually called by event handlers or after API calls to update the screen based on the current app state.
+// #endregion
 
-function formatDate(iso) {
-  try {
-    const d = new Date(iso);
-    return d.toLocaleString();
-  } catch {
-    return iso || "";
-  }
-}
 
-function formatReadableDateTime(iso) {
-  try {
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return iso || "";
 
-    const opts = {
-      year: "numeric",
-      month: "short",
-      day: "2-digit",
-      hour: "numeric",
-      minute: "2-digit",
-    };
-
-    if (UI_CONFIG.local_timezone) {
-      return new Intl.DateTimeFormat(undefined, { ...opts, timeZone: UI_CONFIG.local_timezone }).format(d);
-    }
-    return new Intl.DateTimeFormat(undefined, opts).format(d);
-  } catch {
-    return iso || "";
-  }
-}
-
-function stripZeit(text) {
-  if (!text) return text;
-  return text.replace(ZEIT_PREFIX_RE, "").replace(LEGACY_PREFIX_RE, "");
-}
-
-// A consistent look/feel for headers above chat messages, with optional timestamps and buttons.
-function buildMetaBar({ labelText = null, timeIso = null, includeButton = false, metaObj = null }) {
-  const metaBar = document.createElement("div");
-  metaBar.className = "abMeta singleMeta";
-
-  const left = document.createElement("div");
-  left.className = "abMetaLeft";
-
-  if (labelText) {
-    const labelSpan = document.createElement("span");
-    labelSpan.className = "abLabel";
-    labelSpan.textContent = labelText;
-    left.appendChild(labelSpan);
-  }
-
-  const timeSpan = document.createElement("span");
-  timeSpan.className = "msgTime";
-  timeSpan.textContent = timeIso ? formatReadableDateTime(timeIso) : "";
-  left.appendChild(timeSpan);
-
-  let useBtn = null;
-  if (includeButton) {
-    useBtn = document.createElement("button");
-    useBtn.className = "abChoose";
-    useBtn.textContent = "Use";
-    metaBar.appendChild(useBtn);
-  }
-
-  let infoBtn = null;
-  if (metaObj) {
-    infoBtn = document.createElement("button");
-    infoBtn.className = "abInfo";
-    infoBtn.textContent = "i";
-    infoBtn.title = "Details";
-    infoBtn.addEventListener("click", () => {
-      openMetaInfo(labelText || "Details", metaObj);
-    });
-    metaBar.appendChild(infoBtn);
-  }
-
-  // now stuff in the right bar
-  const right = document.createElement("div");
-  right.className = "abMetaRight";
-  if (useBtn)
-    right.appendChild(useBtn);
-  if (infoBtn)
-    right.appendChild(infoBtn);
-
-  metaBar.appendChild(left);
-  metaBar.appendChild(right);
-
-  return { metaBar, timeSpan, useBtn, infoBtn };
-}
-
-/*
-function buildMetaBar({ labelText = null, timeIso = null, includeButton = false }) {
-  const metaBar = document.createElement("div");
-  metaBar.className = "abMeta singleMeta";
-
-  const left = document.createElement("div");
-  left.className = "abMetaLeft";
-
-  if (labelText) {
-    const labelSpan = document.createElement("span");
-    labelSpan.className = "abLabel";
-    labelSpan.textContent = labelText;
-    left.appendChild(labelSpan);
-  }
-
-  const timeSpan = document.createElement("span");
-  timeSpan.className = "msgTime";
-  timeSpan.textContent = timeIso ? formatReadableDateTime(timeIso) : "";
-  left.appendChild(timeSpan);
-
-  metaBar.appendChild(left);
-
-  let btn = null;
-  if (includeButton) {
-    btn = document.createElement("button");
-    btn.className = "abChoose";
-    btn.textContent = "Use";
-    metaBar.appendChild(btn);
-  }
-
-  return { metaBar, timeSpan, btn };
-}
-*/
+// #region Artifacts Debug Modal Helpers
 
 async function openArtifactsDebug() {
   if (!conversationId) {
@@ -525,20 +463,7 @@ async function loadMessages(cid) {
   return await fetchJsonDebug(`/api/conversation/${cid}/messages`);
 }
 
-/*
-async function fetchContext(cid, previewLimit = 20) {
-  return await fetchJsonDebug(`/api/conversation/${cid}/context?preview_limit=${previewLimit}`);
-}
-*/
-
-async function fetchContext(cid, previewLimit = 20, userText = "") {
-  const qs = new URLSearchParams();
-  qs.set("preview_limit", String(previewLimit));
-  if (userText && userText.trim()) {
-    qs.set("user_text", userText);
-  }
-  return await fetchJsonDebug(`/api/conversation/${cid}/context?${qs.toString()}`);
-}
+// #endregion
 
 async function newChat() {
   const res = await fetch("/api/new", { method: "POST" });
@@ -687,20 +612,6 @@ async function fetchJsonDebug(url, opts) {
 
 // #endregion
 
-// #region Memory modal helpers
-
-function openMemoryModal() {
-  if (!persModal) return;
-  persModal.classList.remove("hidden");
-}
-
-function closeMemoryModal() {
-  if (!persModal) return;
-  persModal.classList.add("hidden");
-}
-
-// #endregion
-
 // #region Error handling helpers
 
 function isErrorBubble(msg) {
@@ -733,6 +644,60 @@ function bubbleClassName(msg) {
 // #endregion
 
 // #region Message rendering helpers
+
+// A consistent look/feel for headers above chat messages, with optional timestamps and buttons.
+function buildMetaBar({ labelText = null, timeIso = null, includeButton = false, metaObj = null }) {
+  const metaBar = document.createElement("div");
+  metaBar.className = "abMeta singleMeta";
+
+  const left = document.createElement("div");
+  left.className = "abMetaLeft";
+
+  if (labelText) {
+    const labelSpan = document.createElement("span");
+    labelSpan.className = "abLabel";
+    labelSpan.textContent = labelText;
+    left.appendChild(labelSpan);
+  }
+
+  const timeSpan = document.createElement("span");
+  timeSpan.className = "msgTime";
+  timeSpan.textContent = timeIso ? formatReadableDateTime(timeIso) : "";
+  left.appendChild(timeSpan);
+
+  let useBtn = null;
+  if (includeButton) {
+    useBtn = document.createElement("button");
+    useBtn.className = "abChoose";
+    useBtn.textContent = "Use";
+    metaBar.appendChild(useBtn);
+  }
+
+  let infoBtn = null;
+  if (metaObj) {
+    infoBtn = document.createElement("button");
+    infoBtn.className = "abInfo";
+    infoBtn.textContent = "i";
+    infoBtn.title = "Details";
+    infoBtn.addEventListener("click", () => {
+      openMetaInfo(labelText || "Details", metaObj);
+    });
+    metaBar.appendChild(infoBtn);
+  }
+
+  // now stuff in the right bar
+  const right = document.createElement("div");
+  right.className = "abMetaRight";
+  if (useBtn)
+    right.appendChild(useBtn);
+  if (infoBtn)
+    right.appendChild(infoBtn);
+
+  metaBar.appendChild(left);
+  metaBar.appendChild(right);
+
+  return { metaBar, timeSpan, useBtn, infoBtn };
+}
 
 function addMsgTextOnly(role, text) {
   const div = document.createElement("div");
@@ -1493,6 +1458,15 @@ function applyAdvancedVisibility() {
 // #endregion
 
 // #region Context helpers
+
+async function fetchContext(cid, previewLimit = 20, userText = "") {
+  const qs = new URLSearchParams();
+  qs.set("preview_limit", String(previewLimit));
+  if (userText && userText.trim()) {
+    qs.set("user_text", userText);
+  }
+  return await fetchJsonDebug(`/api/conversation/${cid}/context?${qs.toString()}`);
+}
 
 function renderContext(ctx) {
   const lines = [];
@@ -2302,11 +2276,84 @@ function initABUI() {
 
 // #endregion
 
-// #region Pin (Personalization) helpers
+// #region Personalization Modal Helpers
 
-async function fetchPins() {
-  return await fetchJsonDebug("/api/memory/pins");
+function setPersonalizationModeGlobal() {
+  personalizationMode = "global";
+  personalizationProjectId = null;
+
+  if (projectSettingsSectionEl) projectSettingsSectionEl.classList.add("hidden");
+  if (aboutYouSectionEl) aboutYouSectionEl.classList.remove("hidden");
+
+  const title = persModal?.querySelector(".modalTitle");
+  if (title) title.textContent = "Personalization";
 }
+
+function setPersonalizationModeProject(projectObj) {
+  personalizationMode = "project";
+  personalizationProjectId = projectObj?.id ?? null;
+
+  if (projectSettingsSectionEl) projectSettingsSectionEl.classList.remove("hidden");
+  if (aboutYouSectionEl) aboutYouSectionEl.classList.add("hidden");
+
+  if (projectSystemPromptEl) projectSystemPromptEl.value = projectObj?.system_prompt || "";
+  if (projectVisibilityEl) projectVisibilityEl.value = projectObj?.visibility || "private";
+  if (projectOverrideCorePromptEl) projectOverrideCorePromptEl.checked = !!projectObj?.override_core_prompt;
+
+  const title = persModal?.querySelector(".modalTitle");
+  if (title) title.textContent = `Project Settings — ${projectObj?.name || "Project"}`;
+}
+
+function openMemoryModal() {
+  if (!persModal) return;
+  persModal.classList.remove("hidden");
+}
+
+function closeMemoryModal() {
+  if (!persModal) return;
+  persModal.classList.add("hidden");
+}
+
+async function loadPersonalization() {
+  const [pins, aboutYou] = await Promise.all([
+    fetchPins(),
+    fetchAboutYou(),
+  ]);
+  let filteredPins = pins || [];
+  if (personalizationMode === "project" && personalizationProjectId != null) {
+    filteredPins = filteredPins.filter(p =>
+      p.scope_type === "project" && Number(p.scope_id) === Number(personalizationProjectId)
+    );
+  } else {
+    filteredPins = filteredPins.filter(p =>
+      (p.scope_type || "global") === "global" && (p.scope_id == null)
+    );
+  }
+
+  renderPins(filteredPins);
+  if (personalizationMode === "global") {
+    populateAboutYouForm(aboutYou);
+  }
+  // clear the editors and refresh the UI
+  resetPinEditor();
+  resetMemoryEditor();      
+  await refreshContext();
+}
+/*
+async function loadPersonalization() {
+  const [pins, aboutYou] = await Promise.all([
+    fetchPins(),
+    fetchAboutYou(),
+  ]);
+  renderPins(pins);
+  populateAboutYouForm(aboutYou);
+}
+*/
+
+// #endregion
+// #region Personalization->Instructions (Pins) helpers
+
+// #region About You
 
 async function fetchAboutYou() {
   return await fetchJsonDebug("/api/memory/pins/about_you");
@@ -2342,14 +2389,10 @@ async function saveAboutYou() {
   await loadPersonalization();
   await refreshContext();
 }
-
-async function loadPersonalization() {
-  const [pins, aboutYou] = await Promise.all([
-    fetchPins(),
-    fetchAboutYou(),
-  ]);
-  renderPins(pins);
-  populateAboutYouForm(aboutYou);
+// #endregion
+// #region Regular Pins
+async function fetchPins() {
+  return await fetchJsonDebug("/api/memory/pins");
 }
 
 function resetPinEditor() {
@@ -2432,6 +2475,8 @@ async function savePinFromUi() {
     text,
     pin_kind: existing?.pin_kind || "instruction",
     title: existing?.title || null,
+    scope_type: personalizationMode === "project" ? "project" : "global",
+    scope_id: personalizationMode === "project" ? personalizationProjectId : null,
   };
 
   const isEdit = !!editingPinId;
@@ -2457,61 +2502,14 @@ async function savePinFromUi() {
   await refreshContext();
 }
 
-/*
-function renderPins(pins) {
-  pinListEl.innerHTML = "";
-  pins = (pins || []).filter(p => !(p.pin_kind === "profile" && p.title === "about_you"));  
-  if (!pins.length) {
-    const empty = document.createElement("div");
-    empty.className = "memPlaceholder";
-    empty.textContent = "No saved instructions yet.";    
-    pinListEl.appendChild(empty);
-    return;
-  }
+// #endregion
 
-  pins.forEach(p => {
-    const item = document.createElement("div");
-    item.className = "pinItem";
+// #endregion
+// #region Memory helpers
 
-    const text = document.createElement("div");
-    text.className = "pinText";
-    text.textContent = p.text;
-
-    const actions = document.createElement("div");
-    actions.className = "pinActions";
-
-    const del = document.createElement("button");
-    del.textContent = "Delete";
-    del.addEventListener("click", async () => {
-      await fetch(`/api/memory/pins/${p.id}`, { method: "DELETE" });
-      const pins2 = await fetchPins();
-      renderPins(pins2);
-      await refreshContext(); // pins affect context pack
-    });
-
-    actions.appendChild(del);
-    item.appendChild(text);
-    item.appendChild(actions);
-    pinListEl.appendChild(item);
-  });
+async function fetchMemories() {
+  return await fetchJsonDebug("/api/memories");
 }
-
-async function addPin() {
-  const text = (pinTextEl.value || "").trim();
-  if (!text) return;
-  pinTextEl.value = "";
-
-  await fetch("/api/memory/pins", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text })
-  });
-
-  const pins = await fetchPins();
-  renderPins(pins);
-  await refreshContext();
-}
-*/
 
 async function createMemoryFromUi() {
   if (!memoryTextEl) return;
@@ -2542,6 +2540,11 @@ async function createMemoryFromUi() {
     created_by: existing?.created_by || "user",
     origin_kind: existing?.origin_kind || "user_asserted",
   };
+
+  const forcedProjectId =
+  personalizationMode === "project" && personalizationProjectId != null
+    ? personalizationProjectId
+    : null;
 
   try {
     const isEdit = !!editingMemoryId;
@@ -2578,7 +2581,7 @@ async function createMemoryFromUi() {
       }
 
       const meta = conversationMap.get(conversationId);
-      const pid = meta?.project_id ?? null;
+      const pid = forcedProjectId ?? meta?.project_id ?? null;
       if (pid != null) {
         const resLinkProj = await fetch(
           `/api/memories/${encodeURIComponent(memoryId)}/link_project/${pid}`,
@@ -2597,94 +2600,6 @@ async function createMemoryFromUi() {
     console.error("createMemoryFromUi failed", e);
     alert("Error saving memory – see console for details.");
   }
-}
-/*
-async function createMemoryFromUi() {
-  if (!memoryTextEl) return;
-
-  const content = (memoryTextEl.value || "").trim();
-  if (!content) {
-    alert("Memory content cannot be empty.");
-    return;
-  }
-
-  const tagsRaw = (memoryTagsEl?.value || "").trim();
-  const tags = tagsRaw || null;
-
-  let importance = 0;
-  if (memoryImportanceEl && memoryImportanceEl.value !== "") {
-    const parsed = parseInt(memoryImportanceEl.value, 10);
-    importance = Number.isNaN(parsed) ? 0 : parsed;
-  }
-
-  try {
-    // 1) Create the memory
-    const res = await fetch("/api/memories", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        content,
-        importance,
-        tags
-      })
-    });
-
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      alert("Failed to create memory: " + (err.detail || res.status));
-      return;
-    }
-
-    const data = await res.json();
-    const memoryId = data.id;
-    if (!memoryId) {
-      console.warn("createMemory: no id in response", data);
-      return;
-    }
-
-    // 2) Link to current conversation, if any
-    if (conversationId) {
-      const resLinkConv = await fetch(
-        `/api/memories/${encodeURIComponent(memoryId)}/link_conversation/${encodeURIComponent(conversationId)}`,
-        { method: "POST" }
-      );
-      if (!resLinkConv.ok) {
-        console.warn("Failed to link memory to conversation", await resLinkConv.text());
-      }
-    }
-
-    // 3) Link to current project, if the conversation has one
-    const meta = conversationMap.get(conversationId);
-    const pid = meta?.project_id ?? null;
-    if (pid != null) {
-      const resLinkProj = await fetch(
-        `/api/memories/${encodeURIComponent(memoryId)}/link_project/${pid}`,
-        { method: "POST" }
-      );
-      if (!resLinkProj.ok) {
-        console.warn("Failed to link memory to project", await resLinkProj.text());
-      }
-    }
-
-    // 4) Clean up UI & refresh context
-    memoryTextEl.value = "";
-    if (memoryTagsEl) memoryTagsEl.value = "";
-    if (memoryImportanceEl) memoryImportanceEl.value = "0";
-
-    await refreshContext();
-  } catch (e) {
-    console.error("createMemoryFromUi failed", e);
-    alert("Error creating memory – see console for details.");
-  }
-}
-*/
-
-// #endregion
-
-// #region Memory helpers
-
-async function fetchMemories() {
-  return await fetchJsonDebug("/api/memories");
 }
 
 function memoryTagsToInput(tags) {
@@ -2810,9 +2725,29 @@ function renderMemories(memories) {
 
 async function loadMemories() {
   const memories = await fetchMemories();
+  let filtered = memories || [];
+
+  if (personalizationMode === "project" && personalizationProjectId != null) {
+    filtered = filtered.filter(m =>
+      Array.isArray(m.project_ids) &&
+      m.project_ids.some(pid => Number(pid) === Number(personalizationProjectId))
+    );
+  } else {
+    filtered = filtered.filter(m =>
+      !Array.isArray(m.project_ids) || m.project_ids.length === 0
+    );
+  }
+
+  renderMemories(filtered);
+  return filtered;
+}
+/*
+async function loadMemories() {
+  const memories = await fetchMemories();
   renderMemories(memories);
   return memories;
 }
+*/
 
 // #endregion
 
@@ -3830,15 +3765,39 @@ if (memorySaveBtn) {
     createMemoryFromUi().catch(e => console.error("createMemoryFromUi error", e));
   });
 }
+if (saveProjectSettingsBtn) {
+  saveProjectSettingsBtn.addEventListener("click", async () => {
+    if (personalizationMode !== "project" || personalizationProjectId == null) return;
+    const payload = {
+      system_prompt: (projectSystemPromptEl?.value || "").trim(),
+      visibility: projectVisibilityEl?.value || "private",
+      override_core_prompt: !!projectOverrideCorePromptEl?.checked,
+    };
+    const res = await fetch(`/api/projects/${encodeURIComponent(personalizationProjectId)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert("Failed to save project settings: " + (err.detail || res.status));
+      return;
+    }
+
+    const updated = await res.json();
+    projectsCache = projectsCache.map(p => Number(p.id) === Number(updated.id) ? updated : p);
+    await refreshContext();
+  });
+}
+
 if (topMenuOpenMemoryBtn) {
   topMenuOpenMemoryBtn.addEventListener("click", async () => {
+    setPersonalizationModeGlobal();
     openMemoryModal();
     toggleTopMenu(false);
     try {
       await loadPersonalization();
-      // TODO consider moving this into loadPersonalization
-      resetPinEditor();
-      await refreshContext();
     } catch (e) {
       console.error("loadPersonalization failed", e);
     }
@@ -4040,17 +3999,6 @@ if (contextPreviewToggleBtn) {
 
 // #endregion
 
-/*
-// #region Chat buttons in the top panel (now hidden)
-if (topMenuRenameChatBtn) {
-  topMenuRenameChatBtn.addEventListener("click", renameChat);
-}
-if (topMenuSuggestTitleBtn) {
-  topMenuSuggestTitleBtn.addEventListener("click", suggestChatTitle);
-}
-// #endregion
-*/
-
 // #region Top Bar event bindings
 
 if (topMenuBtn) {
@@ -4161,6 +4109,31 @@ if (topLeftNewProjBtn) {
     } catch (e) {
       console.error("create project failed", e);
       alert("Error creating project.");
+    }
+  });
+}
+
+if (projMenuSettingsBtn) {
+  projMenuSettingsBtn.addEventListener("click", async () => {
+    const projectObj = projectsCache.find(p => Number(p.id) === Number(menuTargetProjectId));
+    if (!projectObj) {
+      alert("Project not found.");
+      return;
+    }
+
+    setPersonalizationModeProject(projectObj);
+    openMemoryModal();
+    toggleTopMenu(false);
+    hideAllMenus();
+
+    resetPinEditor();
+    resetMemoryEditor();
+
+    try {
+      await loadPersonalization();
+      await loadMemories();
+    } catch (e) {
+      console.error("load project personalization failed", e);
     }
   });
 }

@@ -1,5 +1,4 @@
 import hashlib
-
 import anyio
 import asyncio
 import os
@@ -25,28 +24,19 @@ from pydantic import BaseModel
 from server.logging_helper import log_warn
 from .config import (
     #CoreConfig,
-    ContextConfig,
-    load_context_config,
-    OpenAIConfig,
-    load_openai_config,
-    QueryConfig,
-    load_query_config,
-    SummaryConfig,
-    load_summary_config,
-    UIConfig,
-    load_ui_config,
+    ContextConfig, load_context_config,
+    OpenAIConfig, load_openai_config,
+    QueryConfig, load_query_config,
+    SummaryConfig, load_summary_config,
+    UIConfig, load_ui_config,
     # app_settings access
-    APP_KEYS,
-    load_app_config,
+    APP_KEYS, load_app_config,
 )
 #from .config import ContextConfig, QueryConfig, SummaryConfig, load_context_config, load_openai_config, load_query_config, load_summary_config
 from .context import _get_prompt, build_context, build_context_panel_payload, build_model_input, estimate_context_tokens
 from .markdown_helper import apply_house_markdown_normalization, autolink_text
 from .summary_helper import summarize_conversation_text
 from .query_retrieval import retrieve_chunks_for_message
-
-# region data layer imports
-
 from .db import (
     # Schema and connection
     init_schema, db_debug_info,
@@ -109,74 +99,10 @@ from .db import (
     delete_memory as db_delete_memory,    
 )
 
-# endregion
-
+# TODO move me into config.py
 DEBUG_ERRORS = os.getenv("DEBUG_ERRORS", "1") == "1"
 
 load_dotenv()
-
-# region Model Catalog and Caching
-
-# TODO refactor to include many providers
-MODEL_CATALOG: dict[str, dict] = {}
-
-# add near your OpenAI client init (or near globals)
-_MODELS_CACHE: dict[str, Any] | None = None
-_MODELS_CACHE_TS: float = 0.0
-
-# TODO make this part of future model selector config
-_MODELS_TTL_SECONDS = 300  # 5 minutes
-
-# TODO make this part of OpenAIConfig
-_ALLOWED_MODEL_PREFIXES = ("gpt-", "o1", "o3", "o4")
-
-# load from OpenAIConfig
-oai_cfg = load_openai_config()
-MODEL = oai_cfg.open_ai_model
-# TODO decide if TITLE_MODEL should have its own setting
-TITLE_MODEL = oai_cfg.summary_model
-
-# endregion
-
-ZEIT_PREFIX_RE = re.compile(
-    r"^\s*(?:"
-    r"⟂ts=\d+"
-    r"|⟂t=\d{8}T\d{6}Z(?:\s+⟂age=-?\d+)?"
-    r")\s*\n",
-    re.UNICODE
-)
-if (False):
-    ZEIT_PREFIX_RE = re.compile(r"^\s*⟂ts=\d+\s*\n")
-    ZEIT_PREFIX_RE = re.compile(
-        r"^\s*(?:"
-        r"⟂ts=\d+"                                # old: ⟂ts=1709...
-        r"|⟂t=\d{8}T\d{6}Z(?:\s+⟂age=\d+)?"       # new: ⟂t=20260228T231512Z ⟂age=37
-        r")\s*\n",
-        re.UNICODE
-    )
-LEGACY_BRACKET_RE = re.compile(r"^\s*\[20\d\d-[^\]]+\]\s*\n")
-
-def strip_zeitgeber_prefix(text: str) -> str:
-    if not text:
-        return text
-    text = ZEIT_PREFIX_RE.sub("", text, count=1)
-    text = LEGACY_BRACKET_RE.sub("", text, count=1)  # safety for old runs
-    return text.lstrip("\ufeff")  # optional: strip BOM weirdness
-
-def postprocess_text(text: str) -> str:
-    """
-    House normalization for output before storing in DB or displaying on screen.
-    - strip zeitgeber prefix
-    - normalize markdown dialect
-    - autolink URLs/domains
-    """
-    if not text:
-        return text
-    text = text.strip()
-    text = strip_zeitgeber_prefix(text)
-    text = apply_house_markdown_normalization(text)
-    text = autolink_text(text)
-    return text
 
 # Replaces the old @app.on_event("startup") and @app.on_event("shutdown") handlers with a single async context manager that can do both setup and teardown.
 #@app.on_event("startup")
@@ -201,6 +127,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 client = OpenAI()
 
+# start from root folder above ./server
 HERE = Path(__file__).resolve().parent
 STATIC_DIR = HERE / "static"
 # This is where uploaded files are stored; you can change this or add subdirs as needed
@@ -208,10 +135,11 @@ SOURCES_ROOT = DATA_DIR / "sources"
 # This is where APIs for supported toools (retrievers, file parsers, etc.) would live; you can add subdirs as needed
 TOOLS_DIR = HERE / "tools"
 
-# Support checking for models
-_MODELS_CACHE: dict[str, Any] | None = None
-_MODELS_CACHE_TS: float = 0.0
-_MODELS_TTL_SECONDS = 300  # 5 minutes
+# load from OpenAIConfig
+oai_cfg = load_openai_config()
+MODEL = oai_cfg.open_ai_model
+# TODO decide if TITLE_MODEL should have its own setting
+TITLE_MODEL = oai_cfg.summary_model
 
 # region API Contracts (class definitions)
 
@@ -230,6 +158,9 @@ class ProjectUpdateRequest(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     visibility: str | None = None
+    system_prompt: str | None = None
+    override_core_prompt: bool | None = None
+    default_advanced_mode: bool | None = None
 
 class TitleRequest(BaseModel):
     title: str
@@ -268,6 +199,8 @@ class PinRequest(BaseModel):
     text: str
     pin_kind: str | None = None
     title: str | None = None
+    scope_type: str | None = None
+    scope_id: int | None = None
 
 class AboutYouRequest(BaseModel):
     nickname: str = ""
@@ -330,7 +263,85 @@ class FilePreflightRequest(BaseModel):
 
 # endregion
 
-# region Helper functions
+# region Zeitgeber Helpers
+
+ZEIT_PREFIX_RE = re.compile(
+    r"^\s*(?:"
+    r"⟂ts=\d+"
+    r"|⟂t=\d{8}T\d{6}Z(?:\s+⟂age=-?\d+)?"
+    r")\s*\n",
+    re.UNICODE
+)
+if (False):
+    ZEIT_PREFIX_RE = re.compile(r"^\s*⟂ts=\d+\s*\n")
+    ZEIT_PREFIX_RE = re.compile(
+        r"^\s*(?:"
+        r"⟂ts=\d+"                                # old: ⟂ts=1709...
+        r"|⟂t=\d{8}T\d{6}Z(?:\s+⟂age=\d+)?"       # new: ⟂t=20260228T231512Z ⟂age=37
+        r")\s*\n",
+        re.UNICODE
+    )
+LEGACY_BRACKET_RE = re.compile(r"^\s*\[20\d\d-[^\]]+\]\s*\n")
+
+def strip_zeitgeber_prefix(text: str) -> str:
+    if not text:
+        return text
+    text = ZEIT_PREFIX_RE.sub("", text, count=1)
+    text = LEGACY_BRACKET_RE.sub("", text, count=1)  # safety for old runs
+    return text.lstrip("\ufeff")  # optional: strip BOM weirdness
+
+# endregion
+
+# region Model Catalog and Caching
+
+# TODO refactor to include many providers
+# Support checking for models
+_MODELS_CACHE: dict[str, Any] | None = None
+MODEL_CATALOG: dict[str, dict] = {}
+
+# TODO make these part of config.py
+_MODELS_CACHE_TS: float = 0.0
+_MODELS_TTL_SECONDS = 300  # 5 minutes
+# TODO make this part of OpenAIConfig
+_ALLOWED_MODEL_PREFIXES = ("gpt-", "o1", "o3", "o4")
+
+# endregion
+
+# region Misc Helper functions
+
+def postprocess_text(text: str) -> str:
+    """
+    House normalization for output before storing in DB or displaying on screen.
+    - strip zeitgeber prefix
+    - normalize markdown dialect
+    - autolink URLs/domains
+    """
+    if not text:
+        return text
+    text = text.strip()
+    text = strip_zeitgeber_prefix(text)
+    text = apply_house_markdown_normalization(text)
+    text = autolink_text(text)
+    return text
+
+def _preview_content(c):
+    if c is None:
+        return ""
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        parts = []
+        for p in c:
+            t = (p.get("type") or "").strip()
+            if t == "input_text":
+                parts.append(p.get("text") or "")
+            elif t == "input_image":
+                url = p.get("image_url") or ""
+                parts.append(f"[input_image data_url len={len(url)}]")
+            else:
+                parts.append(json.dumps(p, ensure_ascii=False))
+        return "\n".join(parts)
+    return str(c)
 
 def _http_from_value_error(e: ValueError) -> None:
     msg = str(e).strip() or "Invalid request."
@@ -375,6 +386,8 @@ def _extract_output_text(resp) -> str:
 
 # endregion
 
+# region Base API stuffs
+
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 @app.exception_handler(Exception)
@@ -410,6 +423,10 @@ def api_debug_db():
 def health():
     return JSONResponse({"ok": True, "model": MODEL})
 
+#endregion
+
+# region App Config Endpoints
+
 @app.get("/api/ui_config")
 def api_ui_config():
     cfg = load_ui_config()
@@ -424,8 +441,6 @@ def api_ui_config():
             "debug_boot": cfg.debug_boot,
         }
     )
-
-# region App Config Endpoints
 
 @app.get("/api/app_config")
 def api_app_config():
@@ -975,25 +990,6 @@ def api_ab_canonical(req: ABCanonicalRequest):
 
 # endregion
 
-def _preview_content(c):
-    if c is None:
-        return ""
-    if isinstance(c, str):
-        return c
-    if isinstance(c, list):
-        parts = []
-        for p in c:
-            t = (p.get("type") or "").strip()
-            if t == "input_text":
-                parts.append(p.get("text") or "")
-            elif t == "input_image":
-                url = p.get("image_url") or ""
-                parts.append(f"[input_image data_url len={len(url)}]")
-            else:
-                parts.append(json.dumps(p, ensure_ascii=False))
-        return "\n".join(parts)
-    return str(c)
-
 # region Conversation Endpoints
 
 @app.get("/api/conversations")
@@ -1384,7 +1380,9 @@ def api_add_memory_pin(req: PinRequest):
         text,
         pin_kind=(req.pin_kind or "instruction"),
         title=req.title,
-    )
+        scope_type=(req.scope_type or "global"),
+        scope_id=req.scope_id,
+    )   
     invalidate_all_context_cache()
     return JSONResponse({"ok": True, "id": new_id})
 
@@ -1393,18 +1391,6 @@ def api_delete_memory_pin(pin_id: int):
     delete_memory_pin(pin_id)
     invalidate_all_context_cache()
     return JSONResponse({"ok": True})
-
-if (False):
-    @app.post("/api/memory/pins")
-    def api_add_memory_pin(req: PinRequest):
-        text = (req.text or "").strip()
-        if not text:
-            return JSONResponse({"ok": False, "error": "empty"}, status_code=400)
-
-        # Generic add-pin box always creates an instruction pin.
-        new_id = add_memory_pin(text, pin_kind="instruction")
-        invalidate_all_context_cache()
-        return JSONResponse({"ok": True, "id": new_id})
 
 @app.put("/api/memory/pins/{pin_id}")
 def api_update_memory_pin(pin_id: int, req: PinRequest):
@@ -1417,6 +1403,8 @@ def api_update_memory_pin(pin_id: int, req: PinRequest):
         text,
         pin_kind=req.pin_kind,
         title=req.title,
+        scope_type=req.scope_type,
+        scope_id=req.scope_id,
     )
     invalidate_all_context_cache()
     return JSONResponse(row)
@@ -1435,23 +1423,6 @@ def api_upsert_about_you_pin(req: AboutYouRequest):
 @app.get("/api/memory/pins")
 def api_memory_pins():
     return JSONResponse(list_memory_pins(limit=200))
-
-if (False):
-    @app.post("/api/memory/pins")
-    def api_add_memory_pin(req: PinRequest):
-        text = (req.text or "").strip()
-        if not text:
-            return JSONResponse({"ok": False, "error": "empty"}, status_code=400)
-
-        # Generic add-pin box always creates an instruction pin.
-        new_id = add_memory_pin(text, pin_kind="instruction")
-        return JSONResponse({"ok": True, "id": new_id})
-
-if (False):
-    @app.delete("/api/memory/pins/{pin_id}")
-    def api_delete_memory_pin(pin_id: int):
-        delete_memory_pin(pin_id)
-        return JSONResponse({"ok": True})
 
 @app.get("/api/memory/pins/about_you")
 def api_get_about_you_pin():
@@ -1474,17 +1445,6 @@ def api_get_about_you_pin():
         "id": row.get("id"),
     })
 
-if (False):
-    @app.post("/api/memory/pins/about_you")
-    def api_upsert_about_you_pin(req: AboutYouRequest):
-        row = upsert_about_you_pin(
-            nickname=req.nickname,
-            age=req.age,
-            occupation=req.occupation,
-            more_about_you=req.more_about_you,
-        )
-        return JSONResponse(row)
-
 # endregion
 
 # region Project Endpoints
@@ -1492,9 +1452,25 @@ if (False):
 @app.put("/api/projects/{project_id}")
 def api_update_project(project_id: int, req: ProjectUpdateRequest):
     try:
-        return JSONResponse(update_project(project_id, name=req.name, visibility=req.visibility, description=req.description))
+        return JSONResponse(update_project(
+            project_id,
+            name=req.name,
+            visibility=req.visibility,
+            description=req.description,
+            system_prompt=req.system_prompt,
+            override_core_prompt=req.override_core_prompt,
+            default_advanced_mode=req.default_advanced_mode,
+        ))
     except ValueError as e:
         _http_from_value_error(e)
+
+if (False):
+    @app.put("/api/projects/{project_id}")
+    def api_update_project(project_id: int, req: ProjectUpdateRequest):
+        try:
+            return JSONResponse(update_project(project_id, name=req.name, visibility=req.visibility, description=req.description))
+        except ValueError as e:
+            _http_from_value_error(e)
 
 @app.get("/api/projects")
 def api_get_projects():
