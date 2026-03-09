@@ -114,6 +114,47 @@
               Override global/core prompt for this project
             </label>
           </div>
+          <div id="querySettingsSection" class="memSection">
+            <div id="querySettingsTitle" class="memTitle">Query / Retrieval Settings</div>
+            <div class="memHint">
+              These settings control what gets included wholesale and what retrieval hits may expand into full artifacts.
+            </div>
+            <div class="memGrid2">
+              <label class="span2">
+                Include wholesale
+                <div class="checkboxGrid" id="queryIncludeBox">
+                  <label><input type="checkbox" id="qiFILE" /> FILE</label>
+                  <label><input type="checkbox" id="qiMEMORY" /> MEMORY</label>
+                  <label><input type="checkbox" id="qiCHAT" /> CHAT</label>
+                  <label><input type="checkbox" id="qiFTS" /> FTS</label>
+                  <label><input type="checkbox" id="qiEMBEDDING" /> EMBEDDING</label>
+                </div>
+              </label>
+              <label class="span2">
+                Expand retrieval results into full artifacts
+                <div class="checkboxGrid" id="queryExpandBox">
+                  <label><input type="checkbox" id="qeFILE" /> FILE</label>
+                  <label><input type="checkbox" id="qeMEMORY" /> MEMORY</label>
+                  <label><input type="checkbox" id="qeCHAT" /> CHAT</label>
+                </div>
+              </label>
+              <label>
+                Max full files
+                <input id="queryMaxFullFiles" type="number" min="0" />
+              </label>
+              <label>
+                Max full memories
+                <input id="queryMaxFullMemories" type="number" min="0" />
+              </label>
+              <label>
+                Max full chats
+                <input id="queryMaxFullChats" type="number" min="0" />
+              </label>
+            </div>
+            <div class="memAdd">
+              <button id="saveQuerySettings">Save Query Settings</button>
+            </div>
+          </div>
           <div class="memHint" id="projectSettingsHint">
             Global personalization settings including Memories, Custom Instructions, and “About You” still apply everywhere. Project prompt, instructions, and memories only affect this project.
           </div>

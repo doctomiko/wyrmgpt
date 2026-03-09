@@ -21,9 +21,14 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from pydantic import BaseModel
 
-from server.logging_helper import log_warn
+from .logging_helper import log_warn
+from .context import _get_prompt, build_context, build_context_panel_payload, build_model_input, estimate_context_tokens
+from .markdown_helper import apply_house_markdown_normalization, autolink_text
+from .summary_helper import summarize_conversation_text
+from .query_retrieval import retrieve_chunks_for_message
+# Big Include Blocks for config and db
 from .config import (
-    #CoreConfig,
+    CoreConfig, load_core_config,
     ContextConfig, load_context_config,
     OpenAIConfig, load_openai_config,
     QueryConfig, load_query_config,
@@ -31,12 +36,10 @@ from .config import (
     UIConfig, load_ui_config,
     # app_settings access
     APP_KEYS, load_app_config,
+    # Other helpers and vars
+    QUERY_INCLUDE_ALLOWED, QUERY_EXPAND_ALLOWED,
+    _normalize_csv_set,
 )
-#from .config import ContextConfig, QueryConfig, SummaryConfig, load_context_config, load_openai_config, load_query_config, load_summary_config
-from .context import _get_prompt, build_context, build_context_panel_payload, build_model_input, estimate_context_tokens
-from .markdown_helper import apply_house_markdown_normalization, autolink_text
-from .summary_helper import summarize_conversation_text
-from .query_retrieval import retrieve_chunks_for_message
 from .db import (
     # Schema and connection
     init_schema, db_debug_info,
@@ -127,6 +130,10 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 client = OpenAI()
 
+# -------------------------
+# Global Vars
+# -------------------------
+
 # start from root folder above ./server
 HERE = Path(__file__).resolve().parent
 STATIC_DIR = HERE / "static"
@@ -141,10 +148,23 @@ MODEL = oai_cfg.open_ai_model
 # TODO decide if TITLE_MODEL should have its own setting
 TITLE_MODEL = oai_cfg.summary_model
 
+# -------------------------
+# API Contracts
+# -------------------------
+
 # region API Contracts (class definitions)
 
 class AppConfigUpdateRequest(BaseModel):
     search_chat_history: Optional[bool] = None
+
+class QuerySettingsUpdateRequest(BaseModel):
+    scope_type: str = "global"
+    scope_id: str = ""
+    query_include: str | None = None
+    query_expand_results: str | None = None
+    query_max_full_files: int | None = None
+    query_max_full_memories: int | None = None
+    query_max_full_chats: int | None = None
 
 class FileDescriptionUpdate(BaseModel):
     description: str | None = None
@@ -266,6 +286,10 @@ class FilePreflightRequest(BaseModel):
     files: list[FilePreflightItem]
 
 # endregion
+
+# -------------------------
+# Helper Functions
+# -------------------------
 
 # region Zeitgeber Helpers
 
@@ -429,6 +453,28 @@ def health():
 
 #endregion
 
+# region Query Config Helpers
+
+def _query_setting_key(key: str) -> str:
+    return f"query.{key}"
+
+def _get_effective_query_setting(project_id: int | None, key: str, env_default: str) -> str:
+    from .db import get_app_setting
+    if project_id is not None:
+        v = get_app_setting(_query_setting_key(key), None, "project", str(project_id))
+        if v is not None and str(v).strip() != "":
+            return str(v)
+    v = get_app_setting(_query_setting_key(key), None, "global", "")
+    if v is not None and str(v).strip() != "":
+        return str(v)
+    return env_default
+
+#endregion
+
+# -------------------------
+# API Endpoints
+# -------------------------
+
 # region App Config Endpoints
 
 @app.get("/api/ui_config")
@@ -470,6 +516,89 @@ def api_update_app_config(req: AppConfigUpdateRequest):
             "search_chat_history": cfg.search_chat_history,
         }
     )
+
+@app.get("/api/query_settings")
+def api_get_query_settings(scope_type: str = "global", scope_id: str = ""):
+    from .db import get_app_setting
+
+    qcfg = load_query_config()
+
+    scope_type = (scope_type or "global").strip().lower()
+    scope_id = (scope_id or "").strip()
+
+    if scope_type == "project" and scope_id:
+        project_id = int(scope_id)
+    else:
+        project_id = None
+        scope_type = "global"
+        scope_id = ""
+
+    effective_query_include = _get_effective_query_setting(project_id, "include", qcfg.query_include)
+    effective_query_expand = _get_effective_query_setting(project_id, "expand_results", qcfg.query_expand_results)
+    effective_max_files = _get_effective_query_setting(project_id, "max_full_files", str(qcfg.query_max_full_files))
+    effective_max_memories = _get_effective_query_setting(project_id, "max_full_memories", str(qcfg.query_max_full_memories))
+    effective_max_chats = _get_effective_query_setting(project_id, "max_full_chats", str(qcfg.query_max_full_chats))
+
+    local_query_include = get_app_setting(_query_setting_key("include"), None, scope_type, scope_id)
+    local_query_expand = get_app_setting(_query_setting_key("expand_results"), None, scope_type, scope_id)
+    local_max_files = get_app_setting(_query_setting_key("max_full_files"), None, scope_type, scope_id)
+    local_max_memories = get_app_setting(_query_setting_key("max_full_memories"), None, scope_type, scope_id)
+    local_max_chats = get_app_setting(_query_setting_key("max_full_chats"), None, scope_type, scope_id)
+
+    return JSONResponse({
+        "scope_type": scope_type,
+        "scope_id": scope_id,
+        "query_include": local_query_include,
+        "query_expand_results": local_query_expand,
+        "query_max_full_files": int(local_max_files) if local_max_files not in (None, "") else None,
+        "query_max_full_memories": int(local_max_memories) if local_max_memories not in (None, "") else None,
+        "query_max_full_chats": int(local_max_chats) if local_max_chats not in (None, "") else None,
+
+        "effective_query_include": _normalize_csv_set(effective_query_include, QUERY_INCLUDE_ALLOWED),
+        "effective_query_expand_results": _normalize_csv_set(effective_query_expand, QUERY_EXPAND_ALLOWED),
+        "effective_query_max_full_files": int(effective_max_files),
+        "effective_query_max_full_memories": int(effective_max_memories),
+        "effective_query_max_full_chats": int(effective_max_chats),
+    })
+
+@app.post("/api/query_settings")
+def api_update_query_settings(req: QuerySettingsUpdateRequest):
+    scope_type = (req.scope_type or "global").strip().lower()
+    scope_id = (req.scope_id or "").strip()
+
+    if scope_type not in ("global", "project"):
+        raise HTTPException(status_code=400, detail="scope_type must be global or project")
+
+    if scope_type == "global":
+        scope_id = ""
+
+    if req.query_include is not None:
+        set_app_setting(
+            _query_setting_key("include"),
+            _normalize_csv_set(req.query_include, QUERY_INCLUDE_ALLOWED),
+            scope_type,
+            scope_id,
+        )
+
+    if req.query_expand_results is not None:
+        set_app_setting(
+            _query_setting_key("expand_results"),
+            _normalize_csv_set(req.query_expand_results, QUERY_EXPAND_ALLOWED),
+            scope_type,
+            scope_id,
+        )
+
+    if req.query_max_full_files is not None:
+        set_app_setting(_query_setting_key("max_full_files"), str(int(req.query_max_full_files)), scope_type, scope_id)
+
+    if req.query_max_full_memories is not None:
+        set_app_setting(_query_setting_key("max_full_memories"), str(int(req.query_max_full_memories)), scope_type, scope_id)
+
+    if req.query_max_full_chats is not None:
+        set_app_setting(_query_setting_key("max_full_chats"), str(int(req.query_max_full_chats)), scope_type, scope_id)
+
+    invalidate_all_context_cache()
+    return api_get_query_settings(scope_type=scope_type, scope_id=scope_id)
 
 # endregion
 

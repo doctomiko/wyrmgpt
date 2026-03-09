@@ -7,6 +7,7 @@ import re
 
 from .logging_helper import log_debug, log_warn
 from .db import (
+    get_app_setting,
     get_conversation_summary_text,
     get_messages,
     get_context_sources,
@@ -19,7 +20,14 @@ from .db import (
     gather_scoped_files,
     ensure_conversation_transcript_artifact_fresh,
 )
-from .config import ContextConfig, CoreConfig, QueryConfig, load_context_config, load_core_config, load_query_config
+
+from .config import (
+    CoreConfig, load_core_config, 
+    ContextConfig, load_context_config,
+    QueryConfig, load_query_config, 
+    QUERY_INCLUDE_ALLOWED, QUERY_EXPAND_ALLOWED,
+    _normalize_csv_set
+)
 # TODO untagle dependencies later if needed
 # Now artifactor is used entirely from the database layer
 # from .artifactor import artifact_file
@@ -87,6 +95,16 @@ if (False):
         # If your .env uses \n escapes, turn them into real newlines
         val = val.replace("\\n", "\n")
         return val
+
+def _effective_query_setting(project_id: int | None, key: str, fallback: str) -> str:
+    if project_id is not None:
+        v = get_app_setting(f"query.{key}", None, "project", str(project_id))
+        if v is not None and str(v).strip() != "":
+            return str(v)
+    v = get_app_setting(f"query.{key}", None, "global", "")
+    if v is not None and str(v).strip() != "":
+        return str(v)
+    return fallback
 
 def get_system_prompt(cfg: CoreConfig | None = None) -> str:
     """
@@ -568,7 +586,6 @@ def _build_personalization_blocks(pins: list[dict]) -> dict:
         "plain_texts": plain_texts,
     }
 
-# TODO support a configurable pin / memory limit for performance
 def build_context(
         conversation_id: str, # shapes the context by scope
         user_text: str, # needed for RAG queries
@@ -590,9 +607,6 @@ def build_context(
         log_warn("Transcript lazy repair failed for %s: %s", conversation_id, exc)
 
     has_user_text = bool((user_text or "").strip())
-    do_include_files = has_user_text and query_cfg.query_mode in ("FILES", "ALL")
-    do_fts_rag = has_user_text and query_cfg.query_mode in ("FTS", "HYBRID", "ALL")
-    do_vector_rag = has_user_text and query_cfg.query_mode in ("VECTOR", "HYBRID", "ALL")
 
     preview_limit = max(1, int(ctx_cfg.preview_limit))
 
@@ -607,6 +621,24 @@ def build_context(
 
     sources = get_context_sources(conversation_id)
     project_id = sources.get("project_id")
+
+    effective_query_include = _normalize_csv_set(
+        _effective_query_setting(project_id, "include", query_cfg.query_include),
+        QUERY_INCLUDE_ALLOWED,
+    )
+    effective_query_expand_results = _normalize_csv_set(
+        _effective_query_setting(project_id, "expand_results", query_cfg.query_expand_results),
+        QUERY_EXPAND_ALLOWED,
+    )
+    include_flags = set(effective_query_include.split(",")) if effective_query_include else set()
+
+    do_include_files = has_user_text and ("FILE" in include_flags)
+    do_fts_rag = has_user_text and ("FTS" in include_flags)
+    do_vector_rag = has_user_text and ("EMBEDDING" in include_flags)
+    if (False):
+        do_include_files = has_user_text and query_cfg.query_mode in ("FILES", "ALL")
+        do_fts_rag = has_user_text and query_cfg.query_mode in ("FTS", "HYBRID", "ALL")
+        do_vector_rag = has_user_text and query_cfg.query_mode in ("VECTOR", "HYBRID", "ALL")
 
     # Fetch a wider pool first, then scope/order locally so project pins do not get crowded out by globals.
     all_pins = list_memory_pins(limit=max(int(ctx_cfg.memory_pin_limit or 50) * 4, 200))
@@ -788,7 +820,12 @@ def build_context(
         "file_include": bool(do_include_files),
         "fts_rag_active": bool(do_fts_rag),
         "vector_rag_active": bool(do_vector_rag),
-        "query_mode": query_cfg.query_mode,
+        "query_mode": query_cfg.query_mode,  # legacy
+        "query_include": effective_query_include,
+        "query_expand_results": effective_query_expand_results,
+        "query_max_full_files": int(_effective_query_setting(project_id, "max_full_files", str(query_cfg.query_max_full_files))),
+        "query_max_full_memories": int(_effective_query_setting(project_id, "max_full_memories", str(query_cfg.query_max_full_memories))),
+        "query_max_full_chats": int(_effective_query_setting(project_id, "max_full_chats", str(query_cfg.query_max_full_chats))),
         "has_user_text": has_user_text,
         "core_system_prompt": core_system,
         "project_system_prompt": proj_prompt,

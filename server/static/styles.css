@@ -463,13 +463,27 @@ textarea {
 #saveAboutYou,
 #saveMemory,
 #cancelPinEdit,
-#cancelMemoryEdit {
+#cancelMemoryEdit,
+#saveQuerySettings
+{
   width: auto;
   justify-self: start;
   align-self: start;
   white-space: nowrap;
 }
 
+.checkboxGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(120px, 1fr));
+  gap: 6px 12px;
+  margin-top: 6px;
+}
+
+.checkboxGrid label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 
 /* Top Bar above chat window */
 #chatTop {

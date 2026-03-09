@@ -117,6 +117,21 @@ const memoryTagsEl = document.getElementById("memoryTags");
 const memoryImportanceEl = document.getElementById("memoryImportance");
 const memorySaveBtn = document.getElementById("saveMemory");
 const memoryCancelEditBtn = document.getElementById("cancelMemoryEdit");
+// Query settings (per-project)
+const querySettingsTitleEl = document.getElementById("querySettingsTitle");
+const saveQuerySettingsBtn = document.getElementById("saveQuerySettings");
+
+const qiFILE = document.getElementById("qiFILE");
+const qiMEMORY = document.getElementById("qiMEMORY");
+const qiCHAT = document.getElementById("qiCHAT");
+const qiFTS = document.getElementById("qiFTS");
+const qiEMBEDDING = document.getElementById("qiEMBEDDING");
+const qeFILE = document.getElementById("qeFILE");
+const qeMEMORY = document.getElementById("qeMEMORY");
+const qeCHAT = document.getElementById("qeCHAT");
+const queryMaxFullFilesEl = document.getElementById("queryMaxFullFiles");
+const queryMaxFullMemoriesEl = document.getElementById("queryMaxFullMemories");
+const queryMaxFullChatsEl = document.getElementById("queryMaxFullChats");
 // #endregion
 
 // #region File Uploads and Management
@@ -435,8 +450,6 @@ async function saveAppConfig(patch) {
 }
 
 // #endregion
-
-
 
 // #region Artifacts Debug Modal Helpers
 
@@ -1549,6 +1562,24 @@ function renderContext(ctx) {
   const fileIncludeActive = !!ctx.file_include;
   const ftsActive = !!ctx.fts_rag_active;
   const vectorActive = !!ctx.vector_rag_active;
+  
+  const queryInclude = ctx.query_include || "";
+  const queryExpand = ctx.query_expand_results || "";
+  let modeLine = `Include: ${queryInclude || "(none)"}`;
+  if (!hasDraft) {
+    modeLine += " (idle: no draft text, so retrieval/inclusion is not running)";
+  } else {
+    const activeParts = [];
+    if (fileIncludeActive) activeParts.push("full-file inclusion active");
+    if (ftsActive) activeParts.push("FTS active");
+    if (vectorActive) activeParts.push("vector active");
+    if (!activeParts.length) activeParts.push("no retrieval path active");
+    modeLine += ` (${activeParts.join("; ")})`;
+  }
+  lines.push(modeLine);
+  lines.push(`Expand results: ${queryExpand || "(none)"}`);
+  lines.push(`Caps: files=${ctx.query_max_full_files ?? "?"}, memories=${ctx.query_max_full_memories ?? "?"}, chats=${ctx.query_max_full_chats ?? "?"}`);
+  /*
   let modeLine = `Mode: ${queryMode}`;
   if (!hasDraft) {
     modeLine += " (idle: no draft text, so retrieval/file injection is not running)";
@@ -1561,6 +1592,8 @@ function renderContext(ctx) {
     modeLine += ` (${activeParts.join("; ")})`;
   }
   lines.push(modeLine);
+  */
+
   // 2) High-level metrics
   lines.push("CONTEXT METRICS:");
   lines.push("Token and character counts are approximate.");
@@ -2340,6 +2373,9 @@ function setPersonalizationModeGlobal() {
   if (projectSettingsTitle) {
     projectSettingsTitle.textContent = "Project Settings";
   }
+  if (querySettingsTitleEl) {
+    querySettingsTitleEl.textContent = "Global Query / Retrieval Settings";
+  }
 }
 
 function setPersonalizationModeProject(projectObj) {
@@ -2360,6 +2396,9 @@ function setPersonalizationModeProject(projectObj) {
 
   if (projectSettingsTitle) {
     projectSettingsTitle.textContent = `Project Settings — ${projectName}`;
+  }
+  if (querySettingsTitleEl) {
+    querySettingsTitleEl.textContent = `Project Query / Retrieval Settings — ${projectObj?.name || "Project"}`;
   }
 }
 
@@ -2384,7 +2423,8 @@ async function loadPersonalization() {
   const [pins, aboutYou] = await Promise.all([
     fetchPins(),
     fetchAboutYou(),
-    loadMemories()
+    loadMemories(),
+    loadQuerySettingsForCurrentMode()
   ]);
   let filteredPins = pins || [];
   if (personalizationMode === "project" && personalizationProjectId != null) {
@@ -2416,6 +2456,88 @@ async function loadPersonalization() {
   populateAboutYouForm(aboutYou);
 }
 */
+
+function csvSetFromChecks(map) {
+  return Object.entries(map)
+    .filter(([_, el]) => !!el?.checked)
+    .map(([key]) => key)
+    .join(",");
+}
+
+function applyChecksFromCsv(value, map) {
+  const have = new Set(String(value || "").split(",").map(x => x.trim().toUpperCase()).filter(Boolean));
+  Object.entries(map).forEach(([key, el]) => {
+    if (el) el.checked = have.has(key);
+  });
+}
+
+async function fetchQuerySettings(scopeType, scopeId = "") {
+  const qs = new URLSearchParams({
+    scope_type: scopeType || "global",
+    scope_id: String(scopeId || ""),
+  });
+  return await fetchJsonDebug(`/api/query_settings?${qs.toString()}`);
+}
+
+function populateQuerySettingsForm(data) {
+  applyChecksFromCsv(data?.effective_query_include || "", {
+    FILE: qiFILE,
+    MEMORY: qiMEMORY,
+    CHAT: qiCHAT,
+    FTS: qiFTS,
+    EMBEDDING: qiEMBEDDING,
+  });
+
+  applyChecksFromCsv(data?.effective_query_expand_results || "", {
+    FILE: qeFILE,
+    MEMORY: qeMEMORY,
+    CHAT: qeCHAT,
+  });
+
+  if (queryMaxFullFilesEl) queryMaxFullFilesEl.value = String(data?.effective_query_max_full_files ?? 0);
+  if (queryMaxFullMemoriesEl) queryMaxFullMemoriesEl.value = String(data?.effective_query_max_full_memories ?? 0);
+  if (queryMaxFullChatsEl) queryMaxFullChatsEl.value = String(data?.effective_query_max_full_chats ?? 0);
+}
+
+async function loadQuerySettingsForCurrentMode() {
+  const scopeType = personalizationMode === "project" ? "project" : "global";
+  const scopeId = personalizationMode === "project" ? String(personalizationProjectId || "") : "";
+  const data = await fetchQuerySettings(scopeType, scopeId);
+  populateQuerySettingsForm(data);
+  return data;
+}
+
+async function saveQuerySettingsForCurrentMode() {
+  const payload = {
+    scope_type: personalizationMode === "project" ? "project" : "global",
+    scope_id: personalizationMode === "project" ? String(personalizationProjectId || "") : "",
+    query_include: csvSetFromChecks({
+      FILE: qiFILE,
+      MEMORY: qiMEMORY,
+      CHAT: qiCHAT,
+      FTS: qiFTS,
+      EMBEDDING: qiEMBEDDING,
+    }),
+    query_expand_results: csvSetFromChecks({
+      FILE: qeFILE,
+      MEMORY: qeMEMORY,
+      CHAT: qeCHAT,
+    }),
+    query_max_full_files: parseInt(queryMaxFullFilesEl?.value || "0", 10) || 0,
+    query_max_full_memories: parseInt(queryMaxFullMemoriesEl?.value || "0", 10) || 0,
+    query_max_full_chats: parseInt(queryMaxFullChatsEl?.value || "0", 10) || 0,
+  };
+
+  const data = await fetchJsonDebug("/api/query_settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  populateQuerySettingsForm(data);
+  await refreshContext();
+  return data;
+}
 
 // #endregion
 // #region Personalization->Instructions (Pins) helpers
@@ -3977,6 +4099,15 @@ if (pinAddOrSaveBtn) {
 }
 if (pinCancelEditBtn) {
   pinCancelEditBtn.addEventListener("click", resetPinEditor);
+}
+
+if (saveQuerySettingsBtn) {
+  saveQuerySettingsBtn.addEventListener("click", () => {
+    saveQuerySettingsForCurrentMode().catch(e => {
+      console.error("saveQuerySettingsForCurrentMode failed", e);
+      alert("Failed to save query settings.");
+    });
+  });
 }
 
 // #endregion

@@ -36,6 +36,21 @@ def _env_bool(name: str, default: bool) -> bool:
         return default
     return _str_to_bool(v)
 
+def _normalize_csv_set(value: str, allowed: set[str]) -> str:
+    raw = str(value or "").replace(" ", ",")
+    parts = [p.strip().upper() for p in raw.split(",") if p.strip()]
+    kept: list[str] = []
+    seen: set[str] = set()
+    for p in parts:
+        if p in allowed and p not in seen:
+            kept.append(p)
+            seen.add(p)
+    return ",".join(kept)
+
+def _parse_csv_set(value: str, allowed: set[str]) -> set[str]:
+    norm = _normalize_csv_set(value, allowed)
+    return set(norm.split(",")) if norm else set()
+
 @dataclass(frozen=True)
 class CoreConfig:
     system_prompt_file: str = ".\\prompts\\_default_system_prompt.txt"
@@ -116,7 +131,14 @@ CONTEXT_DEFAULTS: ContextConfig = ContextConfig()
 
 @dataclass(frozen=True)
 class QueryConfig:
-    query_mode: str = "ALL"  # FILES, FTS, VECTOR, HYBRID, ALL
+    query_mode: str = "ALL"  # legacy fallback only
+
+    query_include: str = "FTS,EMBEDDING" # FILE,MEMORY,CHAT and FTS,EMBEDDING
+    query_expand_results: str = "FILE,MEMORY,CHAT" # FILE,MEMORY,CHAT
+    query_max_full_files: int = 50
+    query_max_full_memories: int = 500
+    query_max_full_chats: int = 5
+
     query_global_artifacts: bool = True # RAG queries will include global artifacts
     max_terms: int = 14
     max_phrase_words: int = 8
@@ -158,6 +180,23 @@ class QueryConfig:
     recent_conversation_transcript_limit: int = 40
 
 QUERY_DEFAULTS: QueryConfig = QueryConfig()
+
+QUERY_INCLUDE_ALLOWED = {"FILE", "MEMORY", "CHAT", "FTS", "EMBEDDING"}
+QUERY_EXPAND_ALLOWED = {"FILE", "MEMORY", "CHAT"}
+
+def _legacy_query_mode_to_include(mode: str) -> str:
+    mode = str(mode or "").strip().upper()
+    if mode == "FILES":
+        return "FILE"
+    if mode == "FTS":
+        return "FTS"
+    if mode == "VECTOR":
+        return "EMBEDDING"
+    if mode == "HYBRID":
+        return "FTS,EMBEDDING"
+    if mode == "ALL":
+        return "FILE,FTS,EMBEDDING"
+    return QUERY_DEFAULTS.query_include
 
 # intentionally not frozen because these can change at runtime
 @dataclass
@@ -257,8 +296,22 @@ def load_context_config() -> ContextConfig:
     )
 
 def load_query_config() -> QueryConfig:
+    legacy_mode = _env_str("QUERY_MODE", QUERY_DEFAULTS.query_mode).upper()
+
+    raw_include = _env_str("QUERY_INCLUDE", "")
+    if not raw_include:
+        raw_include = _legacy_query_mode_to_include(legacy_mode)
+
+    raw_expand = _env_str("QUERY_EXPAND_RESULTS", QUERY_DEFAULTS.query_expand_results)
+
     return QueryConfig(
-        query_mode=_env_str("QUERY_MODE", QUERY_DEFAULTS.query_mode).upper(),
+        query_mode=legacy_mode,  # keep for old diagnostics until we kill it
+        query_include=_normalize_csv_set(raw_include, QUERY_INCLUDE_ALLOWED),
+        query_expand_results=_normalize_csv_set(raw_expand, QUERY_EXPAND_ALLOWED),
+        query_max_full_files=_env_int("QUERY_MAX_FULL_FILES", QUERY_DEFAULTS.query_max_full_files),
+        query_max_full_memories=_env_int("QUERY_MAX_FULL_MEMORIES", QUERY_DEFAULTS.query_max_full_memories),
+        query_max_full_chats=_env_int("QUERY_MAX_FULL_CHATS", QUERY_DEFAULTS.query_max_full_chats),
+
         query_global_artifacts=_env_bool("QUERY_GLOBAL_ARTIFACTS", QUERY_DEFAULTS.query_global_artifacts),
         max_terms=_env_int("QUERY_MAX_TERMS", QUERY_DEFAULTS.max_terms),
         max_phrase_words=_env_int("QUERY_MAX_PHRASE_WORDS", QUERY_DEFAULTS.max_phrase_words),
@@ -273,7 +326,6 @@ def load_query_config() -> QueryConfig:
         llm_expand_min_terms=_env_int("QUERY_LLM_MIN_TERMS", QUERY_DEFAULTS.llm_expand_min_terms),
         llm_expand_min_results=_env_int("QUERY_LLM_MIN_RESULTS", QUERY_DEFAULTS.llm_expand_min_results),
         llm_expand_max_keywords=_env_int("QUERY_LLM_MAX_KEYWORDS", QUERY_DEFAULTS.llm_expand_max_keywords),
-        # This is the model we'll use if we need query optimization of user input    
         llm_expand_model=_env_str("QUERY_LLM_EXPAND_MODEL", QUERY_DEFAULTS.llm_expand_model),
         llm_expand_max_tokens=_env_int("QUERY_LLM_EXPAND_MAX_TOKENS", QUERY_DEFAULTS.llm_expand_max_tokens),
 
@@ -297,3 +349,45 @@ def load_query_config() -> QueryConfig:
             QUERY_DEFAULTS.recent_conversation_transcript_limit,
         ),
     )
+if (False):
+    def load_query_config() -> QueryConfig:
+        return QueryConfig(
+            query_mode=_env_str("QUERY_MODE", QUERY_DEFAULTS.query_mode).upper(),
+            query_global_artifacts=_env_bool("QUERY_GLOBAL_ARTIFACTS", QUERY_DEFAULTS.query_global_artifacts),
+            max_terms=_env_int("QUERY_MAX_TERMS", QUERY_DEFAULTS.max_terms),
+            max_phrase_words=_env_int("QUERY_MAX_PHRASE_WORDS", QUERY_DEFAULTS.max_phrase_words),
+            max_phrase_chars=_env_int("QUERY_MAX_PHRASE_CHARS", QUERY_DEFAULTS.max_phrase_chars),
+            filler_words_file=_env_str("QUERY_FILLER_WORDS_FILE", QUERY_DEFAULTS.filler_words_file),
+            filler_words=_env_str("QUERY_FILLER_WORDS", QUERY_DEFAULTS.filler_words),
+            long_query_chars=_env_int("QUERY_LONG_CHARS", QUERY_DEFAULTS.long_query_chars),
+            max_query_slices=_env_int("QUERY_MAX_SLICES", QUERY_DEFAULTS.max_query_slices),
+
+            llm_expand_enabled=_env_bool("QUERY_LLM_EXPAND", QUERY_DEFAULTS.llm_expand_enabled),
+            llm_expand_prompt_file=_env_str("EXPAND_QUERY_PROMPT_FILE", QUERY_DEFAULTS.llm_expand_prompt_file),
+            llm_expand_min_terms=_env_int("QUERY_LLM_MIN_TERMS", QUERY_DEFAULTS.llm_expand_min_terms),
+            llm_expand_min_results=_env_int("QUERY_LLM_MIN_RESULTS", QUERY_DEFAULTS.llm_expand_min_results),
+            llm_expand_max_keywords=_env_int("QUERY_LLM_MAX_KEYWORDS", QUERY_DEFAULTS.llm_expand_max_keywords),
+            # This is the model we'll use if we need query optimization of user input    
+            llm_expand_model=_env_str("QUERY_LLM_EXPAND_MODEL", QUERY_DEFAULTS.llm_expand_model),
+            llm_expand_max_tokens=_env_int("QUERY_LLM_EXPAND_MAX_TOKENS", QUERY_DEFAULTS.llm_expand_max_tokens),
+
+            retrieval_cache_ttl_sec=_env_float("QUERY_CACHE_TTL_SEC", QUERY_DEFAULTS.retrieval_cache_ttl_sec),
+            retrieval_cache_max_entries=_env_int("QUERY_CACHE_MAX", QUERY_DEFAULTS.retrieval_cache_max_entries),
+
+            query_include_project_conversation_transcripts=_env_bool(
+                "QUERY_INCLUDE_PROJECT_CONVERSATION_TRANSCRIPTS",
+                QUERY_DEFAULTS.query_include_project_conversation_transcripts,
+            ),
+            query_include_global_conversation_transcripts=_env_bool(
+                "QUERY_INCLUDE_GLOBAL_CONVERSATION_TRANSCRIPTS",
+                QUERY_DEFAULTS.query_include_global_conversation_transcripts,
+            ),
+            query_include_recent_conversation_transcripts=_env_bool(
+                "QUERY_INCLUDE_RECENT_CONVERSATION_TRANSCRIPTS",
+                QUERY_DEFAULTS.query_include_recent_conversation_transcripts,
+            ),
+            recent_conversation_transcript_limit=_env_int(
+                "QUERY_RECENT_CONVERSATION_TRANSCRIPT_LIMIT",
+                QUERY_DEFAULTS.recent_conversation_transcript_limit,
+            ),
+        )
