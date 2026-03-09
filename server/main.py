@@ -49,60 +49,43 @@ from .query_retrieval import retrieve_chunks_for_message
 
 from .db import (
     # Schema and connection
-    init_schema,
-    db_debug_info,
+    init_schema, db_debug_info,
     # Shared paths
-    # Shared data dir
     DATA_DIR,
     # this is the reverse end of AppConfig
     set_app_setting,
     # Chat Messages
-    add_message,
-    get_messages,
-    get_messages_raw,
+    add_message, get_messages,
+    get_messages_raw, scope_rank,
     save_conversation_summary_artifact,
-    scope_rank,
-    
     update_ab_canonical,
     # Converstaions
-    list_conversations,
-    create_conversation,
-    delete_conversation,
-    set_conversation_archived,
-    get_conversation_title,
-    update_conversation_title,
+    list_conversations, create_conversation,
+    delete_conversation, set_conversation_archived,
+    get_conversation_title, update_conversation_title,
     get_conversation_context,
     # Projects and subordinate entities
-    list_projects,
-    get_or_create_project,
+    list_projects, get_or_create_project,
     get_or_create_project as db_get_or_create_project,  # optional convenience endpoint
     project_add_conversation as db_project_add_conversation,
     project_import as db_project_import,
     set_conversation_project,  # assign_conversation_project,
     update_project,
     # Files
-    list_files_by_sha256,
-    list_files_same_name_any_scope,
+    list_files_by_sha256, list_files_same_name_any_scope,
     replace_file_in_place,
     register_file as db_register_file,
     project_add_file as db_project_add_file,
-    register_scoped_file,
-    update_file_description,
-    conversation_link_file,
-    list_files_for_conversation,
-    list_files_for_project,
-    list_all_files,
-    get_files_summary,
-    FileDeleteAction,
-    delete_file_cascade,
-    find_same_scope_same_name_file,
-    list_global_files,
-    move_file_scope,
+    register_scoped_file, update_file_description,
+    conversation_link_file, list_files_for_conversation,
+    list_files_for_project, list_all_files,
+    get_files_summary, list_global_files,
+    FileDeleteAction, delete_file_cascade,
+    move_file_scope, find_same_scope_same_name_file,
     # Artifacts
     get_scoped_artifact_debug,
     # File Artifacts
-    artifact_file,
-    ensure_files_artifacted_for_conversation,
+    artifact_file, ensure_files_artifacted_for_conversation,
     # Conversation Artifacts - Transcripts and Summaries
     get_transcript_for_summary, # save_conversation_summary,
     ensure_conversation_transcript_artifact_fresh,
@@ -112,14 +95,18 @@ from .db import (
     # Context cache
     invalidate_context_cache_for_conversation,
     invalidate_context_cache_for_project,
-    # Memory Pins - assumed to define scope
-    add_memory_pin,
-    list_memory_pins,
-    delete_memory_pin,
+    # Pinned Instructions / Personalization
+    add_memory_pin, list_memory_pins,
+    delete_memory_pin, invalidate_all_context_cache,
+    upsert_about_you_pin, get_about_you_pin,
+    update_memory_pin as db_update_memory_pin,
     # Memories
     create_memory as db_create_memory,
     memory_link_project as db_memory_link_project,
     memory_link_conversation as db_memory_link_conversation,
+    list_memories as db_list_memories,
+    update_memory as db_update_memory,
+    delete_memory as db_delete_memory,    
 )
 
 # endregion
@@ -267,9 +254,26 @@ class MemoryCreate(BaseModel):
     content: str
     importance: int = 0
     tags: str | None = None
+    created_by: str = "user"
+    origin_kind: str = "user_asserted"
+
+class MemoryUpdate(BaseModel):
+    content: str
+    importance: int = 0
+    tags: str | None = None
+    created_by: str = "user"
+    origin_kind: str = "user_asserted"
 
 class PinRequest(BaseModel):
     text: str
+    pin_kind: str | None = None
+    title: str | None = None
+
+class AboutYouRequest(BaseModel):
+    nickname: str = ""
+    age: str = ""
+    occupation: str = ""
+    more_about_you: str = ""
 
 class FileRegister(BaseModel):
     name: str
@@ -1286,28 +1290,59 @@ if (False):
 
 # region Memory Endpoints
 
+@app.get("/api/memories")
+def api_list_memories(limit: int = 200):
+    return JSONResponse(db_list_memories(limit=limit))
+
 @app.post("/api/memories")
 def api_create_memory(req: MemoryCreate):
     try:
-        mem = db_create_memory(req.content, importance=req.importance, tags=req.tags)
-        # keep it simple + compatible
-        return JSONResponse({"id": mem["id"]})
+        mem = db_create_memory(
+            req.content,
+            importance=req.importance,
+            tags=req.tags,
+            created_by=req.created_by,
+            origin_kind=req.origin_kind,
+        )
+        invalidate_all_context_cache()
+        return JSONResponse(mem)
     except ValueError as e:
         _http_from_value_error(e)
 
-
-# Compatibility endpoint (same URL you had before),
-# but project_id is NOW an int, consistent with schema v2.
-@app.post("/api/memories/{memory_id}/link_project/{project_id}")
-def api_memory_link_project(memory_id: str, project_id: int):
+@app.put("/api/memories/{memory_id}")
+def api_update_memory(memory_id: str, req: MemoryUpdate):
     try:
-        db_memory_link_project(memory_id, project_id)
+        mem = db_update_memory(
+            memory_id,
+            req.content,
+            importance=req.importance,
+            tags=req.tags,
+            created_by=req.created_by,
+            origin_kind=req.origin_kind,
+        )
+        invalidate_all_context_cache()
+        return JSONResponse(mem)
+    except ValueError as e:
+        _http_from_value_error(e)
+
+@app.delete("/api/memories/{memory_id}")
+def api_delete_memory(memory_id: str):
+    try:
+        db_delete_memory(memory_id)
+        invalidate_all_context_cache()
         return JSONResponse({"ok": True})
     except ValueError as e:
         _http_from_value_error(e)
 
+@app.post("/api/memories/{memory_id}/link_project/{project_id}")
+def api_memory_link_project(memory_id: str, project_id: int):
+    try:
+        db_memory_link_project(memory_id, project_id)
+        invalidate_all_context_cache()
+        return JSONResponse({"ok": True})
+    except ValueError as e:
+        _http_from_value_error(e)
 
-# Optional convenience: link by project name or id without putting it in the URL.
 @app.post("/api/memories/{memory_id}/link_project")
 def api_memory_link_project_body(memory_id: str, req: MemoryLinkProjectRequest):
     try:
@@ -1321,6 +1356,7 @@ def api_memory_link_project_body(memory_id: str, req: MemoryLinkProjectRequest):
             raise ValueError("Provide project_id or project_name.")
 
         db_memory_link_project(memory_id, pid)
+        invalidate_all_context_cache()
         return JSONResponse({"ok": True, "project_id": pid})
     except ValueError as e:
         _http_from_value_error(e)
@@ -1329,6 +1365,7 @@ def api_memory_link_project_body(memory_id: str, req: MemoryLinkProjectRequest):
 def api_memory_link_conversation(memory_id: str, conversation_id: str):
     try:
         db_memory_link_conversation(memory_id, conversation_id)
+        invalidate_all_context_cache()
         return JSONResponse({"ok": True})
     except ValueError as e:
         _http_from_value_error(e)
@@ -1337,22 +1374,116 @@ def api_memory_link_conversation(memory_id: str, conversation_id: str):
 
 # region Memory Pin Endpoints
 
-@app.get("/api/memory/pins")
-def api_memory_pins():
-    return JSONResponse(list_memory_pins(limit=200))
-
 @app.post("/api/memory/pins")
 def api_add_memory_pin(req: PinRequest):
     text = (req.text or "").strip()
     if not text:
         return JSONResponse({"ok": False, "error": "empty"}, status_code=400)
-    new_id = add_memory_pin(text)
+
+    new_id = add_memory_pin(
+        text,
+        pin_kind=(req.pin_kind or "instruction"),
+        title=req.title,
+    )
+    invalidate_all_context_cache()
     return JSONResponse({"ok": True, "id": new_id})
 
 @app.delete("/api/memory/pins/{pin_id}")
 def api_delete_memory_pin(pin_id: int):
     delete_memory_pin(pin_id)
+    invalidate_all_context_cache()
     return JSONResponse({"ok": True})
+
+if (False):
+    @app.post("/api/memory/pins")
+    def api_add_memory_pin(req: PinRequest):
+        text = (req.text or "").strip()
+        if not text:
+            return JSONResponse({"ok": False, "error": "empty"}, status_code=400)
+
+        # Generic add-pin box always creates an instruction pin.
+        new_id = add_memory_pin(text, pin_kind="instruction")
+        invalidate_all_context_cache()
+        return JSONResponse({"ok": True, "id": new_id})
+
+@app.put("/api/memory/pins/{pin_id}")
+def api_update_memory_pin(pin_id: int, req: PinRequest):
+    text = (req.text or "").strip()
+    if not text:
+        return JSONResponse({"ok": False, "error": "empty"}, status_code=400)
+
+    row = db_update_memory_pin(
+        pin_id,
+        text,
+        pin_kind=req.pin_kind,
+        title=req.title,
+    )
+    invalidate_all_context_cache()
+    return JSONResponse(row)
+
+@app.post("/api/memory/pins/about_you")
+def api_upsert_about_you_pin(req: AboutYouRequest):
+    row = upsert_about_you_pin(
+        nickname=req.nickname,
+        age=req.age,
+        occupation=req.occupation,
+        more_about_you=req.more_about_you,
+    )
+    invalidate_all_context_cache()
+    return JSONResponse(row)
+
+@app.get("/api/memory/pins")
+def api_memory_pins():
+    return JSONResponse(list_memory_pins(limit=200))
+
+if (False):
+    @app.post("/api/memory/pins")
+    def api_add_memory_pin(req: PinRequest):
+        text = (req.text or "").strip()
+        if not text:
+            return JSONResponse({"ok": False, "error": "empty"}, status_code=400)
+
+        # Generic add-pin box always creates an instruction pin.
+        new_id = add_memory_pin(text, pin_kind="instruction")
+        return JSONResponse({"ok": True, "id": new_id})
+
+if (False):
+    @app.delete("/api/memory/pins/{pin_id}")
+    def api_delete_memory_pin(pin_id: int):
+        delete_memory_pin(pin_id)
+        return JSONResponse({"ok": True})
+
+@app.get("/api/memory/pins/about_you")
+def api_get_about_you_pin():
+    row = get_about_you_pin()
+    if not row:
+        return JSONResponse({
+            "nickname": "",
+            "age": "",
+            "occupation": "",
+            "more_about_you": "",
+            "text": "",
+        })
+    value = row.get("value_json") or {}
+    return JSONResponse({
+        "nickname": value.get("nickname", ""),
+        "age": value.get("age", ""),
+        "occupation": value.get("occupation", ""),
+        "more_about_you": value.get("more_about_you", ""),
+        "text": row.get("text", ""),
+        "id": row.get("id"),
+    })
+
+if (False):
+    @app.post("/api/memory/pins/about_you")
+    def api_upsert_about_you_pin(req: AboutYouRequest):
+        row = upsert_about_you_pin(
+            nickname=req.nickname,
+            age=req.age,
+            occupation=req.occupation,
+            more_about_you=req.more_about_you,
+        )
+        return JSONResponse(row)
 
 # endregion
 

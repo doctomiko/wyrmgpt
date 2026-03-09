@@ -418,7 +418,133 @@ def estimate_context_tokens(
         context = full_input
     return estimate_tokens_for_messages(context, model=model)
 
-# TODO memory pin limit
+
+def _indent_block(text: str, prefix: str = "  ") -> str:
+    lines = (text or "").splitlines() or [""]
+    return "\n".join(prefix + line for line in lines)
+
+def _bulletize(text: str) -> str:
+    text = (text or "").strip()
+    if not text:
+        return ""
+    lines = text.splitlines()
+    first = f"- {lines[0]}"
+    rest = "".join(f"\n  {line}" for line in lines[1:])
+    return first + rest
+
+def _humanize_pin_title(title: str) -> str:
+    raw = (title or "").strip().replace("_", " ").replace("-", " ")
+    if not raw:
+        return ""
+    return " ".join(word.capitalize() for word in raw.split())
+
+def _build_personalization_blocks(pins: list[dict]) -> dict:
+    about_lines: list[str] = []
+    extra_profile_lines: list[str] = []
+    instruction_lines: list[str] = []
+    style_lines: list[str] = []
+    preference_lines: list[str] = []
+    plain_texts: list[str] = []
+
+    for pin in pins or []:
+        text = (pin.get("text") or "").strip()
+        if text:
+            plain_texts.append(text)
+
+        kind = (pin.get("pin_kind") or "instruction").strip().lower()
+        title = (pin.get("title") or "").strip()
+        value = pin.get("value_json")
+
+        if kind == "profile" and title == "about_you":
+            if isinstance(value, dict):
+                nickname = (value.get("nickname") or "").strip()
+                age = (value.get("age") or "").strip()
+                occupation = (value.get("occupation") or "").strip()
+                more = (value.get("more_about_you") or "").strip()
+
+                if nickname:
+                    about_lines.append(f"- Nickname(s): {nickname}")
+                if age:
+                    about_lines.append(f"- Approximate age: {age}")
+                if occupation:
+                    about_lines.append(f"- Occupation: {occupation}")
+                if more:
+                    about_lines.append("- More about the user:")
+                    about_lines.append(_indent_block(more))
+            elif text:
+                about_lines.append(_bulletize(text))
+            continue
+
+        item_text = text
+        if not item_text and value is not None:
+            if isinstance(value, dict):
+                try:
+                    item_text = json.dumps(value, ensure_ascii=False)
+                except Exception:
+                    item_text = str(value)
+            else:
+                item_text = str(value)
+
+        item_text = (item_text or "").strip()
+        if not item_text:
+            continue
+
+        label = _humanize_pin_title(title)
+        rendered = _bulletize(f"{label}: {item_text}" if label else item_text)
+
+        if kind == "profile":
+            extra_profile_lines.append(rendered)
+        elif kind == "style":
+            style_lines.append(rendered)
+        elif kind == "preference":
+            preference_lines.append(rendered)
+        else:
+            instruction_lines.append(rendered)
+
+    blocks: list[str] = []
+
+    if about_lines or extra_profile_lines:
+        body: list[str] = [
+            "User-provided profile information. Use this for personalization and continuity. Treat it as true unless the user corrects or updates it."
+        ]
+        body.extend(about_lines)
+
+        if extra_profile_lines:
+            if about_lines:
+                body.append("")
+            body.append("Additional profile notes:")
+            body.extend(extra_profile_lines)
+
+        blocks.append("ABOUT THE USER:\n" + "\n".join(body))
+
+    instruction_body: list[str] = []
+    if instruction_lines:
+        instruction_body.append(
+            "User-provided instructions. Follow these unless they conflict with higher-priority system or safety rules."
+        )
+        instruction_body.extend(instruction_lines)
+
+    if style_lines:
+        if instruction_body:
+            instruction_body.append("")
+        instruction_body.append("Style preferences:")
+        instruction_body.extend(style_lines)
+
+    if preference_lines:
+        if instruction_body:
+            instruction_body.append("")
+        instruction_body.append("Other preferences:")
+        instruction_body.extend(preference_lines)
+
+    if instruction_body:
+        blocks.append("CUSTOM INSTRUCTIONS:\n" + "\n".join(instruction_body))
+
+    return {
+        "blocks": blocks,
+        "plain_texts": plain_texts,
+    }
+
+# TODO support a configurable pin / memory limit for performance
 def build_context(
         conversation_id: str, # shapes the context by scope
         user_text: str, # needed for RAG queries
@@ -456,7 +582,12 @@ def build_context(
         typed_history.append({"role": r["role"], "content": text})
 
     pinned = list_memory_pins(limit=ctx_cfg.memory_pin_limit)
-    pinned_texts = [p["text"] for p in pinned]
+    # This breaks pins out into LLM readable information we can put in a system block
+    personalization = _build_personalization_blocks(pinned)
+    pinned_texts = personalization["plain_texts"]
+    log_debug("[context] pins:", [(p.get("id"), p.get("pin_kind"), p.get("title"), p.get("text")) for p in pinned])
+    log_debug("[context] personalization blocks:", personalization["blocks"])
+    log_debug("[context] pinned_texts:", pinned_texts)
 
     sources = get_context_sources(conversation_id)
     # Pull summary if present
@@ -536,9 +667,11 @@ def build_context(
 
     system_blocks = [system_prompt]
 
-    if pinned_texts:
-        joined = "\n".join(f"- {t}" for t in pinned_texts)
-        system_blocks.append("PINNED MEMORIES (user-curated, treat as true):\n" + joined)
+    if personalization["blocks"]:
+        system_blocks.extend(personalization["blocks"])
+    #if pinned_texts:
+    #    joined = "\n".join(f"- {t}" for t in pinned_texts)
+    #    system_blocks.append("PINNED MEMORIES (user-curated, treat as true):\n" + joined)
 
     if summary:
         system_blocks.append("CONVERSATION SUMMARY:\n" + summary)
@@ -613,8 +746,10 @@ def build_context(
         "project_system_prompt": proj_prompt,
         "effective_system_prompt": system_prompt,
         "system_text": system_text, #"system_prompt": system_prompt,
+        "personalization_blocks": personalization["blocks"],
         "token_stats": token_stats,
         "summary": summary,
+        # This is still being used in diagnostics
         "pinned_memories": pinned_texts, #"retrieved_memories": retrieved,
         "retrieved_memories": retrieved_cites,     # keeps your existing key stable for UI
         "retrieved_chunks_raw": retrieved_rows_raw,

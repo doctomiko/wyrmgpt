@@ -36,7 +36,7 @@ DB_PATH = DATA_DIR / "callie_mvp.sqlite3"
 _VALID_TABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 16
 
 SIDECAR_THRESHOLD_BYTES = 500 * 1024 # 500KB default threshold for when to use sidecar files for artifact content
 
@@ -691,6 +691,158 @@ def _migrate_schema_v14(conn) -> None:
     );
     """)
 
+def _migrate_schema_v15(conn) -> None:
+    # Adjusts the memory_pins table to be used for personalization/instructions
+    if _table_exists(conn, "memory_pins"):
+        _add_column_if_missing(conn, "memory_pins", "pin_kind", "TEXT NOT NULL DEFAULT 'instruction'")
+        _add_column_if_missing(conn, "memory_pins", "title", "TEXT")
+        _add_column_if_missing(conn, "memory_pins", "value_json", "TEXT")
+        _add_column_if_missing(conn, "memory_pins", "sort_order", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "memory_pins", "is_enabled", "INTEGER NOT NULL DEFAULT 1")
+        _add_column_if_missing(conn, "memory_pins", "scope_type", "TEXT NOT NULL DEFAULT 'global'")
+        _add_column_if_missing(conn, "memory_pins", "scope_id", "INTEGER")
+        _add_column_if_missing(conn, "memory_pins", "updated_at", "TEXT")
+        conn.execute("""
+            UPDATE memory_pins
+            SET pin_kind = 'instruction'
+            WHERE pin_kind IS NULL OR TRIM(pin_kind) = ''
+        """)
+        conn.execute("""
+            UPDATE memory_pins
+            SET is_enabled = 1
+            WHERE is_enabled IS NULL
+        """)
+        conn.execute("""
+            UPDATE memory_pins
+            SET sort_order = 0
+            WHERE sort_order IS NULL
+        """)
+        conn.execute("""
+            UPDATE memory_pins
+            SET updated_at = COALESCE(updated_at, created_at, ?)
+            WHERE updated_at IS NULL OR TRIM(updated_at) = ''
+        """, (_utc_now_iso(),))
+
+        pin_cols = {r["name"] for r in conn.execute("PRAGMA table_info(memory_pins)").fetchall()}
+        if "project_id" in pin_cols:
+            conn.execute("""
+                UPDATE memory_pins
+                SET
+                    scope_type = CASE WHEN project_id IS NULL THEN 'global' ELSE 'project' END,
+                    scope_id   = CASE WHEN project_id IS NULL THEN scope_id ELSE project_id END
+            """)
+
+    # New provenance fields for memories
+    _add_column_if_missing(conn, "memories", "is_enabled", "INTEGER NOT NULL DEFAULT 1")
+    _add_column_if_missing(conn, "memories", "scope_type", "TEXT NOT NULL DEFAULT 'global'")
+    _add_column_if_missing(conn, "memories", "scope_id", "INTEGER")
+    _add_column_if_missing(conn, "memories", "created_by", "TEXT NOT NULL DEFAULT 'user'")
+    _add_column_if_missing(conn, "memories", "origin_kind", "TEXT NOT NULL DEFAULT 'user_asserted'")
+    _add_column_if_missing(conn, "memories", "source_conversation_id", "TEXT")
+    _add_column_if_missing(conn, "memories", "source_message_id", "TEXT")
+
+    conn.execute("""
+        UPDATE memories
+        SET scope_type = 'scope_type'
+        WHERE scope_type IS NULL OR TRIM(scope_type) = ''
+    """)
+    conn.execute("""
+        UPDATE memories
+        SET created_by = 'user'
+        WHERE created_by IS NULL OR TRIM(created_by) = ''
+    """)
+    conn.execute("""
+        UPDATE memories
+        SET origin_kind = 'user_asserted'
+        WHERE origin_kind IS NULL OR TRIM(origin_kind) = ''
+    """)
+
+    # Shadow existing pins into memories, but do not duplicate exact-content matches.
+    # We are NOT deleting pins yet in this pass, because that would change current context behavior.
+    if _table_exists(conn, "memory_pins"):
+        pin_rows = conn.execute("""
+            SELECT id, text, created_at
+            FROM memory_pins
+            WHERE TRIM(COALESCE(text, '')) <> ''
+            ORDER BY id ASC
+        """).fetchall()
+
+        for row in pin_rows:
+            text = (row["text"] or "").strip()
+            if not text:
+                continue
+
+            already = conn.execute("""
+                SELECT 1
+                FROM memories
+                WHERE TRIM(content) = TRIM(?)
+                LIMIT 1
+            """, (text,)).fetchone()
+            if already:
+                continue
+
+            mem_id = new_uuid()
+            created_at = row["created_at"] or _utc_now_iso()
+
+            conn.execute("""
+                INSERT INTO memories (
+                    id,
+                    content,
+                    importance,
+                    tags,
+                    created_by,
+                    origin_kind,
+                    source_conversation_id,
+                    source_message_id,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                mem_id,
+                text,
+                10,                 # per your instruction
+                None,
+                "user",             # existing memories/pins are assumed human-authored
+                "user_asserted",
+                None,
+                None,
+                created_at,
+                created_at,
+            ))
+
+def _migrate_schema_v16(conn) -> None:
+    if _table_exists(conn, "memory_pins"):
+        _add_column_if_missing(conn, "memory_pins", "pin_kind", "TEXT NOT NULL DEFAULT 'instruction'")
+        _add_column_if_missing(conn, "memory_pins", "title", "TEXT")
+        _add_column_if_missing(conn, "memory_pins", "value_json", "TEXT")
+        _add_column_if_missing(conn, "memory_pins", "sort_order", "INTEGER NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "memory_pins", "is_enabled", "INTEGER NOT NULL DEFAULT 1")
+        _add_column_if_missing(conn, "memory_pins", "scope_type", "TEXT NOT NULL DEFAULT 'global'")
+        _add_column_if_missing(conn, "memory_pins", "scope_id", "INTEGER")
+        _add_column_if_missing(conn, "memory_pins", "updated_at", "TEXT")
+
+        conn.execute("""
+            UPDATE memory_pins
+            SET pin_kind = 'instruction'
+            WHERE pin_kind IS NULL OR TRIM(pin_kind) = ''
+        """)
+        conn.execute("""
+            UPDATE memory_pins
+            SET is_enabled = 1
+            WHERE is_enabled IS NULL
+        """)
+        conn.execute("""
+            UPDATE memory_pins
+            SET sort_order = 0
+            WHERE sort_order IS NULL
+        """)
+        conn.execute("""
+            UPDATE memory_pins
+            SET updated_at = COALESCE(updated_at, created_at, ?)
+            WHERE updated_at IS NULL OR TRIM(updated_at) = ''
+        """, (_utc_now_iso(),))
+
 # endregion
 
 # region Clean builds for new databases
@@ -738,6 +890,8 @@ def init_schema() -> None:
             _migrate_schema_v12(conn)
             _migrate_schema_v13(conn)
             _migrate_schema_v14(conn)
+            _migrate_schema_v15(conn)
+            _migrate_schema_v16(conn)
             _end_schema_init(conn, current)
             return
 
@@ -779,6 +933,10 @@ def init_schema() -> None:
             _migrate_schema_v13(conn)
         if current < 14:
             _migrate_schema_v14(conn)
+        if current < 15:
+            _migrate_schema_v15(conn)
+        if current < 16:
+            _migrate_schema_v16(conn)
         _end_schema_init(conn, current)
 
 # endregion
@@ -882,17 +1040,20 @@ def list_projects() -> list[dict]:
             "SELECT * FROM projects WHERE (is_hidden IS NULL OR is_hidden = 0) AND (is_global IS NULL OR is_global = 0) ORDER BY name COLLATE NOCASE"
         ).fetchall()
         #"SELECT id, name, description, created_at, updated_at FROM projects ORDER BY name COLLATE NOCASE"
-        return [
-            {
-                "id": int(r["id"]),
-                "name": r["name"],
-                "visibility": r["visibility"],
-                "description": r["description"],
-                "created_at": r["created_at"],
-                "updated_at": r["updated_at"],
-            }
-            for r in rows
-        ]
+    return [
+        {
+            "id": int(r["id"]),
+            "name": r["name"],
+            "visibility": r["visibility"],
+            "description": r["description"],
+            "system_prompt": r["system_prompt"],
+            "override_core_prompt": bool(r["override_core_prompt"]),
+            "default_advanced_mode": bool(r["default_advanced_mode"]),
+            "created_at": r["created_at"],
+            "updated_at": r["updated_at"],
+        }
+        for r in rows
+    ]
 
 def get_global_project_id() -> int:
     """
@@ -993,10 +1154,18 @@ def project_add_conversation(project_id: int, conversation_id: str, set_primary:
                 (int(project_id), _utc_now_iso(), conversation_id),
             )
 
-def update_project(project_id: int, name: str | None = None, visibility: str | None = None, description: str | None = None) -> dict:
+def update_project(
+    project_id: int,
+    name: str | None = None,
+    visibility: str | None = None,
+    description: str | None = None,
+    system_prompt: str | None = None,
+    override_core_prompt: bool | None = None,
+    default_advanced_mode: bool | None = None,
+) -> dict:
     sets = []
     params = []
-    visibility_changed = visibility is not None
+    invalidate_all = False
 
     if name is not None:
         n = (name or "").strip()
@@ -1015,6 +1184,21 @@ def update_project(project_id: int, name: str | None = None, visibility: str | N
             raise ValueError("visibility must be 'private' or 'global'")
         sets.append("visibility = ?")
         params.append(v)
+        invalidate_all = True
+
+    if system_prompt is not None:
+        sets.append("system_prompt = ?")
+        params.append((system_prompt or "").strip())
+        invalidate_all = True
+
+    if override_core_prompt is not None:
+        sets.append("override_core_prompt = ?")
+        params.append(1 if override_core_prompt else 0)
+        invalidate_all = True
+
+    if default_advanced_mode is not None:
+        sets.append("default_advanced_mode = ?")
+        params.append(1 if default_advanced_mode else 0)
 
     if not sets:
         raise ValueError("No changes provided.")
@@ -1027,11 +1211,17 @@ def update_project(project_id: int, name: str | None = None, visibility: str | N
         _ensure_project_exists(conn, int(project_id))
         conn.execute(f"UPDATE projects SET {', '.join(sets)} WHERE id = ?", tuple(params))
         row = conn.execute(
-            "SELECT id, name, visibility, description, created_at, updated_at FROM projects WHERE id = ?",
+            """
+            SELECT id, name, visibility, description, system_prompt,
+                   override_core_prompt, default_advanced_mode,
+                   created_at, updated_at
+            FROM projects
+            WHERE id = ?
+            """,
             (int(project_id),),
         ).fetchone()
 
-    if visibility_changed:
+    if invalidate_all:
         invalidate_all_context_cache()
 
     return {
@@ -1039,9 +1229,63 @@ def update_project(project_id: int, name: str | None = None, visibility: str | N
         "name": row["name"],
         "visibility": row["visibility"],
         "description": row["description"],
+        "system_prompt": row["system_prompt"],
+        "override_core_prompt": bool(row["override_core_prompt"]),
+        "default_advanced_mode": bool(row["default_advanced_mode"]),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
+
+if (False):
+    def update_project(project_id: int, name: str | None = None, visibility: str | None = None, description: str | None = None) -> dict:
+        sets = []
+        params = []
+        visibility_changed = visibility is not None
+
+        if name is not None:
+            n = (name or "").strip()
+            if not n:
+                raise ValueError("Project name cannot be empty.")
+            sets.append("name = ?")
+            params.append(n)
+
+        if description is not None:
+            sets.append("description = ?")
+            params.append(description)
+
+        if visibility is not None:
+            v = (visibility or "").strip().lower()
+            if v not in ("private", "global"):
+                raise ValueError("visibility must be 'private' or 'global'")
+            sets.append("visibility = ?")
+            params.append(v)
+
+        if not sets:
+            raise ValueError("No changes provided.")
+
+        sets.append("updated_at = ?")
+        params.append(_utc_now_iso())
+        params.append(int(project_id))
+
+        with db_session() as conn:
+            _ensure_project_exists(conn, int(project_id))
+            conn.execute(f"UPDATE projects SET {', '.join(sets)} WHERE id = ?", tuple(params))
+            row = conn.execute(
+                "SELECT id, name, visibility, description, created_at, updated_at FROM projects WHERE id = ?",
+                (int(project_id),),
+            ).fetchone()
+
+        if visibility_changed:
+            invalidate_all_context_cache()
+
+        return {
+            "id": int(row["id"]),
+            "name": row["name"],
+            "visibility": row["visibility"],
+            "description": row["description"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
 
 if (False):
     def update_project(project_id: int, name: str | None = None, visibility: str | None = None, description: str | None = None) -> dict:
@@ -2587,7 +2831,7 @@ def update_ab_canonical(conversation_id: str, ab_group: str, slot: str) -> None:
 # endregion
 
 # ----------------------------
-# Pins
+# Curated Memories
 # ----------------------------
 
 # region Memories
@@ -2597,47 +2841,203 @@ def _ensure_memory_exists(conn: sqlite3.Connection, memory_id: str) -> None:
     if not row:
         raise ValueError(f"Memory not found: {memory_id}")
 
-def create_memory(content: str, importance: int = 0, tags: Any = None) -> dict:
-    """
-    Create a memory record and return it as a dict.
-    memory_id is a TEXT uuid.
-    """
-    content = (content or "").strip()
-    if not content:
-        raise ValueError("Memory content cannot be empty.")
-
-    mem_id = str(uuid.uuid4())
-    now = _utc_now_iso()
-    tags_text = _normalize_tags(tags)
-
-    with db_session() as conn:
-        conn.execute(
-            """
-            INSERT INTO memories (id, content, importance, tags, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (mem_id, content, int(importance or 0), tags_text, now, now),
-        )
-
-        row = conn.execute(
-            "SELECT id, content, importance, tags, created_at, updated_at FROM memories WHERE id = ?",
-            (mem_id,),
-        ).fetchone()
+def _memory_row_to_dict(row: sqlite3.Row) -> dict:
+    def _split_csv(value: Any) -> list[str]:
+        if value is None:
+            return []
+        return [part for part in str(value).split(",") if part]
 
     return {
         "id": row["id"],
         "content": row["content"],
         "importance": int(row["importance"]) if row["importance"] is not None else 0,
         "tags": row["tags"],
+        "created_by": row["created_by"] or "user",
+        "origin_kind": row["origin_kind"] or "user_asserted",
+        "source_conversation_id": row["source_conversation_id"],
+        "source_message_id": row["source_message_id"],
+        "project_ids": [int(x) for x in _split_csv(row["project_ids_csv"]) if str(x).isdigit()],
+        "conversation_ids": _split_csv(row["conversation_ids_csv"]),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
 
+def _fetch_memory_row(conn: sqlite3.Connection, memory_id: str) -> dict:
+    row = conn.execute("""
+        SELECT
+            m.id,
+            m.content,
+            m.importance,
+            m.tags,
+            COALESCE(m.created_by, 'user') AS created_by,
+            COALESCE(m.origin_kind, 'user_asserted') AS origin_kind,
+            m.source_conversation_id,
+            m.source_message_id,
+            m.created_at,
+            m.updated_at,
+            (
+                SELECT GROUP_CONCAT(mp.project_id)
+                FROM memory_projects mp
+                WHERE mp.memory_id = m.id
+            ) AS project_ids_csv,
+            (
+                SELECT GROUP_CONCAT(mc.conversation_id)
+                FROM memory_conversations mc
+                WHERE mc.memory_id = m.id
+            ) AS conversation_ids_csv
+        FROM memories m
+        WHERE m.id = ?
+          AND COALESCE(m.is_deleted, 0) = 0
+        LIMIT 1
+    """, (memory_id,)).fetchone()
+
+    if not row:
+        raise ValueError(f"Memory not found: {memory_id}")
+
+    return _memory_row_to_dict(row)
+
+def create_memory(
+    content: str,
+    importance: int = 0,
+    tags: Any = None,
+    created_by: str = "user",
+    origin_kind: str = "user_asserted",
+    source_conversation_id: str | None = None,
+    source_message_id: str | None = None,
+) -> dict:
+    content = (content or "").strip()
+    if not content:
+        raise ValueError("Memory content cannot be empty.")
+
+    mem_id = new_uuid()
+    now = _utc_now_iso()
+    tags_text = _normalize_tags(tags)
+    created_by = (created_by or "user").strip() or "user"
+    origin_kind = (origin_kind or "user_asserted").strip() or "user_asserted"
+    source_conversation_id = (source_conversation_id or "").strip() or None
+    source_message_id = (source_message_id or "").strip() or None
+
+    with db_session() as conn:
+        conn.execute("""
+            INSERT INTO memories (
+                id,
+                content,
+                importance,
+                tags,
+                created_by,
+                origin_kind,
+                source_conversation_id,
+                source_message_id,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            mem_id,
+            content,
+            int(importance or 0),
+            tags_text,
+            created_by,
+            origin_kind,
+            source_conversation_id,
+            source_message_id,
+            now,
+            now,
+        ))
+
+        return _fetch_memory_row(conn, mem_id)
+
+def list_memories(limit: int = 200) -> list[dict]:
+    with db_session() as conn:
+        rows = conn.execute("""
+            SELECT
+                m.id,
+                m.content,
+                m.importance,
+                m.tags,
+                COALESCE(m.created_by, 'user') AS created_by,
+                COALESCE(m.origin_kind, 'user_asserted') AS origin_kind,
+                m.source_conversation_id,
+                m.source_message_id,
+                m.created_at,
+                m.updated_at,
+                (
+                    SELECT GROUP_CONCAT(mp.project_id)
+                    FROM memory_projects mp
+                    WHERE mp.memory_id = m.id
+                ) AS project_ids_csv,
+                (
+                    SELECT GROUP_CONCAT(mc.conversation_id)
+                    FROM memory_conversations mc
+                    WHERE mc.memory_id = m.id
+                ) AS conversation_ids_csv
+            FROM memories m
+            WHERE COALESCE(m.is_deleted, 0) = 0
+            ORDER BY COALESCE(m.updated_at, m.created_at) DESC, m.id DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
+
+        return [_memory_row_to_dict(r) for r in rows]
+
+def update_memory(
+    memory_id: str,
+    content: str,
+    importance: int = 0,
+    tags: Any = None,
+    created_by: str = "user",
+    origin_kind: str = "user_asserted",
+) -> dict:
+    memory_id = (memory_id or "").strip()
+    if not memory_id:
+        raise ValueError("memory_id is required.")
+
+    content = (content or "").strip()
+    if not content:
+        raise ValueError("Memory content cannot be empty.")
+
+    tags_text = _normalize_tags(tags)
+    created_by = (created_by or "user").strip() or "user"
+    origin_kind = (origin_kind or "user_asserted").strip() or "user_asserted"
+    now = _utc_now_iso()
+
+    with db_session() as conn:
+        _ensure_memory_exists(conn, memory_id)
+
+        conn.execute("""
+            UPDATE memories
+            SET
+                content = ?,
+                importance = ?,
+                tags = ?,
+                created_by = ?,
+                origin_kind = ?,
+                updated_at = ?
+            WHERE id = ?
+        """, (
+            content,
+            int(importance or 0),
+            tags_text,
+            created_by,
+            origin_kind,
+            now,
+            memory_id,
+        ))
+
+        return _fetch_memory_row(conn, memory_id)
+
+def delete_memory(memory_id: str) -> None:
+    memory_id = (memory_id or "").strip()
+    if not memory_id:
+        raise ValueError("memory_id is required.")
+
+    with db_session() as conn:
+        _ensure_memory_exists(conn, memory_id)
+
+        conn.execute("DELETE FROM memory_projects WHERE memory_id = ?", (memory_id,))
+        conn.execute("DELETE FROM memory_conversations WHERE memory_id = ?", (memory_id,))
+        conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+
 def memory_link_project(memory_id: str, project_id: int) -> None:
-    """
-    Link an existing memory to an existing project.
-    Idempotent via PRIMARY KEY (memory_id, project_id).
-    """
     if not memory_id or not str(memory_id).strip():
         raise ValueError("memory_id is required.")
     if project_id is None:
@@ -2647,20 +3047,12 @@ def memory_link_project(memory_id: str, project_id: int) -> None:
         _ensure_memory_exists(conn, memory_id)
         _ensure_project_exists(conn, int(project_id))
 
-        conn.execute(
-            """
+        conn.execute("""
             INSERT OR IGNORE INTO memory_projects (memory_id, project_id)
             VALUES (?, ?)
-            """,
-            (memory_id, int(project_id)),
-        )
-
+        """, (memory_id, int(project_id)))
 
 def memory_link_conversation(memory_id: str, conversation_id: str) -> None:
-    """
-    Link an existing memory to an existing conversation.
-    Idempotent via PRIMARY KEY (memory_id, conversation_id).
-    """
     if not memory_id or not str(memory_id).strip():
         raise ValueError("memory_id is required.")
     conversation_id = (conversation_id or "").strip()
@@ -2671,45 +3063,352 @@ def memory_link_conversation(memory_id: str, conversation_id: str) -> None:
         _ensure_memory_exists(conn, memory_id)
         _ensure_conversation_exists(conn, conversation_id)
 
-        conn.execute(
-            """
+        conn.execute("""
             INSERT OR IGNORE INTO memory_conversations (memory_id, conversation_id)
             VALUES (?, ?)
-            """,
-            (memory_id, conversation_id),
-        )
+        """, (memory_id, conversation_id))
+
+if (False):
+    def _ensure_memory_exists(conn: sqlite3.Connection, memory_id: str) -> None:
+        row = conn.execute("SELECT 1 FROM memories WHERE id = ?", (memory_id,)).fetchone()
+        if not row:
+            raise ValueError(f"Memory not found: {memory_id}")
+
+    def create_memory(content: str, importance: int = 0, tags: Any = None) -> dict:
+        """
+        Create a memory record and return it as a dict.
+        memory_id is a TEXT uuid.
+        """
+        content = (content or "").strip()
+        if not content:
+            raise ValueError("Memory content cannot be empty.")
+
+        mem_id = str(uuid.uuid4())
+        now = _utc_now_iso()
+        tags_text = _normalize_tags(tags)
+
+        with db_session() as conn:
+            conn.execute(
+                """
+                INSERT INTO memories (id, content, importance, tags, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (mem_id, content, int(importance or 0), tags_text, now, now),
+            )
+
+            row = conn.execute(
+                "SELECT id, content, importance, tags, created_at, updated_at FROM memories WHERE id = ?",
+                (mem_id,),
+            ).fetchone()
+
+        return {
+            "id": row["id"],
+            "content": row["content"],
+            "importance": int(row["importance"]) if row["importance"] is not None else 0,
+            "tags": row["tags"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def memory_link_project(memory_id: str, project_id: int) -> None:
+        """
+        Link an existing memory to an existing project.
+        Idempotent via PRIMARY KEY (memory_id, project_id).
+        """
+        if not memory_id or not str(memory_id).strip():
+            raise ValueError("memory_id is required.")
+        if project_id is None:
+            raise ValueError("project_id is required.")
+
+        with db_session() as conn:
+            _ensure_memory_exists(conn, memory_id)
+            _ensure_project_exists(conn, int(project_id))
+
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO memory_projects (memory_id, project_id)
+                VALUES (?, ?)
+                """,
+                (memory_id, int(project_id)),
+            )
+
+
+    def memory_link_conversation(memory_id: str, conversation_id: str) -> None:
+        """
+        Link an existing memory to an existing conversation.
+        Idempotent via PRIMARY KEY (memory_id, conversation_id).
+        """
+        if not memory_id or not str(memory_id).strip():
+            raise ValueError("memory_id is required.")
+        conversation_id = (conversation_id or "").strip()
+        if not conversation_id:
+            raise ValueError("conversation_id is required.")
+
+        with db_session() as conn:
+            _ensure_memory_exists(conn, memory_id)
+            _ensure_conversation_exists(conn, conversation_id)
+
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO memory_conversations (memory_id, conversation_id)
+                VALUES (?, ?)
+                """,
+                (memory_id, conversation_id),
+            )
 
 # endregion
-# region Memory Pins
 
-def add_memory_pin(text: str) -> int:
+# ----------------------------
+# Pinned Context
+# ----------------------------
+
+# region Pinned Instructions
+
+def _pin_row_to_dict(row: sqlite3.Row) -> dict:
+    value_json = row["value_json"]
+    parsed_value = None
+    if value_json:
+        try:
+            parsed_value = json.loads(value_json)
+        except Exception:
+            parsed_value = None
+
+    return {
+        "id": int(row["id"]),
+        "text": row["text"],
+        "pin_kind": row["pin_kind"] or "instruction",
+        "title": row["title"],
+        "value_json": parsed_value,
+        "sort_order": int(row["sort_order"] or 0),
+        "is_enabled": bool(row["is_enabled"]),
+        "scope_type": row["scope_type"] or "global",
+        "scope_id": row["scope_id"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+def _ensure_memory_pin_exists(conn: sqlite3.Connection, pin_id: int) -> sqlite3.Row:
+    row = conn.execute("SELECT * FROM memory_pins WHERE id = ?", (int(pin_id),)).fetchone()
+    if not row:
+        raise ValueError(f"Pin not found: {pin_id}")
+    return row
+
+def update_memory_pin(
+    pin_id: int,
+    text: str,
+    *,
+    pin_kind: str | None = None,
+    title: str | None = None,
+    value_json: dict | None = None,
+    sort_order: int | None = None,
+    is_enabled: bool | None = None,
+    scope_type: str | None = None,
+    scope_id: int | None = None,
+) -> dict:
     text = (text or "").strip()
     if not text:
         raise ValueError("Pin text cannot be empty.")
+
+    now = _utc_now_iso()
+
     with db_session() as conn:
-        cur = conn.execute(
-            "INSERT INTO memory_pins(text, created_at) VALUES(?, ?)",
-            (text, _utc_now_iso()),
-        )
+        existing = _ensure_memory_pin_exists(conn, pin_id)
+
+        final_pin_kind = (pin_kind if pin_kind is not None else existing["pin_kind"]) or "instruction"
+        final_title = title if title is not None else existing["title"]
+        final_sort_order = int(sort_order if sort_order is not None else (existing["sort_order"] or 0))
+        final_is_enabled = 1 if (is_enabled if is_enabled is not None else bool(existing["is_enabled"])) else 0
+        final_scope_type = (scope_type if scope_type is not None else existing["scope_type"]) or "global"
+        final_scope_id = scope_id if scope_id is not None else existing["scope_id"]
+
+        if value_json is None:
+            final_value_json_text = existing["value_json"]
+        else:
+            final_value_json_text = json.dumps(value_json, ensure_ascii=False)
+
+        conn.execute("""
+            UPDATE memory_pins
+            SET
+                text = ?,
+                pin_kind = ?,
+                title = ?,
+                value_json = ?,
+                sort_order = ?,
+                is_enabled = ?,
+                scope_type = ?,
+                scope_id = ?,
+                updated_at = ?
+            WHERE id = ?
+        """, (
+            text,
+            final_pin_kind,
+            (final_title or "").strip() or None,
+            final_value_json_text,
+            final_sort_order,
+            final_is_enabled,
+            final_scope_type,
+            final_scope_id,
+            now,
+            int(pin_id),
+        ))
+
+        row = conn.execute("SELECT * FROM memory_pins WHERE id = ?", (int(pin_id),)).fetchone()
+        return _pin_row_to_dict(row)
+
+def add_memory_pin(
+    text: str,
+    *,
+    pin_kind: str = "instruction",
+    title: str | None = None,
+    value_json: dict | None = None,
+    sort_order: int = 0,
+    is_enabled: bool = True,
+    scope_type: str = "global",
+    scope_id: int | None = None,
+) -> int:
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("Pin text cannot be empty.")
+
+    now = _utc_now_iso()
+    value_json_text = json.dumps(value_json, ensure_ascii=False) if value_json is not None else None
+
+    with db_session() as conn:
+        cur = conn.execute("""
+            INSERT INTO memory_pins (
+                text, pin_kind, title, value_json, sort_order, is_enabled,
+                scope_type, scope_id, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            text,
+            (pin_kind or "instruction").strip() or "instruction",
+            (title or "").strip() or None,
+            value_json_text,
+            int(sort_order or 0),
+            1 if is_enabled else 0,
+            (scope_type or "global").strip() or "global",
+            scope_id,
+            now,
+            now,
+        ))
         if cur.lastrowid is None:
             raise RuntimeError("failed to retrieve last insert id")
-        return int(cur.lastrowid)
+        last_id = int(cur.lastrowid)
+        row = conn.execute("SELECT * FROM memory_pins WHERE id = ?", (last_id,)).fetchone()
+        return last_id
+
+def upsert_about_you_pin(
+    *,
+    nickname: str = "",
+    age: str = "",
+    occupation: str = "",
+    more_about_you: str = "",
+) -> dict:
+    nickname = (nickname or "").strip()
+    age = (age or "").strip()
+    occupation = (occupation or "").strip()
+    more_about_you = (more_about_you or "").strip()
+
+    lines: list[str] = []
+    if nickname:
+        lines.append(f"Nickname: {nickname}")
+    if age:
+        lines.append(f"Age: {age}")
+    if occupation:
+        lines.append(f"Occupation: {occupation}")
+    if more_about_you:
+        lines.append("More About You:")
+        lines.append(more_about_you)
+
+    text = "\n".join(lines).strip()
+    value = {
+        "nickname": nickname,
+        "age": age,
+        "occupation": occupation,
+        "more_about_you": more_about_you,
+    }
+
+    now = _utc_now_iso()
+
+    with db_session() as conn:
+        existing = conn.execute("""
+            SELECT *
+            FROM memory_pins
+            WHERE pin_kind = 'profile'
+              AND title = 'about_you'
+              AND COALESCE(scope_type, 'global') = 'global'
+              AND scope_id IS NULL
+            ORDER BY id DESC
+            LIMIT 1
+        """).fetchone()
+
+        if existing:
+            conn.execute("""
+                UPDATE memory_pins
+                SET
+                    text = ?,
+                    value_json = ?,
+                    is_enabled = 1,
+                    updated_at = ?
+                WHERE id = ?
+            """, (
+                text,
+                json.dumps(value, ensure_ascii=False),
+                now,
+                int(existing["id"]),
+            ))
+            row = conn.execute("SELECT * FROM memory_pins WHERE id = ?", (int(existing["id"]),)).fetchone()
+            return _pin_row_to_dict(row)
+
+        cur = conn.execute("""
+            INSERT INTO memory_pins (
+                text, pin_kind, title, value_json, sort_order, is_enabled,
+                scope_type, scope_id, created_at, updated_at
+            )
+            VALUES (?, 'profile', 'about_you', ?, 0, 1, 'global', NULL, ?, ?)
+        """, (
+            text,
+            json.dumps(value, ensure_ascii=False),
+            now,
+            now,
+        ))
+        if cur.lastrowid is None:
+            raise RuntimeError("failed to retrieve last insert id")
+        row = conn.execute("SELECT * FROM memory_pins WHERE id = ?", (int(cur.lastrowid),)).fetchone()
+        return _pin_row_to_dict(row)
+
+def get_about_you_pin() -> dict | None:
+    with db_session() as conn:
+        row = conn.execute("""
+            SELECT *
+            FROM memory_pins
+            WHERE pin_kind = 'profile'
+              AND title = 'about_you'
+              AND COALESCE(scope_type, 'global') = 'global'
+              AND scope_id IS NULL
+            ORDER BY id DESC
+            LIMIT 1
+        """).fetchone()
+        return _pin_row_to_dict(row) if row else None
 
 def list_memory_pins(limit: int = 200) -> list[dict]:
     with db_session() as conn:
-        rows = conn.execute(
-            """
-            SELECT id, text, created_at
+        rows = conn.execute("""
+            SELECT
+                id, text, pin_kind, title, value_json, sort_order, is_enabled,
+                scope_type, scope_id, created_at, updated_at
             FROM memory_pins
-            ORDER BY id DESC
+            WHERE COALESCE(is_enabled, 1) = 1
+            ORDER BY sort_order ASC, id DESC
             LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-        return [{"id": int(r["id"]), "text": r["text"], "created_at": r["created_at"]} for r in rows]
+        """, (limit,)).fetchall()
+        return [_pin_row_to_dict(r) for r in rows]
 
 def delete_memory_pin(pin_id: int) -> None:
     with db_session() as conn:
+        # TODO shouldn't we quit and warn if it doesn't?
+        _ensure_memory_pin_exists(conn, pin_id)
         conn.execute("DELETE FROM memory_pins WHERE id = ?", (pin_id,))
 
 # endregion

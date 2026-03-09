@@ -13,9 +13,28 @@
       <div class="sideHeader">
         <div class="title">WyrmGPT</div>
         <div class="sideHeaderButtons">
-          <button id="newChat">New</button>
-          <button id="manageFilesTop">Files</button>
-          <button id="artifactsDebugTop">Artifacts</button>
+          <button id="newChat">New Chat</button>
+          <button id="topMenuButton" class="iconButton" title="Top menu">
+            ☰
+          </button>
+          <div id="topMenu" class="topMenu hidden">
+            <!--
+            <button id="renameChat">Rename Conversation</button>
+            <button id="suggestChat">Suggest Title</button>
+            <hr />
+            -->
+            <button id="openMemory">Personalization…</button>
+            <button id="manageFilesTop">Manage Files…</button>
+            <button id="artifactsDebugTop">View Artifacts</button>
+            <label class="menuAdvanced">
+              <input type="checkbox" id="searchChatHistoryToggle" />
+              Search Chat History
+            </label>
+            <label class="menuAdvanced">
+              <input type="checkbox" id="advancedCheckbox" />
+              Advanced Mode (A/B Chat)
+            </label>
+          </div>
         </div>
       </div>
       <div id="projectHeader">
@@ -41,24 +60,6 @@
             <select id="modelSelectB"></select>
             <div id="modelInfoB" class="modelInfo"></div>
           </div>
-          <button id="chatMenuButton" class="iconButton" title="Chat menu">
-            ☰
-          </button>
-          <div id="chatMenu" class="chatMenu hidden">
-            <button id="renameChat">Rename Conversation</button>
-            <button id="suggestChat">Suggest Title</button>
-            <hr />
-            <button id="openMemory">Memory &amp; Context…</button>
-            <label class="menuAdvanced">
-              <input type="checkbox" id="searchChatHistoryToggle" />
-              Search Chat History
-            </label>
-            <hr />
-            <label class="menuAdvanced">
-              <input type="checkbox" id="advancedCheckbox" />
-              Enable Advanced A/B Chat
-            </label>
-          </div>
         </div>
       </div>
 
@@ -81,25 +82,61 @@
       </div>
     </aside>
     <!-- Memory & context modal -->
-    <div id="memoryModal" class="modal hidden">
-      <div class="modalBackdrop"></div>
-      <div class="modalPanel">
-        <div class="modalHeader">
-          <div class="modalTitle">Memory &amp; Context</div>
-          <button id="closeMemory" class="iconButton" title="Close">&times;</button>
-        </div>
-        <div class="modalBody">
-          <div class="memSection">
-            <div class="memTitle">Pinned (manual)</div>
-            <div class="memAdd">
-              <textarea id="pinText" rows="3" placeholder="Add a pinned memory…"></textarea>
-              <button id="addPin">Pin</button>
-            </div>
-            <div id="pinList" class="pinList"></div>
-          </div>
+  </div>
+  <div id="memoryModal" class="modal hidden">
+    <div class="modalBackdrop"></div>
+    <div class="modalPanel">
+      <div class="modalHeader">
+        <div class="modalTitle">Personalization</div>
+        <button id="closeMemory" class="iconButton" title="Close">&times;</button>
+      </div>
+      <div class="modalBody">
         <div class="memSection">
-          <div class="memTitle">Long-term memory (machine)</div>
-          <div class="memAdd">
+          <div class="memTitle">About You</div>
+          <div class="memGrid2">
+            <label>
+              Nickname
+              <input id="aboutYouNickname" type="text" placeholder="What should I call you?" />
+            </label>
+            <label>
+              Approximate Age
+              <input id="aboutYouAge" type="text" placeholder="How old are you? (teenager, 18+, 30-something, 50-ish, etc.)" />
+            </label>
+            <label class="span2">
+              Occupation
+              <textarea id="aboutYouOccupation" rows="2" placeholder="Writer, editor, engineer, chaos goblin..."></textarea>
+            </label>
+            <label class="span2">
+              More About You
+              <textarea id="aboutYouMore" rows="6" placeholder="Anything enduring, useful, or identity-shaping."></textarea>
+            </label>
+            <div id="aboutYouButtonRow" class="span2">
+              <button id="saveAboutYou">Save About You</button>
+            </div>
+          </div>
+        </div>
+        <div class="memSection">
+          <div class="memTitle">Custom Instructions</div>
+          <div class="span2">
+            <textarea id="pinText" rows="3" placeholder="Add an instruction…"></textarea>
+            <button id="addPin">Save</button>
+            <button id="cancelPinEdit" class="hidden">Cancel Edit</button>
+          </div>
+          <div id="pinList" class="pinList"></div>
+        </div>
+        <!--
+        <div class="memSection">
+          <div class="memTitle">Custom Instructions</div>
+          <div class="span2">
+            <textarea id="pinText" rows="3" placeholder="Add an instruction…"></textarea>
+            <button id="addPin">Save</button>
+          </div>
+          <div id="pinList" class="pinList"></div>
+        </div>
+        -->
+        <div class="memSection">
+          <div class="memTitle">Add/Edit Memory</div>
+          <div class="memAdd span2-important">
             <textarea id="memoryText" rows="3" placeholder="Store a longer-term memory…"></textarea>
           </div>
           <div class="memAdd">
@@ -108,12 +145,15 @@
               <input id="memoryTags" type="text" placeholder="comma, separated, tags" />
             </label>
             <label>
-              Importance
+              Strength
               <input id="memoryImportance" type="number" value="0" min="0" max="10" />
             </label>
-            <button id="saveMemory">Save memory</button>
+            <button id="saveMemory">Save</button>
+            <button id="cancelMemoryEdit" class="hidden">Cancel Edit</button>
           </div>
-        </div>          
+
+          <div class="memTitle" style="margin-top: 12px;">Manage Memories</div>
+          <div id="memoryList" class="pinList"></div>
         </div>
       </div>
     </div>

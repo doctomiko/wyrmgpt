@@ -13,23 +13,26 @@ const chatWindowInputSendBtn = document.getElementById("send");
 // Top Left
 const topLeftNewChatBtn = document.getElementById("newChat");
 const topLeftNewProjBtn = document.getElementById("newProjectBtn");
-const topLeftManageFilesBtn = document.getElementById("manageFilesTop");
+
+// the underlying menu
+const topMenuBtn = document.getElementById("topMenuButton");
+const topMenu = document.getElementById("topMenu");
+// const topMenuRenameChatBtn = document.getElementById("renameChat");
+// const topMenuSuggestTitleBtn = document.getElementById("suggestChat");
+const topMenuManageFilesBtn = document.getElementById("manageFilesTop");
+const topMenuOpenMemoryBtn = document.getElementById("openMemory");
+const topMenuAdvancedABToggle = document.getElementById("advancedCheckbox");
+const topMenuSearchChatHistoryToggle = document.getElementById("searchChatHistoryToggle");
+
 // Conversation and Project List
 const sideBarProjListEl = document.getElementById("projectList");
 const sideBarConvListEl = document.getElementById("convList");
 
 // Top of Paga/Chat Bar and Menu
 const topBarChatTitleEl = document.getElementById("chatTitle");
-const topBarChatMenu = document.getElementById("chatMenu");
 // Model Selectors
 const topBarModelSelectA = document.getElementById("modelSelectA");
 const topBarModelSelectB = document.getElementById("modelSelectB");
-// the underlying menu
-const topBarChatMenuBtn = document.getElementById("chatMenuButton");
-const topMenuRenameChatBtn = document.getElementById("renameChat");
-const topMenuSuggestTitleBtn = document.getElementById("suggestChat");
-const topMenuAdvancedABToggle = document.getElementById("advancedCheckbox");
-const topMenuSearchChatHistoryToggle = document.getElementById("searchChatHistoryToggle");
 
 // Move To... modal
 const moveToModal = document.getElementById("moveToModal");
@@ -65,22 +68,30 @@ const projMenuToggleVisibility = document.getElementById("projToggleVisibility")
 const contextPreviewToggleBtn = document.getElementById("toggleContext");
 const contextPreviewEl = document.getElementById("contextPreview");
 
-// Memory Pins
-const pinTextEl = document.getElementById("pinText");
-const addPinBtn = document.getElementById("addPin");
+// Personalization Modal (Instructions and Memories)
+const persModal = document.getElementById("memoryModal");
+const persCloseBtn = document.getElementById("closeMemory");
+const persBackdrop = persModal
+  ? persModal.querySelector(".modalBackdrop")
+  : null;
+// Pins (Personalization/Instructions)
 const pinListEl = document.getElementById("pinList");
+const pinTextEl = document.getElementById("pinText");
+const pinAddOrSaveBtn = document.getElementById("addPin");
+const pinCancelEditBtn = document.getElementById("cancelPinEdit");
+// About You - Just a special pin really
+const aboutYouNicknameEl = document.getElementById("aboutYouNickname");
+const aboutYouAgeEl = document.getElementById("aboutYouAge");
+const aboutYouOccupationEl = document.getElementById("aboutYouOccupation");
+const aboutYouMoreEl = document.getElementById("aboutYouMore");
+const aboutYouSaveBtn = document.getElementById("saveAboutYou");
+// Memories
+const memoryListEl = document.getElementById("memoryList");
 const memoryTextEl = document.getElementById("memoryText");
 const memoryTagsEl = document.getElementById("memoryTags");
 const memoryImportanceEl = document.getElementById("memoryImportance");
-const saveMemoryBtn = document.getElementById("saveMemory");
-
-// Memories Modal
-const memoryModal = document.getElementById("memoryModal");
-const openMemoryBtn = document.getElementById("openMemory");
-const closeMemoryBtn = document.getElementById("closeMemory");
-const memoryBackdrop = memoryModal
-  ? memoryModal.querySelector(".modalBackdrop")
-  : null;
+const memorySaveBtn = document.getElementById("saveMemory");
+const memoryCancelEditBtn = document.getElementById("cancelMemoryEdit");
 
 // File Uploads and Management
 const chatWindowInputAddFilesBtn = document.getElementById("attachButton");
@@ -146,6 +157,11 @@ let contextRefreshing = false;
 let lastContextDraftSent = "";
 // chat transcript re-generation/append state:
 let transcriptRefreshTimer = null;
+// Memory modal state:
+let editingMemoryId = null;
+let memoriesCache = [];
+let editingPinId = null;
+let pinsCache = [];
 
 // #endregion
 
@@ -539,15 +555,15 @@ async function newChat() {
   await refreshContext();
 }
 
-function toggleChatMenu(forceState) {
-  if (!topBarChatMenu) return;
+function toggleTopMenu(forceState) {
+  if (!topMenu) return;
   const shouldShow = forceState !== undefined
     ? forceState
-    : topBarChatMenu.classList.contains("hidden");
+    : topMenu.classList.contains("hidden");
   if (shouldShow) {
-    topBarChatMenu.classList.remove("hidden");
+    topMenu.classList.remove("hidden");
   } else {
-    topBarChatMenu.classList.add("hidden");
+    topMenu.classList.add("hidden");
   }
 }
 
@@ -674,13 +690,13 @@ async function fetchJsonDebug(url, opts) {
 // #region Memory modal helpers
 
 function openMemoryModal() {
-  if (!memoryModal) return;
-  memoryModal.classList.remove("hidden");
+  if (!persModal) return;
+  persModal.classList.remove("hidden");
 }
 
 function closeMemoryModal() {
-  if (!memoryModal) return;
-  memoryModal.classList.add("hidden");
+  if (!persModal) return;
+  persModal.classList.add("hidden");
 }
 
 // #endregion
@@ -1528,9 +1544,12 @@ function renderContext(ctx) {
   lines.push(`  Assembled messages: ${total}`);
   lines.push(`  Context load: ~${approxTokens} text tokens; ${totalChars} characters; ${numImages} images`);
   lines.push(`  Recent history preview limit: ${previewLimit}${truncated ? " (truncated)" : ""}`);
-  lines.push("Asset/RAG:");
-  lines.push(`  Pinned memories: ${(ctx.pinned_memories || []).length}`);
+  lines.push("Personalization:");
+  lines.push(`  Personalization blocks: ${(ctx.personalization_blocks || []).length}`);  
+  //lines.push(`  Pinned memories: ${(ctx.pinned_memories || []).length}`);
+  lines.push("Embedded Assets:");
   lines.push(`  Included files: ${(ctx.file_labels || []).length}`);
+  lines.push("RAG:");
   lines.push(`  RAG raw hits: ${((ctx.retrieved_chunks_raw || []).length)}`);
   lines.push(`  RAG final hits: ${((ctx.retrieved_chunks_final || []).length)}`);
   lines.push("");
@@ -1539,27 +1558,45 @@ function renderContext(ctx) {
   // 3) System + project prompt
   lines.push("SYSTEM + PROJECT PROMPT:");
   lines.push(ctx.effective_system_prompt || "(none)");
+  
+  This will include personalization and custom instructions.
   */
   // 3) Actual system text sent to the model
-  lines.push("SYSTEM TEXT SENT TO MODEL:");
+  lines.push("SYSTEM TEXT (What is actually sent to the model):");
   lines.push(ctx.system_text || ctx.effective_system_prompt || "(none)");
   lines.push("");
 
-  // 4) Conversation summary
-  lines.push("CONVERSATION SUMMARY:");
-  lines.push((ctx.summary || "").trim() || "(none)");
-  lines.push("");
-
-  // 5) In-scope memories
-  lines.push("IN-SCOPE MEMORIES:");
+  // No longer need this because it is included in system_text
+  /*
+  // 4) Personalization / instructions
+  lines.push("PERSONALIZATION / INSTRUCTIONS:");
+  if ((ctx.personalization_blocks || []).length) {
+    for (const block of ctx.personalization_blocks) {
+      lines.push(block);
+      lines.push("");
+    }
+  } else {
+    lines.push("(none)");
+    lines.push("");
+  }
+  */
+  /*
+  lines.push("PERSONALIZATION / INSTRUCTIONS:");
   if ((ctx.pinned_memories || []).length) {
     for (const t of ctx.pinned_memories) lines.push(`- ${t}`);
   } else {
     lines.push("(none)");
   }
   lines.push("");
+  */
+
+  // 5) Conversation summary
+  lines.push("CONVERSATION SUMMARY:");
+  lines.push((ctx.summary || "").trim() || "(none)");
+  lines.push("");
 
   // 6) In-scope files (only included if query model is ALL or FILES)
+  // TODO In-scope memories too
   lines.push("IN-SCOPE FILES:");
   const scopedFiles = ctx.scoped_files || [];
   if (scopedFiles.length) {
@@ -1670,6 +1707,7 @@ function renderContext(ctx) {
   lines.push("");
 
   // 11) Recent conversation context only
+  // This concludes with the user's most recent message.
   lines.push("RECENT CONVERSATION CONTEXT:");
   for (const m of (ctx.recent_history_preview || [])) {
     lines.push(`${(m.role || "??").toUpperCase()}: ${m.content || ""}`);
@@ -2264,18 +2302,169 @@ function initABUI() {
 
 // #endregion
 
-// #region Memory Pin helpers
+// #region Pin (Personalization) helpers
 
 async function fetchPins() {
   return await fetchJsonDebug("/api/memory/pins");
 }
 
+async function fetchAboutYou() {
+  return await fetchJsonDebug("/api/memory/pins/about_you");
+}
+
+function populateAboutYouForm(data) {
+  if (aboutYouNicknameEl) aboutYouNicknameEl.value = data?.nickname || "";
+  if (aboutYouAgeEl) aboutYouAgeEl.value = data?.age || "";
+  if (aboutYouOccupationEl) aboutYouOccupationEl.value = data?.occupation || "";
+  if (aboutYouMoreEl) aboutYouMoreEl.value = data?.more_about_you || "";
+}
+
+async function saveAboutYou() {
+  const payload = {
+    nickname: (aboutYouNicknameEl?.value || "").trim(),
+    age: (aboutYouAgeEl?.value || "").trim(),
+    occupation: (aboutYouOccupationEl?.value || "").trim(),
+    more_about_you: (aboutYouMoreEl?.value || "").trim(),
+  };
+
+  const res = await fetch("/api/memory/pins/about_you", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    alert("Failed to save About You: " + (err.detail || err.error || res.status));
+    return;
+  }
+
+  await loadPersonalization();
+  await refreshContext();
+}
+
+async function loadPersonalization() {
+  const [pins, aboutYou] = await Promise.all([
+    fetchPins(),
+    fetchAboutYou(),
+  ]);
+  renderPins(pins);
+  populateAboutYouForm(aboutYou);
+}
+
+function resetPinEditor() {
+  editingPinId = null;
+  if (pinTextEl) pinTextEl.value = "";
+  if (pinAddOrSaveBtn) pinAddOrSaveBtn.textContent = "Save";
+  if (pinCancelEditBtn) pinCancelEditBtn.classList.add("hidden");
+}
+
+function startEditingPin(pin) {
+  if (!pin) return;
+  editingPinId = pin.id;
+  if (pinTextEl) pinTextEl.value = pin.text || "";
+  if (pinAddOrSaveBtn) pinAddOrSaveBtn.textContent = "Update";
+  if (pinCancelEditBtn) pinCancelEditBtn.classList.remove("hidden");
+  openMemoryModal();
+}
+
 function renderPins(pins) {
   pinListEl.innerHTML = "";
+  pinsCache = (pins || []).filter(p => !(p.pin_kind === "profile" && p.title === "about_you"));
+
+  if (!pinsCache.length) {
+    const empty = document.createElement("div");
+    empty.className = "memPlaceholder";
+    empty.textContent = "No saved instructions yet.";
+    pinListEl.appendChild(empty);
+    return;
+  }
+
+  pinsCache.forEach(p => {
+    const item = document.createElement("div");
+    item.className = "pinItem";
+
+    const text = document.createElement("div");
+    text.className = "pinText";
+    text.textContent = p.text;
+
+    const actions = document.createElement("div");
+    actions.className = "pinActions";
+
+    const editBtn = document.createElement("button");
+    editBtn.textContent = "Edit";
+    editBtn.addEventListener("click", () => startEditingPin(p));
+
+    const del = document.createElement("button");
+    del.textContent = "Delete";
+    del.addEventListener("click", async () => {
+      const ok = confirm(`Delete this instruction?\n\n${(p.text || "").slice(0, 180)}`);
+      if (!ok) return;
+
+      await fetch(`/api/memory/pins/${p.id}`, { method: "DELETE" });
+
+      if (editingPinId === p.id) {
+        resetPinEditor();
+      }
+
+      await loadPersonalization();
+      await refreshContext();
+    });
+
+    actions.appendChild(editBtn);
+    actions.appendChild(del);
+
+    item.appendChild(text);
+    item.appendChild(actions);
+    pinListEl.appendChild(item);
+  });
+}
+
+async function savePinFromUi() {
+  const text = (pinTextEl?.value || "").trim();
+  if (!text) return;
+
+  const existing = editingPinId
+    ? pinsCache.find((p) => p.id === editingPinId)
+    : null;
+
+  const payload = {
+    text,
+    pin_kind: existing?.pin_kind || "instruction",
+    title: existing?.title || null,
+  };
+
+  const isEdit = !!editingPinId;
+  const url = isEdit
+    ? `/api/memory/pins/${encodeURIComponent(editingPinId)}`
+    : "/api/memory/pins";
+  const method = isEdit ? "PUT" : "POST";
+
+  const res = await fetch(url, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    alert(`Failed to ${isEdit ? "update" : "save"} instruction: ` + (err.detail || err.error || res.status));
+    return;
+  }
+
+  resetPinEditor();
+  await loadPersonalization();
+  await refreshContext();
+}
+
+/*
+function renderPins(pins) {
+  pinListEl.innerHTML = "";
+  pins = (pins || []).filter(p => !(p.pin_kind === "profile" && p.title === "about_you"));  
   if (!pins.length) {
     const empty = document.createElement("div");
     empty.className = "memPlaceholder";
-    empty.textContent = "No pinned memories yet. Add one, and we’ll treat it as canon later.";
+    empty.textContent = "No saved instructions yet.";    
     pinListEl.appendChild(empty);
     return;
   }
@@ -2322,7 +2511,94 @@ async function addPin() {
   renderPins(pins);
   await refreshContext();
 }
+*/
 
+async function createMemoryFromUi() {
+  if (!memoryTextEl) return;
+
+  const content = (memoryTextEl.value || "").trim();
+  if (!content) {
+    alert("Memory content cannot be empty.");
+    return;
+  }
+
+  const tagsRaw = (memoryTagsEl?.value || "").trim();
+  const tags = tagsRaw || null;
+
+  let importance = 0;
+  if (memoryImportanceEl && memoryImportanceEl.value !== "") {
+    const parsed = parseInt(memoryImportanceEl.value, 10);
+    importance = Number.isNaN(parsed) ? 0 : parsed;
+  }
+
+  const existing = editingMemoryId
+    ? memoriesCache.find((m) => m.id === editingMemoryId)
+    : null;
+
+  const payload = {
+    content,
+    importance,
+    tags,
+    created_by: existing?.created_by || "user",
+    origin_kind: existing?.origin_kind || "user_asserted",
+  };
+
+  try {
+    const isEdit = !!editingMemoryId;
+    const url = isEdit
+      ? `/api/memories/${encodeURIComponent(editingMemoryId)}`
+      : "/api/memories";
+    const method = isEdit ? "PUT" : "POST";
+
+    const res = await fetch(url, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert(`Failed to ${isEdit ? "update" : "create"} memory: ` + (err.detail || res.status));
+      return;
+    }
+
+    const data = await res.json();
+    const memoryId = data.id;
+
+    // Only link on first create, not on edit.
+    if (!isEdit && memoryId) {
+      if (conversationId) {
+        const resLinkConv = await fetch(
+          `/api/memories/${encodeURIComponent(memoryId)}/link_conversation/${encodeURIComponent(conversationId)}`,
+          { method: "POST" }
+        );
+        if (!resLinkConv.ok) {
+          console.warn("Failed to link memory to conversation", await resLinkConv.text());
+        }
+      }
+
+      const meta = conversationMap.get(conversationId);
+      const pid = meta?.project_id ?? null;
+      if (pid != null) {
+        const resLinkProj = await fetch(
+          `/api/memories/${encodeURIComponent(memoryId)}/link_project/${pid}`,
+          { method: "POST" }
+        );
+        if (!resLinkProj.ok) {
+          console.warn("Failed to link memory to project", await resLinkProj.text());
+        }
+      }
+    }
+
+    resetMemoryEditor();
+    await loadMemories();
+    await refreshContext();
+  } catch (e) {
+    console.error("createMemoryFromUi failed", e);
+    alert("Error saving memory – see console for details.");
+  }
+}
+/*
 async function createMemoryFromUi() {
   if (!memoryTextEl) return;
 
@@ -2400,6 +2676,142 @@ async function createMemoryFromUi() {
     console.error("createMemoryFromUi failed", e);
     alert("Error creating memory – see console for details.");
   }
+}
+*/
+
+// #endregion
+
+// #region Memory helpers
+
+async function fetchMemories() {
+  return await fetchJsonDebug("/api/memories");
+}
+
+function memoryTagsToInput(tags) {
+  if (!tags) return "";
+  try {
+    const parsed = JSON.parse(tags);
+    if (Array.isArray(parsed)) return parsed.join(", ");
+  } catch (_) {
+    // leave as-is
+  }
+  return String(tags);
+}
+
+function memoryTagsToDisplay(tags) {
+  const s = memoryTagsToInput(tags);
+  return s ? s.split(",").map(x => x.trim()).filter(Boolean) : [];
+}
+
+function resetMemoryEditor() {
+  editingMemoryId = null;
+  if (memoryTextEl) memoryTextEl.value = "";
+  if (memoryTagsEl) memoryTagsEl.value = "";
+  if (memoryImportanceEl) memoryImportanceEl.value = "0";
+  if (memorySaveBtn) memorySaveBtn.textContent = "Save memory";
+  if (memoryCancelEditBtn) memoryCancelEditBtn.classList.add("hidden");
+}
+
+function startEditingMemory(mem) {
+  if (!mem) return;
+  editingMemoryId = mem.id;
+  if (memoryTextEl) memoryTextEl.value = mem.content || "";
+  if (memoryTagsEl) memoryTagsEl.value = memoryTagsToInput(mem.tags);
+  if (memoryImportanceEl) memoryImportanceEl.value = String(mem.importance ?? 0);
+  if (memorySaveBtn) memorySaveBtn.textContent = "Update memory";
+  if (memoryCancelEditBtn) memoryCancelEditBtn.classList.remove("hidden");
+  openMemoryModal();
+}
+
+function renderMemories(memories) {
+  if (!memoryListEl) return;
+
+  memoriesCache = Array.isArray(memories) ? memories : [];
+  memoryListEl.innerHTML = "";
+
+  if (!memoriesCache.length) {
+    const empty = document.createElement("div");
+    empty.className = "memPlaceholder";
+    empty.textContent = "No saved memories yet.";
+    memoryListEl.appendChild(empty);
+    return;
+  }
+
+  memoriesCache.forEach((m) => {
+    const item = document.createElement("div");
+    item.className = "pinItem";
+
+    const preview = document.createElement("div");
+    preview.className = "pinText memoryPreview";
+    preview.textContent = m.content || "";
+
+    const meta = document.createElement("div");
+    meta.className = "memoryMeta";
+
+    const bits = [];
+    bits.push(`importance ${m.importance ?? 0}`);
+    bits.push(m.origin_kind || "user_asserted");
+    bits.push(m.created_by || "user");
+
+    if (m.updated_at || m.created_at) {
+      bits.push(formatReadableDateTime(m.updated_at || m.created_at));
+    }
+
+    const tagBits = memoryTagsToDisplay(m.tags);
+    if (tagBits.length) {
+      bits.push(`tags: ${tagBits.join(", ")}`);
+    }
+
+    if (Array.isArray(m.project_ids) && m.project_ids.length) {
+      bits.push(`projects: ${m.project_ids.join(", ")}`);
+    }
+
+    if (Array.isArray(m.conversation_ids) && m.conversation_ids.length) {
+      bits.push(`chats: ${m.conversation_ids.length}`);
+    }
+
+    meta.textContent = bits.join(" · ");
+
+    const actions = document.createElement("div");
+    actions.className = "pinActions";
+
+    const editBtn = document.createElement("button");
+    editBtn.textContent = "Edit";
+    editBtn.addEventListener("click", () => startEditingMemory(m));
+
+    const deleteBtn = document.createElement("button");
+    deleteBtn.textContent = "Delete";
+    deleteBtn.addEventListener("click", async () => {
+      const ok = confirm(`Delete this memory?\n\n${(m.content || "").slice(0, 180)}`);
+      if (!ok) return;
+
+      await fetch(`/api/memories/${encodeURIComponent(m.id)}`, {
+        method: "DELETE",
+      });
+
+      if (editingMemoryId === m.id) {
+        resetMemoryEditor();
+      }
+
+      await loadMemories();
+      await refreshContext();
+    });
+
+    actions.appendChild(editBtn);
+    actions.appendChild(deleteBtn);
+
+    item.appendChild(preview);
+    item.appendChild(meta);
+    item.appendChild(actions);
+
+    memoryListEl.appendChild(item);
+  });
+}
+
+async function loadMemories() {
+  const memories = await fetchMemories();
+  renderMemories(memories);
+  return memories;
 }
 
 // #endregion
@@ -3258,16 +3670,16 @@ function setFilesButtonEnabled(btn, enabled) {
 
 async function refreshGlobalFilesState() {
   // Uses the new /api/files/summary endpoint (we'll add it below)
-  if (!topLeftManageFilesBtn) return;
+  if (!topMenuManageFilesBtn) return;
   try {
     const data = await fetchJsonDebug("/api/files/summary");
     const total = data?.total ?? 0;
     hasAnyFiles = total > 0;
-    setFilesButtonEnabled(topLeftManageFilesBtn, hasAnyFiles);
+    setFilesButtonEnabled(topMenuManageFilesBtn, hasAnyFiles);
   } catch (err) {
     console.error("files summary error", err);
     // On error, don't hard-disable the button
-    setFilesButtonEnabled(topLeftManageFilesBtn, true);
+    setFilesButtonEnabled(topMenuManageFilesBtn, true);
   }
 }
 
@@ -3385,9 +3797,9 @@ if (projMenuManageFilesBtn) {
   });
 }
 
-if (topLeftManageFilesBtn) {
-  topLeftManageFilesBtn.addEventListener("click", () => {
-    if (topLeftManageFilesBtn.classList.contains("files-disabled")) {
+if (topMenuManageFilesBtn) {
+  topMenuManageFilesBtn.addEventListener("click", () => {
+    if (topMenuManageFilesBtn.classList.contains("files-disabled")) {
       return;
     }
     openFilesModalAll();
@@ -3413,27 +3825,57 @@ if (filesBackdrop) {
 
 // #region Memory and Pin event bindings
 
-if (addPinBtn) {
-  addPinBtn.addEventListener("click", addPin);
-}
-if (saveMemoryBtn) {
-  saveMemoryBtn.addEventListener("click", () => {
+if (memorySaveBtn) {
+  memorySaveBtn.addEventListener("click", () => {
     createMemoryFromUi().catch(e => console.error("createMemoryFromUi error", e));
   });
 }
-
-if (openMemoryBtn) {
-  openMemoryBtn.addEventListener("click", () => {
+if (topMenuOpenMemoryBtn) {
+  topMenuOpenMemoryBtn.addEventListener("click", async () => {
     openMemoryModal();
-    // hide the chat menu when opening modal, so it doesn't float over
-    toggleChatMenu(false);
+    toggleTopMenu(false);
+    try {
+      await loadPersonalization();
+      // TODO consider moving this into loadPersonalization
+      resetPinEditor();
+      await refreshContext();
+    } catch (e) {
+      console.error("loadPersonalization failed", e);
+    }
+    try {
+      await loadMemories();
+      await refreshContext();
+    } catch (e) {
+      console.error("loadMemories failed", e);
+    }
   });
 }
-if (closeMemoryBtn) {
-  closeMemoryBtn.addEventListener("click", closeMemoryModal);
+if (persCloseBtn) {
+  persCloseBtn.addEventListener("click", closeMemoryModal);
 }
-if (memoryBackdrop) {
-  memoryBackdrop.addEventListener("click", closeMemoryModal);
+if (persBackdrop) {
+  persBackdrop.addEventListener("click", closeMemoryModal);
+}
+if (memoryCancelEditBtn) {
+  memoryCancelEditBtn.addEventListener("click", resetMemoryEditor);
+}
+if (aboutYouSaveBtn) {
+  aboutYouSaveBtn.addEventListener("click", async () => {
+    try {
+      await saveAboutYou();
+    } catch (e) {
+      console.error("saveAboutYou failed", e);
+      alert("Error saving About You – see console for details.");
+    }
+  });
+}
+if (pinAddOrSaveBtn) {
+  pinAddOrSaveBtn.addEventListener("click", () => {
+    savePinFromUi().catch(e => console.error("savePinFromUi error", e));    
+  });
+}
+if (pinCancelEditBtn) {
+  pinCancelEditBtn.addEventListener("click", resetPinEditor);
 }
 
 // #endregion
@@ -3598,6 +4040,7 @@ if (contextPreviewToggleBtn) {
 
 // #endregion
 
+/*
 // #region Chat buttons in the top panel (now hidden)
 if (topMenuRenameChatBtn) {
   topMenuRenameChatBtn.addEventListener("click", renameChat);
@@ -3606,16 +4049,18 @@ if (topMenuSuggestTitleBtn) {
   topMenuSuggestTitleBtn.addEventListener("click", suggestChatTitle);
 }
 // #endregion
+*/
+
 // #region Top Bar event bindings
 
-if (topBarChatMenuBtn) {
-  topBarChatMenuBtn.addEventListener("click", (e) => {
+if (topMenuBtn) {
+  topMenuBtn.addEventListener("click", (e) => {
     e.stopPropagation();
-    toggleChatMenu();
+    toggleTopMenu();
   });
 }
-if (topBarChatMenu) {
-  topBarChatMenu.addEventListener("click", (e) => {
+if (topMenu) {
+  topMenu.addEventListener("click", (e) => {
     // don't let clicks inside menu bubble up and close it
     e.stopPropagation();
   });
@@ -3778,7 +4223,7 @@ document.addEventListener("click", (e) => {
   if (projMenuEl && !projMenuEl.classList.contains("hidden") && !projMenuEl.contains(e.target))
     projMenuEl.classList.add("hidden");
   // clicking anywhere else closes the menu
-  toggleChatMenu(false);
+  toggleTopMenu(false);
 });
 
 // #endregion
@@ -3796,7 +4241,7 @@ chatWindowInputTextbox.addEventListener("keydown", (e) => {
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") hideConvMenu();
   // optional: Esc closes modal
-  if (e.key === "Escape" && memoryModal && !memoryModal.classList.contains("hidden")) {
+  if (e.key === "Escape" && persModal && !persModal.classList.contains("hidden")) {
     closeMemoryModal();
   }
 });
@@ -3872,11 +4317,11 @@ window.addEventListener("beforeunload", () => {
       await newChat();
     }
 
-    bootLog("[boot] fetchPins");
-    const pins = await fetchPins();
-
-    bootLog("[boot] renderPins");
-    renderPins(pins);
+    bootLog("[boot] loadPersonalization");
+    await loadPersonalization();
+    bootLog("[boot] loadMemories");
+    await loadMemories();
+    await refreshContext();
 
     bootLog("[boot] refreshContext");
     await refreshContext();

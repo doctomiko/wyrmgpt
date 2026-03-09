@@ -137,6 +137,14 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
+.iconButton {
+  padding: 6px 8px;
+  border-radius: 999px;
+  font-size: 16px;
+  line-height: 1;
+}
+
+
 .title { font-weight: 700; letter-spacing: 0.2px; }
 
 button {
@@ -318,33 +326,8 @@ textarea {
   color: var(--text);
 }
 
-.memHeader {
-  padding: 12px 12px;
-  border-bottom: 1px solid var(--border);
-  font-weight: 700;
-}
 
-.memSection {
-  padding: 12px;
-  border-bottom: 1px solid var(--border);
-}
-
-.memTitle {
-  font-size: 12px;
-  color: var(--muted);
-  margin-bottom: 8px;
-  text-transform: uppercase;
-  letter-spacing: 0.8px;
-}
-
-.memAdd {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 8px;
-  align-items: start;
-  margin-bottom: 10px;
-}
-
+/* Pins and Memories */
 .pinList {
   display: flex;
   flex-direction: column;
@@ -374,20 +357,119 @@ textarea {
   gap: 8px;
 }
 
+/* Memories */
+.memHeader {
+  padding: 12px 12px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 700;
+}
+
+.memSection {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.memTitle {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+}
+
+.memAdd {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 8px;
+  align-items: start;
+  margin-bottom: 10px;
+}
+
 .memPlaceholder {
   font-size: 13px;
   color: var(--muted);
   line-height: 1.3;
 }
 
+.memoryPreview {
+  white-space: pre-wrap;
+  line-height: 1.25;
+  font-size: 13px;
+  max-height: 6.2em;
+  overflow: hidden;
+}
+
+.memoryMeta {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.25;
+}
+
+.memGrid2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.memGrid2 > label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.span2-important {
+  grid-column: 1 / -1 !important;
+}
+
+.memGrid2 .span2,
+#pinText,
+#memoryText {
+  grid-column: 1 / -1;
+}
+
+#aboutYouOccupation,
+#aboutYouMore {
+  width: 100%;
+}
+
+#aboutYouButtonRow,
+.memSection > .span2,
+.memSection > .span2-important {
+  display: block;
+  width: 100%;
+}
+
+.memAdd > button,
+#saveAboutYou,
+#saveMemory,
+#cancelPinEdit,
+#cancelMemoryEdit {
+  width: auto;
+  justify-self: start;
+  align-self: start;
+  white-space: nowrap;
+}
+
+
+/* Top Bar above chat window */
 #chatTop {
   display: flex;
-  align-items: center;
+  align-items: flex-start;   /* let children align at the top when title wraps */
+  /* align-items: center; */
+  vertical-align: middle;
   justify-content: space-between;
-  gap: 12px;
-  padding: 10px 14px;
+  min-height: 40px;   /* keep a baseline */
+  height: auto;       /* allow it to grow when the title wraps */
+  padding: 8px 12px;
+  gap: 6px;
   border-bottom: 1px solid var(--border);
   background: rgba(0,0,0,0.20);
+}
+
+#chatTitleWrapper {
+  flex: 1 1 auto;            /* title takes the leftover space */
+  min-width: 0;
 }
 
 .chatTitle {
@@ -405,44 +487,32 @@ textarea {
   white-space: normal;          /* allow wrapping */
 }
 
-#chatTop {
-  display: flex;
-  align-items: flex-start;   /* let children align at the top when title wraps */
-  vertical-align: middle;
-  min-height: 40px;   /* keep a baseline */
-  height: auto;       /* allow it to grow when the title wraps */
-  gap: 6px;
-}
-
-#chatTitleWrapper {
-  flex: 1 1 auto;            /* title takes the leftover space */
-  min-width: 0;
-}
-
 #modelSelectA,
 #modelSelectB {
   flex: 0 0 auto;            /* don’t stretch; keep natural width */
 }
 
+/* if we ever need this again it should be here */
 .chatTopActions {
   display: flex;
   gap: 8px;
-  align-items: top;
+  align-items: flex-start;
   position: relative;
 }
 
-.iconButton {
-  padding: 6px 8px;
-  border-radius: 999px;
-  font-size: 16px;
-  line-height: 1;
+
+/* burger menu at the top */
+.sideHeaderButtons {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  position: relative;
 }
 
-.chatMenu {
+.topMenu {
   position: absolute;
   right: 0;
-  top: 100%;
-  margin-top: 6px;
+  top: calc(100% + 6px);
   background: rgba(17,24,38,0.98);
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -455,11 +525,11 @@ textarea {
   z-index: 9000;
 }
 
-.chatMenu.hidden {
+.topMenu.hidden {
   display: none;
 }
 
-.chatMenu button {
+.topMenu button {
   width: 100%;
   text-align: left;
 }
@@ -471,6 +541,7 @@ textarea {
   font-size: 12px;
   color: var(--muted);
 }
+
 
 #rightSidePanel .rightSideSection {
   flex: 1 1 auto;
