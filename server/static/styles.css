@@ -430,7 +430,7 @@ textarea {
 
 #projectSettingsSection .checkboxRow {
   display: flex;
-  align-items: center;
+  align-items: left;
   gap: 8px;
 }
 

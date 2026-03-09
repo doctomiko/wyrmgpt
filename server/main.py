@@ -187,6 +187,8 @@ class MemoryCreate(BaseModel):
     tags: str | None = None
     created_by: str = "user"
     origin_kind: str = "user_asserted"
+    scope_type: str = "global"
+    scope_id: int | None = None
 
 class MemoryUpdate(BaseModel):
     content: str
@@ -194,6 +196,8 @@ class MemoryUpdate(BaseModel):
     tags: str | None = None
     created_by: str = "user"
     origin_kind: str = "user_asserted"
+    scope_type: str | None = None
+    scope_id: int | None = None
 
 class PinRequest(BaseModel):
     text: str
@@ -1299,6 +1303,8 @@ def api_create_memory(req: MemoryCreate):
             tags=req.tags,
             created_by=req.created_by,
             origin_kind=req.origin_kind,
+            scope_type=req.scope_type,
+            scope_id=req.scope_id,
         )
         invalidate_all_context_cache()
         return JSONResponse(mem)
@@ -1315,11 +1321,45 @@ def api_update_memory(memory_id: str, req: MemoryUpdate):
             tags=req.tags,
             created_by=req.created_by,
             origin_kind=req.origin_kind,
+            scope_type=req.scope_type,
+            scope_id=req.scope_id,
         )
         invalidate_all_context_cache()
         return JSONResponse(mem)
     except ValueError as e:
         _http_from_value_error(e)
+
+if (False):
+    @app.post("/api/memories")
+    def api_create_memory(req: MemoryCreate):
+        try:
+            mem = db_create_memory(
+                req.content,
+                importance=req.importance,
+                tags=req.tags,
+                created_by=req.created_by,
+                origin_kind=req.origin_kind,
+            )
+            invalidate_all_context_cache()
+            return JSONResponse(mem)
+        except ValueError as e:
+            _http_from_value_error(e)
+
+    @app.put("/api/memories/{memory_id}")
+    def api_update_memory(memory_id: str, req: MemoryUpdate):
+        try:
+            mem = db_update_memory(
+                memory_id,
+                req.content,
+                importance=req.importance,
+                tags=req.tags,
+                created_by=req.created_by,
+                origin_kind=req.origin_kind,
+            )
+            invalidate_all_context_cache()
+            return JSONResponse(mem)
+        except ValueError as e:
+            _http_from_value_error(e)
 
 @app.delete("/api/memories/{memory_id}")
 def api_delete_memory(memory_id: str):

@@ -92,15 +92,13 @@
       </div>
       <div class="modalBody">
         <div id="projectSettingsSection" class="memSection hidden">
-          <div class="memTitle">Project Settings</div>
-
-          <div class="memAdd">
-            <label class="span2">
+          <div id="projectSettingsTitle" class="memTitle">Project Settings</div>
+          <div>
+            <label>
               Project Prompt
               <textarea id="projectSystemPrompt" rows="6" placeholder="This prompt applies only to this project."></textarea>
             </label>
           </div>
-
           <div class="memGrid2">
             <label>
               Visibility
@@ -109,15 +107,15 @@
                 <option value="global">Global</option>
               </select>
             </label>
-
-            <label class="checkboxRow">
+          </div>
+          <div>
+            <label class="checkboxRow span2">
               <input id="projectOverrideCorePrompt" type="checkbox" />
               Override global/core prompt for this project
             </label>
           </div>
-
           <div class="memHint" id="projectSettingsHint">
-            Global “About You” still applies everywhere. Project prompt and project instructions only affect this project.
+            Global personalization settings including Memories, Custom Instructions, and “About You” still apply everywhere. Project prompt, instructions, and memories only affect this project.
           </div>
 
           <div class="memAdd">
@@ -157,16 +155,6 @@
           </div>
           <div id="pinList" class="pinList"></div>
         </div>
-        <!--
-        <div class="memSection">
-          <div class="memTitle">Custom Instructions</div>
-          <div class="span2">
-            <textarea id="pinText" rows="3" placeholder="Add an instruction…"></textarea>
-            <button id="addPin">Save</button>
-          </div>
-          <div id="pinList" class="pinList"></div>
-        </div>
-        -->
         <div class="memSection">
           <div class="memTitle">Add/Edit Memory</div>
           <div class="memAdd span2-important">

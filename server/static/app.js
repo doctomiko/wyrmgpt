@@ -98,6 +98,7 @@ const pinAddOrSaveBtn = document.getElementById("addPin");
 const pinCancelEditBtn = document.getElementById("cancelPinEdit");
 // Project Settings in Memory model
 const projectSettingsSectionEl = document.getElementById("projectSettingsSection");
+const projectSettingsTitle = document.getElementById("projectSettingsTitle");
 const projectSystemPromptEl = document.getElementById("projectSystemPrompt");
 const projectVisibilityEl = document.getElementById("projectVisibility");
 const projectOverrideCorePromptEl = document.getElementById("projectOverrideCorePrompt");
@@ -444,6 +445,7 @@ async function openArtifactsDebug() {
     alert("Pick a conversation first.");
     return;
   }
+  hideAllTransientUI({ except: [projMenuEl] });
   artifactsDebugPre.textContent = "Loading…";
   artifactsDebugModal.classList.remove("hidden");
 
@@ -485,12 +487,29 @@ function toggleTopMenu(forceState) {
   const shouldShow = forceState !== undefined
     ? forceState
     : topMenu.classList.contains("hidden");
+
+  if (shouldShow) {
+    hideAllTransientUI({ except: [topMenu] });
+    topMenu.classList.remove("hidden");
+  } else {
+    topMenu.classList.add("hidden");
+  }
+}
+/*
+function toggleTopMenu(forceState) {
+  if (!topMenu) return;
+  const shouldShow = forceState !== undefined
+    ? forceState
+    : topMenu.classList.contains("hidden");
   if (shouldShow) {
     topMenu.classList.remove("hidden");
   } else {
     topMenu.classList.add("hidden");
   }
 }
+*/
+
+// #region General Menu / Modal Helpers
 
 // to ensure small modals (like conversation and project mgmt.) don't end up off-screen if the click is near the edge
 function positionMenu(menuEl, x, y) {
@@ -519,6 +538,35 @@ function positionMenu(menuEl, x, y) {
   menuEl.style.left = left + "px";
   menuEl.style.top = top + "px";
 }
+
+function hideProjMenu() {
+  menuTargetProjectId = null;
+  if (projMenuEl) projMenuEl.classList.add("hidden");
+}
+
+function hideAllTransientUI({ except = [] } = {}) {
+  const keep = new Set((Array.isArray(except) ? except : [except]).filter(Boolean));
+
+  if (topMenu && !keep.has(topMenu)) {
+    topMenu.classList.add("hidden");
+  }
+
+  if (convMenuEl && !keep.has(convMenuEl)) {
+    hideConvMenu();
+  }
+
+  if (projMenuEl && !keep.has(projMenuEl)) {
+    hideProjMenu();
+  }
+
+  document.querySelectorAll(".modal").forEach((modal) => {
+    if (!keep.has(modal)) {
+      modal.classList.add("hidden");
+    }
+  });
+}
+
+// #endregion
 
 // #region Chat Meta-Info Helpers
 
@@ -575,6 +623,7 @@ function openMetaInfo(title, obj) {
   ensureMetaInfoModal();
   metaInfoTitleEl.textContent = title || "Details";
   metaInfoPreEl.textContent = JSON.stringify(obj || {}, null, 2);
+  hideAllTransientUI({ except: [projMenuEl] });
   metaInfoModal.classList.remove("hidden");
 }
 
@@ -2287,6 +2336,10 @@ function setPersonalizationModeGlobal() {
 
   const title = persModal?.querySelector(".modalTitle");
   if (title) title.textContent = "Personalization";
+
+  if (projectSettingsTitle) {
+    projectSettingsTitle.textContent = "Project Settings";
+  }
 }
 
 function setPersonalizationModeProject(projectObj) {
@@ -2300,14 +2353,27 @@ function setPersonalizationModeProject(projectObj) {
   if (projectVisibilityEl) projectVisibilityEl.value = projectObj?.visibility || "private";
   if (projectOverrideCorePromptEl) projectOverrideCorePromptEl.checked = !!projectObj?.override_core_prompt;
 
+  const projectName = projectObj?.name || "Project";
+
   const title = persModal?.querySelector(".modalTitle");
-  if (title) title.textContent = `Project Settings — ${projectObj?.name || "Project"}`;
+  if (title) title.textContent = `Project Settings — ${projectName}`;
+
+  if (projectSettingsTitle) {
+    projectSettingsTitle.textContent = `Project Settings — ${projectName}`;
+  }
 }
 
 function openMemoryModal() {
   if (!persModal) return;
+  hideAllTransientUI({ except: [persModal] });
   persModal.classList.remove("hidden");
 }
+/*
+function openMemoryModal() {
+  if (!persModal) return;
+  persModal.classList.remove("hidden");
+}
+*/
 
 function closeMemoryModal() {
   if (!persModal) return;
@@ -2318,6 +2384,7 @@ async function loadPersonalization() {
   const [pins, aboutYou] = await Promise.all([
     fetchPins(),
     fetchAboutYou(),
+    loadMemories()
   ]);
   let filteredPins = pins || [];
   if (personalizationMode === "project" && personalizationProjectId != null) {
@@ -2539,8 +2606,9 @@ async function createMemoryFromUi() {
     tags,
     created_by: existing?.created_by || "user",
     origin_kind: existing?.origin_kind || "user_asserted",
+    scope_type: existing?.scope_type || (personalizationMode === "project" ? "project" : "global"),
+    scope_id: existing ? (existing.scope_id ?? null) : (personalizationMode === "project" ? personalizationProjectId : null),
   };
-
   const forcedProjectId =
   personalizationMode === "project" && personalizationProjectId != null
     ? personalizationProjectId
@@ -2638,6 +2706,33 @@ function startEditingMemory(mem) {
   openMemoryModal();
 }
 
+async function saveMemoryScope(mem, scopeType, scopeId) {
+  const payload = {
+    content: mem.content || "",
+    importance: mem.importance ?? 0,
+    tags: memoryTagsToInput(mem.tags) || null,
+    created_by: mem.created_by || "user",
+    origin_kind: mem.origin_kind || "user_asserted",
+    scope_type: scopeType,
+    scope_id: scopeId,
+  };
+
+  const res = await fetch(`/api/memories/${encodeURIComponent(mem.id)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    alert("Failed to update memory scope: " + (err.detail || res.status));
+    return;
+  }
+
+  await loadMemories();
+  await refreshContext();
+}
+
 function renderMemories(memories) {
   if (!memoryListEl) return;
 
@@ -2667,11 +2762,12 @@ function renderMemories(memories) {
     bits.push(`importance ${m.importance ?? 0}`);
     bits.push(m.origin_kind || "user_asserted");
     bits.push(m.created_by || "user");
+    bits.push(`scope: ${(m.scope_type || "global")}${m.scope_id != null ? `:${m.scope_id}` : ""}`);
 
     if (m.updated_at || m.created_at) {
       bits.push(formatReadableDateTime(m.updated_at || m.created_at));
     }
-
+    
     const tagBits = memoryTagsToDisplay(m.tags);
     if (tagBits.length) {
       bits.push(`tags: ${tagBits.join(", ")}`);
@@ -2693,6 +2789,7 @@ function renderMemories(memories) {
     const editBtn = document.createElement("button");
     editBtn.textContent = "Edit";
     editBtn.addEventListener("click", () => startEditingMemory(m));
+    actions.appendChild(editBtn);
 
     const deleteBtn = document.createElement("button");
     deleteBtn.textContent = "Delete";
@@ -2711,9 +2808,37 @@ function renderMemories(memories) {
       await loadMemories();
       await refreshContext();
     });
-
-    actions.appendChild(editBtn);
     actions.appendChild(deleteBtn);
+
+    const originalProjectId =
+      Array.isArray(m.project_ids) && m.project_ids.length
+        ? Number(m.project_ids[0])
+        : null;
+
+    if (personalizationMode === "project" && m.scope_type === "project") {
+      const globalBtn = document.createElement("button");
+      globalBtn.textContent = "Make Global";
+      globalBtn.addEventListener("click", async () => {
+        const ok = confirm("Promote this memory to global scope?");
+        if (!ok) return;
+        await saveMemoryScope(m, "global", null);
+      });
+      actions.appendChild(globalBtn);
+    } else if (
+      personalizationMode === "global" &&
+      (m.scope_type || "global") === "global" &&
+      originalProjectId != null
+    ) {
+      const proj = projectsCache.find(p => Number(p.id) === originalProjectId);
+      const returnBtn = document.createElement("button");
+      returnBtn.textContent = proj ? `Return to ${proj.name}` : "Return to Project";
+      returnBtn.addEventListener("click", async () => {
+        const ok = confirm(`Return this memory to ${proj?.name || "its original project"} scope?`);
+        if (!ok) return;
+        await saveMemoryScope(m, "project", originalProjectId);
+      });
+      actions.appendChild(returnBtn);
+    }
 
     item.appendChild(preview);
     item.appendChild(meta);
@@ -2723,6 +2848,25 @@ function renderMemories(memories) {
   });
 }
 
+async function loadMemories() {
+  const memories = await fetchMemories();
+  let filtered = memories || [];
+
+  if (personalizationMode === "project" && personalizationProjectId != null) {
+    filtered = filtered.filter(m =>
+      (m.scope_type === "project") &&
+      Number(m.scope_id) === Number(personalizationProjectId)
+    );
+  } else {
+    filtered = filtered.filter(m =>
+      (m.scope_type || "global") === "global"
+    );
+  }
+
+  renderMemories(filtered);
+  return filtered;
+}
+/*
 async function loadMemories() {
   const memories = await fetchMemories();
   let filtered = memories || [];
@@ -2741,6 +2885,7 @@ async function loadMemories() {
   renderMemories(filtered);
   return filtered;
 }
+*/
 /*
 async function loadMemories() {
   const memories = await fetchMemories();
@@ -2878,6 +3023,7 @@ async function archiveConversation(conversationId, archived) {
 }
 
 function showConvMenu(e, targetId) {
+  hideAllTransientUI({ except: [convMenuEl] });
   menuTargetConversationId = targetId;
   positionMenu(convMenuEl, e.clientX, e.clientY);
   if (convMenuManageFilesBtn) {
@@ -3055,6 +3201,7 @@ function renderProjects(projects, conversations) {
           p.visibility === "global" ? "Make Private" : "Make Global";
       }
 
+      hideAllTransientUI({ except: [projMenuEl] });
       positionMenu(projMenuEl, ev.clientX, ev.clientY);
 
       if (projMenuManageFilesBtn) {
@@ -3119,7 +3266,7 @@ async function sha256OfFile(file) {
 
 function openUploadModal(forceScope, explicitProjectId) {
   if (!uploadModal) return;
-
+  hideAllTransientUI({ except: [projMenuEl] });
   uploadProjectIdForced = explicitProjectId ?? null;
 
   // Reset state
@@ -3365,6 +3512,7 @@ function openFilesModalAll() {
 
 async function loadFilesModal() {
   if (!filesModal || !filesListEl) return;
+  hideAllTransientUI({ except: [projMenuEl] });
 
   let url = null;
 
@@ -3797,16 +3945,10 @@ if (topMenuOpenMemoryBtn) {
     openMemoryModal();
     toggleTopMenu(false);
     try {
-      await loadPersonalization();
+      loadPersonalization();
     } catch (e) {
-      console.error("loadPersonalization failed", e);
-    }
-    try {
-      await loadMemories();
-      await refreshContext();
-    } catch (e) {
-      console.error("loadMemories failed", e);
-    }
+      console.error("load global personalization failed", e);
+    }    
   });
 }
 if (persCloseBtn) {
@@ -4124,7 +4266,6 @@ if (projMenuSettingsBtn) {
     setPersonalizationModeProject(projectObj);
     openMemoryModal();
     toggleTopMenu(false);
-    hideAllMenus();
 
     resetPinEditor();
     resetMemoryEditor();

@@ -438,6 +438,30 @@ def _humanize_pin_title(title: str) -> str:
         return ""
     return " ".join(word.capitalize() for word in raw.split())
 
+def _order_scoped_pins_for_context(
+    pins: list[dict],
+    project_id: int | None,
+    *,
+    limit: int | None = None,
+) -> list[dict]:
+    project_pins: list[dict] = []
+    global_pins: list[dict] = []
+
+    for p in pins or []:
+        scope_type = (p.get("scope_type") or "global").strip().lower()
+        scope_id = p.get("scope_id")
+
+        if scope_type == "project":
+            if project_id is not None and scope_id is not None and int(scope_id) == int(project_id):
+                project_pins.append(p)
+        else:
+            global_pins.append(p)
+
+    ordered = project_pins + global_pins
+    if limit is not None and limit > 0:
+        ordered = ordered[:limit]
+    return ordered
+
 def _build_personalization_blocks(pins: list[dict]) -> dict:
     about_lines: list[str] = []
     extra_profile_lines: list[str] = []
@@ -581,15 +605,39 @@ def build_context(
         text = zeitgeber_prefix(created_at, raw_content) if created_at else raw_content
         typed_history.append({"role": r["role"], "content": text})
 
-    pinned = list_memory_pins(limit=ctx_cfg.memory_pin_limit)
+    sources = get_context_sources(conversation_id)
+    project_id = sources.get("project_id")
+
+    # Fetch a wider pool first, then scope/order locally so project pins do not get crowded out by globals.
+    all_pins = list_memory_pins(limit=max(int(ctx_cfg.memory_pin_limit or 50) * 4, 200))
     # This breaks pins out into LLM readable information we can put in a system block
+    pinned = _order_scoped_pins_for_context(
+        all_pins,
+        project_id,
+        limit=ctx_cfg.memory_pin_limit,
+    )
+
+    # Build LLM-readable personalization blocks from scoped pins.
     personalization = _build_personalization_blocks(pinned)
     pinned_texts = personalization["plain_texts"]
-    log_debug("[context] pins:", [(p.get("id"), p.get("pin_kind"), p.get("title"), p.get("text")) for p in pinned])
-    log_debug("[context] personalization blocks:", personalization["blocks"])
-    log_debug("[context] pinned_texts:", pinned_texts)
 
-    sources = get_context_sources(conversation_id)
+    log_debug(
+        "[context] scoped pins (project_id=%s): %s",
+        project_id,
+        [(p.get("id"), p.get("scope_type"), p.get("scope_id"), p.get("pin_kind"), p.get("title"), p.get("text")) for p in pinned]
+    )
+    log_debug("[context] personalization blocks: %s", personalization["blocks"])
+    log_debug("[context] pinned_texts: %s", pinned_texts)
+
+    if (False):
+        pinned = list_memory_pins(limit=ctx_cfg.memory_pin_limit)
+        personalization = _build_personalization_blocks(pinned)
+        pinned_texts = personalization["plain_texts"]
+        log_debug("[context] pins:", [(p.get("id"), p.get("pin_kind"), p.get("title"), p.get("text")) for p in pinned])
+        log_debug("[context] personalization blocks:", personalization["blocks"])
+        log_debug("[context] pinned_texts:", pinned_texts)
+        sources = get_context_sources(conversation_id)
+    
     # Pull summary if present
     summary = get_conversation_summary_text(conversation_id)
     if (False):

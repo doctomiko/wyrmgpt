@@ -36,7 +36,7 @@ DB_PATH = DATA_DIR / "callie_mvp.sqlite3"
 _VALID_TABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 SIDECAR_THRESHOLD_BYTES = 500 * 1024 # 500KB default threshold for when to use sidecar files for artifact content
 
@@ -221,6 +221,8 @@ def drop_empty_satellite_tables(conn: sqlite3.Connection | None = None) -> list[
 # endregion
 
 # region Latest migrations
+
+# region Big Chunky SQL
 
 def _migrate_schema_v8(conn: sqlite3.Connection) -> None:
     """
@@ -572,6 +574,10 @@ def _apply_schema_v8(conn: sqlite3.Connection) -> None:
         (str(SCHEMA_VERSION),),
     )
 
+# endregion
+
+# region Slightly Older but Newer Migrations
+
 # Basically just makes new tables, but we'll call it a migration regardless
 def _migrate_schema_v9(conn) -> None:
     """
@@ -811,6 +817,8 @@ def _migrate_schema_v15(conn) -> None:
                 created_at,
             ))
 
+# endregion
+
 def _migrate_schema_v16(conn) -> None:
     if _table_exists(conn, "memory_pins"):
         _add_column_if_missing(conn, "memory_pins", "pin_kind", "TEXT NOT NULL DEFAULT 'instruction'")
@@ -843,6 +851,24 @@ def _migrate_schema_v16(conn) -> None:
             WHERE updated_at IS NULL OR TRIM(updated_at) = ''
         """, (_utc_now_iso(),))
 
+def _migrate_schema_v17(conn) -> None:
+    _add_column_if_missing(conn, "memories", "scope_type", "TEXT NOT NULL DEFAULT 'global'")
+    _add_column_if_missing(conn, "memories", "scope_id", "INTEGER")
+
+    conn.execute("""
+        UPDATE memories
+        SET scope_type = 'global'
+        WHERE scope_type IS NULL
+           OR TRIM(scope_type) = ''
+           OR scope_type = 'scope_type'
+           OR LOWER(scope_type) NOT IN ('global', 'project')
+    """)
+
+    conn.execute("""
+        UPDATE memories
+        SET scope_id = NULL
+        WHERE COALESCE(scope_type, 'global') = 'global'
+    """)
 # endregion
 
 # region Clean builds for new databases
@@ -892,6 +918,7 @@ def init_schema() -> None:
             _migrate_schema_v14(conn)
             _migrate_schema_v15(conn)
             _migrate_schema_v16(conn)
+            _migrate_schema_v17(conn)
             _end_schema_init(conn, current)
             return
 
@@ -937,6 +964,8 @@ def init_schema() -> None:
             _migrate_schema_v15(conn)
         if current < 16:
             _migrate_schema_v16(conn)
+        if current < 17:
+            _migrate_schema_v17(conn)
         _end_schema_init(conn, current)
 
 # endregion
@@ -2852,6 +2881,8 @@ def _memory_row_to_dict(row: sqlite3.Row) -> dict:
         "content": row["content"],
         "importance": int(row["importance"]) if row["importance"] is not None else 0,
         "tags": row["tags"],
+        "scope_type": (row["scope_type"] or "global"),
+        "scope_id": row["scope_id"],
         "created_by": row["created_by"] or "user",
         "origin_kind": row["origin_kind"] or "user_asserted",
         "source_conversation_id": row["source_conversation_id"],
@@ -2862,10 +2893,34 @@ def _memory_row_to_dict(row: sqlite3.Row) -> dict:
         "updated_at": row["updated_at"],
     }
 
+if (False):
+    def _memory_row_to_dict(row: sqlite3.Row) -> dict:
+        def _split_csv(value: Any) -> list[str]:
+            if value is None:
+                return []
+            return [part for part in str(value).split(",") if part]
+
+        return {
+            "id": row["id"],
+            "content": row["content"],
+            "importance": int(row["importance"]) if row["importance"] is not None else 0,
+            "tags": row["tags"],
+            "created_by": row["created_by"] or "user",
+            "origin_kind": row["origin_kind"] or "user_asserted",
+            "source_conversation_id": row["source_conversation_id"],
+            "source_message_id": row["source_message_id"],
+            "project_ids": [int(x) for x in _split_csv(row["project_ids_csv"]) if str(x).isdigit()],
+            "conversation_ids": _split_csv(row["conversation_ids_csv"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
 def _fetch_memory_row(conn: sqlite3.Connection, memory_id: str) -> dict:
     row = conn.execute("""
         SELECT
             m.id,
+            m.scope_type,
+            m.scope_id,
             m.content,
             m.importance,
             m.tags,
@@ -2904,6 +2959,8 @@ def create_memory(
     origin_kind: str = "user_asserted",
     source_conversation_id: str | None = None,
     source_message_id: str | None = None,
+    scope_type: str = "global",
+    scope_id: int | None = None,
 ) -> dict:
     content = (content or "").strip()
     if not content:
@@ -2917,6 +2974,14 @@ def create_memory(
     source_conversation_id = (source_conversation_id or "").strip() or None
     source_message_id = (source_message_id or "").strip() or None
 
+    scope_type = (scope_type or "global").strip().lower()
+    if scope_type not in ("global", "project"):
+        scope_type = "global"
+    if scope_type == "global":
+        scope_id = None
+    elif scope_id is None:
+        raise ValueError("project-scoped memories require scope_id")
+
     with db_session() as conn:
         conn.execute("""
             INSERT INTO memories (
@@ -2924,6 +2989,8 @@ def create_memory(
                 content,
                 importance,
                 tags,
+                scope_type,
+                scope_id,
                 created_by,
                 origin_kind,
                 source_conversation_id,
@@ -2931,12 +2998,14 @@ def create_memory(
                 created_at,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             mem_id,
             content,
             int(importance or 0),
             tags_text,
+            scope_type,
+            scope_id,
             created_by,
             origin_kind,
             source_conversation_id,
@@ -2945,13 +3014,143 @@ def create_memory(
             now,
         ))
 
-        return _fetch_memory_row(conn, mem_id)
+        mem = _fetch_memory_row(conn, mem_id)
+        artifact_id = _upsert_memory_artifact_for_row(conn, mem)
+
+    try:
+        reindex_info = reindex_artifact_by_id(artifact_id)
+    except Exception as exc:
+        reindex_info = {"ok": False, "artifact_id": artifact_id, "error": repr(exc)}
+
+    mem["artifact_id"] = artifact_id
+    mem["artifact_reindex"] = reindex_info
+    return mem
+
+if (False):
+    def create_memory(
+        content: str,
+        importance: int = 0,
+        tags: Any = None,
+        created_by: str = "user",
+        origin_kind: str = "user_asserted",
+        source_conversation_id: str | None = None,
+        source_message_id: str | None = None,
+        scope_type: str = "global",
+        scope_id: int | None = None,
+    ) -> dict:
+        content = (content or "").strip()
+        if not content:
+            raise ValueError("Memory content cannot be empty.")
+
+        mem_id = new_uuid()
+        now = _utc_now_iso()
+        tags_text = _normalize_tags(tags)
+        created_by = (created_by or "user").strip() or "user"
+        origin_kind = (origin_kind or "user_asserted").strip() or "user_asserted"
+        source_conversation_id = (source_conversation_id or "").strip() or None
+        source_message_id = (source_message_id or "").strip() or None
+
+        scope_type = (scope_type or "global").strip().lower()
+        if scope_type not in ("global", "project"):
+            scope_type = "global"
+        if scope_type == "global":
+            scope_id = None
+        elif scope_id is None:
+            raise ValueError("project-scoped memories require scope_id")
+
+        with db_session() as conn:
+            conn.execute("""
+                INSERT INTO memories (
+                    id,
+                    content,
+                    importance,
+                    tags,
+                    scope_type,
+                    scope_id,
+                    created_by,
+                    origin_kind,
+                    source_conversation_id,
+                    source_message_id,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                mem_id,
+                content,
+                int(importance or 0),
+                tags_text,
+                scope_type,
+                scope_id,
+                created_by,
+                origin_kind,
+                source_conversation_id,
+                source_message_id,
+                now,
+                now,
+            ))
+
+            return _fetch_memory_row(conn, mem_id)
+
+if (False):
+    def create_memory(
+        content: str,
+        importance: int = 0,
+        tags: Any = None,
+        created_by: str = "user",
+        origin_kind: str = "user_asserted",
+        source_conversation_id: str | None = None,
+        source_message_id: str | None = None,
+    ) -> dict:
+        content = (content or "").strip()
+        if not content:
+            raise ValueError("Memory content cannot be empty.")
+
+        mem_id = new_uuid()
+        now = _utc_now_iso()
+        tags_text = _normalize_tags(tags)
+        created_by = (created_by or "user").strip() or "user"
+        origin_kind = (origin_kind or "user_asserted").strip() or "user_asserted"
+        source_conversation_id = (source_conversation_id or "").strip() or None
+        source_message_id = (source_message_id or "").strip() or None
+
+        with db_session() as conn:
+            conn.execute("""
+                INSERT INTO memories (
+                    id,
+                    content,
+                    importance,
+                    tags,
+                    created_by,
+                    origin_kind,
+                    source_conversation_id,
+                    source_message_id,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                mem_id,
+                content,
+                int(importance or 0),
+                tags_text,
+                created_by,
+                origin_kind,
+                source_conversation_id,
+                source_message_id,
+                now,
+                now,
+            ))
+
+            return _fetch_memory_row(conn, mem_id)
 
 def list_memories(limit: int = 200) -> list[dict]:
     with db_session() as conn:
         rows = conn.execute("""
             SELECT
                 m.id,
+                m.scope_type,
+                m.scope_id,
                 m.content,
                 m.importance,
                 m.tags,
@@ -2986,6 +3185,8 @@ def update_memory(
     tags: Any = None,
     created_by: str = "user",
     origin_kind: str = "user_asserted",
+    scope_type: str | None = None,
+    scope_id: int | None = None,
 ) -> dict:
     memory_id = (memory_id or "").strip()
     if not memory_id:
@@ -3001,7 +3202,18 @@ def update_memory(
     now = _utc_now_iso()
 
     with db_session() as conn:
-        _ensure_memory_exists(conn, memory_id)
+        existing = _fetch_memory_row(conn, memory_id)
+
+        final_scope_type = (scope_type if scope_type is not None else existing.get("scope_type") or "global").strip().lower()
+        if final_scope_type not in ("global", "project"):
+            final_scope_type = "global"
+
+        if final_scope_type == "global":
+            final_scope_id = None
+        else:
+            final_scope_id = scope_id if scope_id is not None else existing.get("scope_id")
+            if final_scope_id is None:
+                raise ValueError("project-scoped memories require scope_id")
 
         conn.execute("""
             UPDATE memories
@@ -3009,6 +3221,8 @@ def update_memory(
                 content = ?,
                 importance = ?,
                 tags = ?,
+                scope_type = ?,
+                scope_id = ?,
                 created_by = ?,
                 origin_kind = ?,
                 updated_at = ?
@@ -3017,13 +3231,136 @@ def update_memory(
             content,
             int(importance or 0),
             tags_text,
+            final_scope_type,
+            final_scope_id,
             created_by,
             origin_kind,
             now,
             memory_id,
         ))
 
-        return _fetch_memory_row(conn, memory_id)
+        mem = _fetch_memory_row(conn, memory_id)
+        artifact_id = _upsert_memory_artifact_for_row(conn, mem)
+
+    try:
+        reindex_info = reindex_artifact_by_id(artifact_id)
+    except Exception as exc:
+        reindex_info = {"ok": False, "artifact_id": artifact_id, "error": repr(exc)}
+
+    mem["artifact_id"] = artifact_id
+    mem["artifact_reindex"] = reindex_info
+    return mem
+
+if (False):
+    def update_memory(
+        memory_id: str,
+        content: str,
+        importance: int = 0,
+        tags: Any = None,
+        created_by: str = "user",
+        origin_kind: str = "user_asserted",
+        scope_type: str | None = None,
+        scope_id: int | None = None,
+    ) -> dict:
+        memory_id = (memory_id or "").strip()
+        if not memory_id:
+            raise ValueError("memory_id is required.")
+
+        content = (content or "").strip()
+        if not content:
+            raise ValueError("Memory content cannot be empty.")
+
+        tags_text = _normalize_tags(tags)
+        created_by = (created_by or "user").strip() or "user"
+        origin_kind = (origin_kind or "user_asserted").strip() or "user_asserted"
+        now = _utc_now_iso()
+
+        with db_session() as conn:
+            existing = _fetch_memory_row(conn, memory_id)
+
+            final_scope_type = (scope_type if scope_type is not None else existing.get("scope_type") or "global").strip().lower()
+            if final_scope_type not in ("global", "project"):
+                final_scope_type = "global"
+
+            if final_scope_type == "global":
+                final_scope_id = None
+            else:
+                final_scope_id = scope_id if scope_id is not None else existing.get("scope_id")
+                if final_scope_id is None:
+                    raise ValueError("project-scoped memories require scope_id")
+
+            conn.execute("""
+                UPDATE memories
+                SET
+                    content = ?,
+                    importance = ?,
+                    tags = ?,
+                    scope_type = ?,
+                    scope_id = ?,
+                    created_by = ?,
+                    origin_kind = ?,
+                    updated_at = ?
+                WHERE id = ?
+            """, (
+                content,
+                int(importance or 0),
+                tags_text,
+                final_scope_type,
+                final_scope_id,
+                created_by,
+                origin_kind,
+                now,
+                memory_id,
+            ))
+
+            return _fetch_memory_row(conn, memory_id)
+
+if (False):
+    def update_memory(
+        memory_id: str,
+        content: str,
+        importance: int = 0,
+        tags: Any = None,
+        created_by: str = "user",
+        origin_kind: str = "user_asserted",
+    ) -> dict:
+        memory_id = (memory_id or "").strip()
+        if not memory_id:
+            raise ValueError("memory_id is required.")
+
+        content = (content or "").strip()
+        if not content:
+            raise ValueError("Memory content cannot be empty.")
+
+        tags_text = _normalize_tags(tags)
+        created_by = (created_by or "user").strip() or "user"
+        origin_kind = (origin_kind or "user_asserted").strip() or "user_asserted"
+        now = _utc_now_iso()
+
+        with db_session() as conn:
+            _ensure_memory_exists(conn, memory_id)
+
+            conn.execute("""
+                UPDATE memories
+                SET
+                    content = ?,
+                    importance = ?,
+                    tags = ?,
+                    created_by = ?,
+                    origin_kind = ?,
+                    updated_at = ?
+                WHERE id = ?
+            """, (
+                content,
+                int(importance or 0),
+                tags_text,
+                created_by,
+                origin_kind,
+                now,
+                memory_id,
+            ))
+
+            return _fetch_memory_row(conn, memory_id)
 
 def delete_memory(memory_id: str) -> None:
     memory_id = (memory_id or "").strip()
@@ -3033,9 +3370,24 @@ def delete_memory(memory_id: str) -> None:
     with db_session() as conn:
         _ensure_memory_exists(conn, memory_id)
 
+        _soft_delete_memory_artifact_by_id(conn, memory_id)
+
         conn.execute("DELETE FROM memory_projects WHERE memory_id = ?", (memory_id,))
         conn.execute("DELETE FROM memory_conversations WHERE memory_id = ?", (memory_id,))
         conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+
+if (False):
+    def delete_memory(memory_id: str) -> None:
+        memory_id = (memory_id or "").strip()
+        if not memory_id:
+            raise ValueError("memory_id is required.")
+
+        with db_session() as conn:
+            _ensure_memory_exists(conn, memory_id)
+
+            conn.execute("DELETE FROM memory_projects WHERE memory_id = ?", (memory_id,))
+            conn.execute("DELETE FROM memory_conversations WHERE memory_id = ?", (memory_id,))
+            conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
 
 def memory_link_project(memory_id: str, project_id: int) -> None:
     if not memory_id or not str(memory_id).strip():
@@ -3155,6 +3507,225 @@ if (False):
                 """,
                 (memory_id, conversation_id),
             )
+
+def memory_artifact_id(memory_id: str) -> str:
+    memory_id = (memory_id or "").strip()
+    if not memory_id:
+        raise ValueError("memory_id is required.")
+    return _deterministic_artifact_id(source_kind="memory", source_id=memory_id)
+
+def _memory_artifact_title(mem: dict) -> str:
+    raw = (mem.get("content") or "").strip()
+    if not raw:
+        return "Memory"
+    first = raw.splitlines()[0].strip()
+    first = re.sub(r"\s+", " ", first)
+    if len(first) > 80:
+        first = first[:77].rstrip() + "..."
+    return f"Memory: {first}"
+
+def _memory_artifact_text(mem: dict) -> str:
+    scope_type = (mem.get("scope_type") or "global").strip().lower()
+    scope_id = mem.get("scope_id")
+    scope_label = "global" if scope_type == "global" or scope_id is None else f"project:{scope_id}"
+
+    lines: list[str] = [
+        "MEMORY RECORD",
+        f"Scope: {scope_label}",
+        f"Importance: {int(mem.get('importance') or 0)}",
+    ]
+
+    tags = (mem.get("tags") or "").strip()
+    if tags:
+        lines.append(f"Tags: {tags}")
+
+    created_by = (mem.get("created_by") or "").strip()
+    if created_by:
+        lines.append(f"Created by: {created_by}")
+
+    origin_kind = (mem.get("origin_kind") or "").strip()
+    if origin_kind:
+        lines.append(f"Origin: {origin_kind}")
+
+    src_conv = (mem.get("source_conversation_id") or "").strip()
+    if src_conv:
+        lines.append(f"Source conversation: {src_conv}")
+
+    src_msg = (mem.get("source_message_id") or "").strip()
+    if src_msg:
+        lines.append(f"Source message: {src_msg}")
+
+    lines.append("")
+    lines.append((mem.get("content") or "").rstrip())
+
+    return "\n".join(lines).strip() + "\n"
+
+def _memory_artifact_meta(mem: dict) -> dict:
+    return {
+        "memory_id": mem.get("id"),
+        "scope_type": mem.get("scope_type") or "global",
+        "scope_id": mem.get("scope_id"),
+        "importance": int(mem.get("importance") or 0),
+        "tags": mem.get("tags"),
+        "created_by": mem.get("created_by") or "user",
+        "origin_kind": mem.get("origin_kind") or "user_asserted",
+        "source_conversation_id": mem.get("source_conversation_id"),
+        "source_message_id": mem.get("source_message_id"),
+        "project_ids": mem.get("project_ids") or [],
+        "conversation_ids": mem.get("conversation_ids") or [],
+    }
+
+def _upsert_memory_artifact_for_row(conn: sqlite3.Connection, mem: dict) -> str:
+    artifact_id = upsert_artifact_text(
+        conn=conn,
+        source_kind="memory",
+        source_id=str(mem["id"]),
+        title=_memory_artifact_title(mem),
+        scope_type=(mem.get("scope_type") or "global"),
+        scope_id=mem.get("scope_id"),
+        text=_memory_artifact_text(mem),
+    )
+
+    project_id = None
+    if (mem.get("scope_type") or "global") == "project" and mem.get("scope_id") is not None:
+        try:
+            project_id = int(mem["scope_id"])
+        except Exception:
+            project_id = None
+
+    conn.execute(
+        """
+        UPDATE artifacts
+        SET
+            project_id = ?,
+            meta_json = ?,
+            is_deleted = 0,
+            deleted_at = NULL,
+            deleted_by_user_id = NULL,
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            project_id,
+            json.dumps(_memory_artifact_meta(mem), ensure_ascii=False),
+            _utc_now_iso(),
+            artifact_id,
+        ),
+    )
+
+    return artifact_id
+
+def upsert_memory_artifact(memory_id: str, *, reindex: bool = True) -> dict:
+    memory_id = (memory_id or "").strip()
+    if not memory_id:
+        raise ValueError("memory_id is required.")
+
+    with db_session() as conn:
+        mem = _fetch_memory_row(conn, memory_id)
+        artifact_id = _upsert_memory_artifact_for_row(conn, mem)
+
+    reindex_info = None
+    if reindex:
+        try:
+            reindex_info = reindex_artifact_by_id(artifact_id)
+        except Exception as exc:
+            reindex_info = {
+                "ok": False,
+                "artifact_id": artifact_id,
+                "error": repr(exc),
+            }
+
+    return {
+        "ok": True,
+        "memory_id": memory_id,
+        "artifact_id": artifact_id,
+        "reindex": reindex_info,
+    }
+
+def _soft_delete_memory_artifact_by_id(
+    conn: sqlite3.Connection,
+    memory_id: str,
+    *,
+    deleted_by_user_id: str | None = None,
+) -> int:
+    artifact_id = memory_artifact_id(memory_id)
+    now = _utc_now_iso()
+    deleted_by_user_id = (deleted_by_user_id or "").strip() or None
+
+    conn.execute("DELETE FROM conversation_artifacts WHERE artifact_id = ?", (artifact_id,))
+    delete_corpus_chunks_for_artifact(conn, artifact_id)
+
+    cur = conn.execute(
+        """
+        UPDATE artifacts
+        SET
+            is_deleted = 1,
+            deleted_at = ?,
+            deleted_by_user_id = ?,
+            updated_at = ?
+        WHERE id = ?
+          AND (is_deleted IS NULL OR is_deleted = 0)
+        """,
+        (now, deleted_by_user_id, now, artifact_id),
+    )
+    return cur.rowcount
+
+def rebuild_memory_artifacts(
+    *,
+    only_missing: bool = False,
+    limit: int | None = None,
+    reindex: bool = True,
+) -> dict:
+    sql = """
+        SELECT m.id
+        FROM memories m
+        LEFT JOIN artifacts a
+          ON a.source_kind = 'memory'
+         AND a.source_id = m.id
+         AND (a.is_deleted IS NULL OR a.is_deleted = 0)
+        WHERE COALESCE(m.is_deleted, 0) = 0
+    """
+    params: list[object] = []
+
+    if only_missing:
+        sql += " AND a.id IS NULL"
+
+    sql += " ORDER BY COALESCE(m.updated_at, m.created_at) DESC, m.id DESC"
+
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(int(limit))
+
+    with db_session() as conn:
+        rows = conn.execute(sql, tuple(params)).fetchall()
+        memory_ids = [str(r["id"]) for r in rows]
+
+    ok = 0
+    fail = 0
+    chunks_total = 0
+    failures: list[dict] = []
+
+    for memory_id in memory_ids:
+        try:
+            result = upsert_memory_artifact(memory_id, reindex=reindex)
+            ok += 1
+            reindex_info = result.get("reindex") or {}
+            chunks_total += int(reindex_info.get("chunks_written") or 0)
+        except Exception as exc:
+            fail += 1
+            failures.append({
+                "memory_id": memory_id,
+                "error": repr(exc),
+            })
+
+    return {
+        "ok": fail == 0,
+        "memories_seen": len(memory_ids),
+        "memories_ok": ok,
+        "memories_failed": fail,
+        "chunks_written_total": chunks_total,
+        "failures": failures,
+    }
 
 # endregion
 
