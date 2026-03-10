@@ -19,6 +19,13 @@ from .db import (
     ensure_artifacts_for_files,
     gather_scoped_files,
     ensure_conversation_transcript_artifact_fresh,
+    list_memories,
+    list_conversations,
+    load_artifact_row_for_context,
+    memory_artifact_id,
+    conversation_transcript_artifact_id,
+    db_session,
+    hydrate_artifact_content_text,
 )
 
 from .config import (
@@ -586,6 +593,186 @@ def _build_personalization_blocks(pins: list[dict]) -> dict:
         "plain_texts": plain_texts,
     }
 
+
+# region Context Query Helpers
+
+def _artifact_to_input_message(art: dict, *, label: str) -> dict:
+    title = (art.get("title") or "").strip()
+    artifact_id = (art.get("id") or "").strip()
+    source_kind = (art.get("source_kind") or "").strip()
+    body = (art.get("content_text") or "").strip()
+
+    header_lines = [label]
+    if title:
+        header_lines.append(f"Title: {title}")
+    if artifact_id:
+        header_lines.append(f"Artifact ID: {artifact_id}")
+    if source_kind:
+        header_lines.append(f"Source kind: {source_kind}")
+
+    header = "\n".join(header_lines).strip()
+    text = f"{header}\n\n{body}".strip()
+    return {"role": "user", "content": text}
+
+
+def _order_scoped_memories_for_context(
+    memories: list[dict],
+    project_id: int | None,
+    *,
+    limit: int,
+) -> list[dict]:
+    project_rows: list[dict] = []
+    global_rows: list[dict] = []
+
+    for m in memories or []:
+        scope_type = (m.get("scope_type") or "global").strip().lower()
+        scope_id = m.get("scope_id")
+
+        if scope_type == "project":
+            if project_id is not None and scope_id is not None and int(scope_id) == int(project_id):
+                project_rows.append(m)
+        else:
+            global_rows.append(m)
+
+    ordered = project_rows + global_rows
+    return ordered[: max(0, int(limit))]
+
+
+def _select_scoped_conversation_ids_for_context(
+    conversation_id: str,
+    project_id: int | None,
+    *,
+    limit: int,
+) -> list[str]:
+    limit = max(0, int(limit))
+    if limit <= 0:
+        return []
+
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(cid: str | None) -> None:
+        if not cid:
+            return
+        cid = str(cid).strip()
+        if not cid or cid in seen:
+            return
+        seen.add(cid)
+        out.append(cid)
+
+    # Always include the current conversation first.
+    _add(conversation_id)
+
+    if project_id is not None and len(out) < limit:
+        rows = list_conversations(limit=max(limit * 8, 200), include_archived=False)
+        for c in rows:
+            if int(c.get("project_id") or 0) == int(project_id):
+                _add(c.get("id"))
+                if len(out) >= limit:
+                    break
+
+    return out[:limit]
+
+# endregion
+
+# region Query Expansion
+
+def _expand_kind_for_row(row: dict) -> str | None:
+    artifact_id = (row.get("artifact_id") or "").strip()
+    source_kind = (row.get("source_kind") or "").strip().lower()
+    file_id = (row.get("file_id") or "").strip()
+
+    if file_id:
+        return "FILE"
+
+    if source_kind == "memory" or artifact_id.startswith("memory--"):
+        return "MEMORY"
+
+    if (
+        artifact_id.startswith("conversation_transcript--")
+        or source_kind in ("conversation_transcript", "conversation:transcript")
+    ):
+        return "CHAT"
+
+    return None
+
+
+def _recommend_expansion_candidates(
+    *,
+    raw_rows: list[dict],
+    allowed_flags: set[str],
+    already_included_artifact_ids: set[str],
+    max_full_files: int,
+    max_full_memories: int,
+    max_full_chats: int,
+    min_artifact_hits: int,
+) -> list[dict]:
+    counts_by_artifact: dict[str, int] = {}
+    best_row_by_artifact: dict[str, dict] = {}
+
+    for r in raw_rows or []:
+        artifact_id = (r.get("artifact_id") or "").strip()
+        if not artifact_id or artifact_id in already_included_artifact_ids:
+            continue
+
+        kind = _expand_kind_for_row(r)
+        if not kind or kind not in allowed_flags:
+            continue
+
+        counts_by_artifact[artifact_id] = counts_by_artifact.get(artifact_id, 0) + 1
+
+        prev = best_row_by_artifact.get(artifact_id)
+        if prev is None or float(r.get("score", 1e9)) < float(prev.get("score", 1e9)):
+            best_row_by_artifact[artifact_id] = r
+
+    # Conservative first cut:
+    # only recommend artifacts that got at least min_artifact_hits raw hits.
+    ranked: list[dict] = []
+    for artifact_id, hit_count in counts_by_artifact.items():
+        if hit_count < max(1, int(min_artifact_hits or 1)):
+            continue
+        row = best_row_by_artifact[artifact_id]
+        ranked.append({
+            "artifact_id": artifact_id,
+            "kind": _expand_kind_for_row(row),
+            "raw_hit_count": hit_count,
+            "score": row.get("score"),
+            "file_id": row.get("file_id"),
+            "source_kind": row.get("source_kind"),
+            "source_id": row.get("source_id"),
+            "artifact_title": row.get("artifact_title"),
+            "conversation_id": row.get("conversation_id"),
+            "conversation_title": row.get("conversation_title"),
+            "filename": row.get("filename"),
+        })
+
+    ranked.sort(key=lambda x: (-int(x.get("raw_hit_count") or 0), float(x.get("score") or 1e9)))
+
+    out: list[dict] = []
+    file_count = 0
+    memory_count = 0
+    chat_count = 0
+
+    for item in ranked:
+        kind = item["kind"]
+        if kind == "FILE":
+            if file_count >= max_full_files:
+                continue
+            file_count += 1
+        elif kind == "MEMORY":
+            if memory_count >= max_full_memories:
+                continue
+            memory_count += 1
+        elif kind == "CHAT":
+            if chat_count >= max_full_chats:
+                continue
+            chat_count += 1
+        out.append(item)
+
+    return out
+
+# endregion
+
 def build_context(
         conversation_id: str, # shapes the context by scope
         user_text: str, # needed for RAG queries
@@ -630,11 +817,26 @@ def build_context(
         _effective_query_setting(project_id, "expand_results", query_cfg.query_expand_results),
         QUERY_EXPAND_ALLOWED,
     )
+    expand_flags = set(effective_query_expand_results.split(",")) if effective_query_expand_results else set()
     include_flags = set(effective_query_include.split(",")) if effective_query_include else set()
 
     do_include_files = has_user_text and ("FILE" in include_flags)
     do_fts_rag = has_user_text and ("FTS" in include_flags)
     do_vector_rag = has_user_text and ("EMBEDDING" in include_flags)
+    do_include_memories = has_user_text and ("MEMORY" in include_flags)
+    do_include_chats = has_user_text and ("CHAT" in include_flags)
+
+    max_full_files = int(_effective_query_setting(project_id, "max_full_files", str(query_cfg.query_max_full_files)))
+    max_full_memories = int(_effective_query_setting(project_id, "max_full_memories", str(query_cfg.query_max_full_memories)))
+    max_full_chats = int(_effective_query_setting(project_id, "max_full_chats", str(query_cfg.query_max_full_chats)))
+    query_expand_min_artifact_hits = int(
+        _effective_query_setting(
+            project_id,
+            "expand_min_artifact_hits",
+            str(query_cfg.query_expand_min_artifact_hits),
+        )
+    )
+
     if (False):
         do_include_files = has_user_text and query_cfg.query_mode in ("FILES", "ALL")
         do_fts_rag = has_user_text and query_cfg.query_mode in ("FTS", "HYBRID", "ALL")
@@ -682,6 +884,86 @@ def build_context(
             except Exception:
                 summary = ""
 
+    # Whole-artifact inclusion channel (FILE is handled later through file_messages;
+    # MEMORY and CHAT are handled here as text messages and deduped by artifact_id).
+    included_artifact_ids: set[str] = set()
+    whole_artifact_messages: list[dict] = []
+    included_memory_labels: list[str] = []
+    included_chat_labels: list[str] = []
+    # File Expansion
+    included_file_artifact_labels: list[str] = []
+    expansion_candidates: list[dict] = []
+    expanded_artifact_ids: set[str] = set()
+
+    if do_include_memories:
+        scoped_memories = _order_scoped_memories_for_context(
+            list_memories(limit=max(max_full_memories * 4, 200)),
+            project_id,
+            limit=max_full_memories,
+        )
+
+        with db_session() as conn:
+            for m in scoped_memories:
+                try:
+                    artifact_id = memory_artifact_id(str(m["id"]))
+                except Exception:
+                    continue
+
+                if artifact_id in included_artifact_ids:
+                    continue
+
+                art = load_artifact_row_for_context(conn, artifact_id)
+                if not art or not (art.get("content_text") or "").strip():
+                    continue
+
+                included_artifact_ids.add(artifact_id)
+                label = f"SCOPED MEMORY ARTIFACT"
+                whole_artifact_messages.append(_artifact_to_input_message(art, label=label))
+
+                scope_type = (m.get("scope_type") or "global")
+                scope_id = m.get("scope_id")
+                title = (art.get("title") or f"Memory {m.get('id')}").strip()
+                included_memory_labels.append(
+                    f"{title} [{scope_type}{':' + str(scope_id) if scope_id is not None else ''}]"
+                )
+
+    if do_include_chats:
+        scoped_conversation_ids = _select_scoped_conversation_ids_for_context(
+            conversation_id,
+            project_id,
+            limit=max_full_chats,
+        )
+
+        with db_session() as conn:
+            for cid in scoped_conversation_ids:
+                try:
+                    ensure_conversation_transcript_artifact_fresh(
+                        cid,
+                        force_full=False,
+                        reason="build_context.include_chat",
+                    )
+                except Exception as exc:
+                    log_warn("Transcript lazy repair failed for included chat %s: %s", cid, exc)
+
+                try:
+                    artifact_id = conversation_transcript_artifact_id(cid)
+                except Exception:
+                    continue
+
+                if artifact_id in included_artifact_ids:
+                    continue
+
+                art = load_artifact_row_for_context(conn, artifact_id)
+                if not art or not (art.get("content_text") or "").strip():
+                    continue
+
+                included_artifact_ids.add(artifact_id)
+                label = "SCOPED CHAT TRANSCRIPT"
+                whole_artifact_messages.append(_artifact_to_input_message(art, label=label))
+
+                title = (art.get("title") or cid).strip()
+                included_chat_labels.append(title)
+
     retrieved_rows_raw: list[dict] = []
     retrieved_rows: list[dict] = []
     retrieved_block = ""
@@ -719,6 +1001,94 @@ def build_context(
                 for r in suppressed[:50]
             ]
 
+        if included_artifact_ids:
+            suppressed = [r for r in retrieved_rows if (r.get("artifact_id") or "") in included_artifact_ids]
+            retrieved_rows = [r for r in retrieved_rows if (r.get("artifact_id") or "") not in included_artifact_ids]
+
+            retrieval_debug["suppressed_included_artifact_rows"] = [
+                {
+                    "chunk_id": r.get("chunk_id"),
+                    "artifact_id": r.get("artifact_id"),
+                    "source_kind": r.get("source_kind"),
+                    "source_id": r.get("source_id"),
+                    "chunk_index": r.get("chunk_index"),
+                    "score": r.get("score"),
+                    "reason": "whole artifact already included via QUERY_INCLUDE",
+                }
+                for r in suppressed[:100]
+            ]
+
+        if expand_flags:
+            expansion_candidates = _recommend_expansion_candidates(
+                raw_rows=retrieved_rows_raw,
+                allowed_flags=expand_flags,
+                already_included_artifact_ids=included_artifact_ids,
+                max_full_files=max_full_files,
+                max_full_memories=max_full_memories,
+                max_full_chats=max_full_chats,
+                min_artifact_hits=query_expand_min_artifact_hits,                
+            )
+
+            if expansion_candidates:
+                with db_session() as conn:
+                    for item in expansion_candidates:
+                        artifact_id = (item.get("artifact_id") or "").strip()
+                        if not artifact_id or artifact_id in included_artifact_ids:
+                            continue
+
+                        art = load_artifact_row_for_context(conn, artifact_id)
+                        if not art or not (art.get("content_text") or "").strip():
+                            continue
+
+                        kind = item.get("kind") or "ARTIFACT"
+                        included_artifact_ids.add(artifact_id)
+                        expanded_artifact_ids.add(artifact_id)
+
+                        whole_artifact_messages.append(
+                            _artifact_to_input_message(art, label=f"EXPANDED {kind} ARTIFACT")
+                        )
+
+                        if kind == "FILE":
+                            title = (art.get("title") or item.get("filename") or artifact_id).strip()
+                            included_file_artifact_labels.append(title)
+
+                        elif kind == "MEMORY":
+                            title = (art.get("title") or f"Memory {item.get('source_id')}").strip()
+                            included_memory_labels.append(f"{title} [expanded]")
+
+                        elif kind == "CHAT":
+                            title = (
+                                (item.get("conversation_title") or "").strip()
+                                or (art.get("title") or "").strip()
+                                or str(item.get("conversation_id") or artifact_id)
+                            )
+                            included_chat_labels.append(f"{title} [expanded]")
+
+                if expanded_artifact_ids:
+                    suppressed = [
+                        r for r in retrieved_rows
+                        if (r.get("artifact_id") or "") in expanded_artifact_ids
+                    ]
+                    retrieved_rows = [
+                        r for r in retrieved_rows
+                        if (r.get("artifact_id") or "") not in expanded_artifact_ids
+                    ]
+
+                    retrieval_debug["suppressed_expanded_artifact_rows"] = [
+                        {
+                            "chunk_id": r.get("chunk_id"),
+                            "artifact_id": r.get("artifact_id"),
+                            "source_kind": r.get("source_kind"),
+                            "source_id": r.get("source_id"),
+                            "chunk_index": r.get("chunk_index"),
+                            "score": r.get("score"),
+                            "reason": "whole artifact expanded via QUERY_EXPAND_RESULTS",
+                        }
+                        for r in suppressed[:100]
+                    ]
+
+            retrieval_debug["expansion_candidates"] = expansion_candidates
+
         retrieved_block, retrieved_meta, retrieved_cites = _format_retrieved_chunks(
             retrieved_rows,
             max_chunks=8,
@@ -730,7 +1100,8 @@ def build_context(
     if not (do_fts_rag or do_vector_rag):
         retrieval_debug = {
             "skipped": True,
-            "reason": f"query_mode={query_cfg.query_mode} user_text_present={bool(user_text.strip())}",
+            "reason": f"query_include={effective_query_include} user_text_present={bool(user_text.strip())}",
+            #"reason": f"query_mode={query_cfg.query_mode} user_text_present={bool(user_text.strip())}",
         }
 
     # Choose base system prompt
@@ -810,7 +1181,13 @@ def build_context(
         assembled_input_preview = assembled_input_full[-preview_limit:] if preview_limit > 0 else assembled_input_full
         assembled_input_truncated = len(assembled_input_preview) < len(assembled_input_full)
         # Include files in the assembled input also
-        assembled_input_preview = [{"role": "system", "content": system_text}] + normalized_file_messages + assembled_input_preview
+        # assembled_input_preview = [{"role": "system", "content": system_text}] + normalized_file_messages + assembled_input_preview
+        assembled_input_preview = (
+            [{"role": "system", "content": system_text}]
+            + whole_artifact_messages
+            + normalized_file_messages
+            + assembled_input_preview
+        )
         token_stats = estimate_context_tokens(conversation_id, ctx_cfg, user_text, model=ctx_cfg.estimate_model)
 
     return {
@@ -826,6 +1203,7 @@ def build_context(
         "query_max_full_files": int(_effective_query_setting(project_id, "max_full_files", str(query_cfg.query_max_full_files))),
         "query_max_full_memories": int(_effective_query_setting(project_id, "max_full_memories", str(query_cfg.query_max_full_memories))),
         "query_max_full_chats": int(_effective_query_setting(project_id, "max_full_chats", str(query_cfg.query_max_full_chats))),
+        "query_expand_min_artifact_hits": query_expand_min_artifact_hits,
         "has_user_text": has_user_text,
         "core_system_prompt": core_system,
         "project_system_prompt": proj_prompt,
@@ -851,7 +1229,16 @@ def build_context(
         "history_count": len(history_rows),
         "history_rows": history_rows, 
         "history_rows_typed": typed_history,
+        "memory_include": bool(do_include_memories),
+        "chat_include": bool(do_include_chats),
+        "included_artifact_ids": sorted(included_artifact_ids),
+        "included_memory_labels": included_memory_labels,
+        "included_chat_labels": included_chat_labels,
         "scoped_files": scoped_files,
+        "included_file_artifact_labels": included_file_artifact_labels,
+        "whole_artifact_messages": whole_artifact_messages,
+        "expansion_candidates": expansion_candidates,
+        "expanded_artifact_ids": sorted(expanded_artifact_ids),        
         "file_messages": normalized_file_messages,
     }
 
@@ -876,15 +1263,17 @@ def build_model_input(
     history_rows = ctx.get("history_rows") or []
     system_message = {"role": "system", "content": ctx["system_text"]}
     normalized_file_messages = ctx.get("file_messages") or []
+    whole_artifact_messages = ctx.get("whole_artifact_messages") or []
 
     # If first message, just return the system prompt and the files list
     # Otherwise split the last message off and show it after the file list.
-    # TODO could this be simplified?
     if not history_rows:
-        return [system_message] + normalized_file_messages
+        return [system_message] + whole_artifact_messages + normalized_file_messages    
+        # return [system_message] + normalized_file_messages
     typed_history = ctx["history_rows_typed"]
     *prior_msgs, last_msg = typed_history
-    return [system_message] + prior_msgs + normalized_file_messages + [last_msg]
+    return [system_message] + prior_msgs + whole_artifact_messages + normalized_file_messages + [last_msg]
+    # return [system_message] + prior_msgs + normalized_file_messages + [last_msg]
 
 def build_context_panel_payload(
     conversation_id: str,
@@ -928,6 +1317,9 @@ def build_context_panel_payload(
     file_messages = ctx.get("file_messages") or []
     file_labels = [f.get("name") or "(file)" for f in scoped_files]
     included_file_labels = [_panel_label_for_file_message(m) for m in file_messages]
+    included_file_labels.extend(ctx.get("included_file_artifact_labels") or [])
+    included_memory_labels = ctx.get("included_memory_labels") or []
+    included_chat_labels = ctx.get("included_chat_labels") or []
 
     token_stats = estimate_tokens_for_messages(full_input, model=ctx_cfg.estimate_model)
 
@@ -940,6 +1332,8 @@ def build_context_panel_payload(
         "recent_history_preview": recent_history_preview,
         "file_labels": file_labels,
         "included_file_labels": included_file_labels,
+        "included_memory_labels": included_memory_labels,
+        "included_chat_labels": included_chat_labels,
     }
 
 def _panel_label_for_file_message(msg: dict) -> str:

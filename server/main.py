@@ -165,6 +165,7 @@ class QuerySettingsUpdateRequest(BaseModel):
     query_max_full_files: int | None = None
     query_max_full_memories: int | None = None
     query_max_full_chats: int | None = None
+    query_expand_min_artifact_hits: int | None = None
 
 class FileDescriptionUpdate(BaseModel):
     description: str | None = None
@@ -545,6 +546,19 @@ def api_get_query_settings(scope_type: str = "global", scope_id: str = ""):
     local_max_memories = get_app_setting(_query_setting_key("max_full_memories"), None, scope_type, scope_id)
     local_max_chats = get_app_setting(_query_setting_key("max_full_chats"), None, scope_type, scope_id)
 
+    effective_expand_min_hits = _get_effective_query_setting(
+        project_id,
+        "expand_min_artifact_hits",
+        str(qcfg.query_expand_min_artifact_hits),
+    )
+
+    local_expand_min_hits = get_app_setting(
+        _query_setting_key("expand_min_artifact_hits"),
+        None,
+        scope_type,
+        scope_id,
+    )
+
     return JSONResponse({
         "scope_type": scope_type,
         "scope_id": scope_id,
@@ -553,12 +567,14 @@ def api_get_query_settings(scope_type: str = "global", scope_id: str = ""):
         "query_max_full_files": int(local_max_files) if local_max_files not in (None, "") else None,
         "query_max_full_memories": int(local_max_memories) if local_max_memories not in (None, "") else None,
         "query_max_full_chats": int(local_max_chats) if local_max_chats not in (None, "") else None,
+        "query_expand_min_artifact_hits": int(local_expand_min_hits) if local_expand_min_hits not in (None, "") else None,
 
         "effective_query_include": _normalize_csv_set(effective_query_include, QUERY_INCLUDE_ALLOWED),
         "effective_query_expand_results": _normalize_csv_set(effective_query_expand, QUERY_EXPAND_ALLOWED),
         "effective_query_max_full_files": int(effective_max_files),
         "effective_query_max_full_memories": int(effective_max_memories),
         "effective_query_max_full_chats": int(effective_max_chats),
+        "effective_query_expand_min_artifact_hits": int(effective_expand_min_hits),
     })
 
 @app.post("/api/query_settings")
@@ -596,6 +612,14 @@ def api_update_query_settings(req: QuerySettingsUpdateRequest):
 
     if req.query_max_full_chats is not None:
         set_app_setting(_query_setting_key("max_full_chats"), str(int(req.query_max_full_chats)), scope_type, scope_id)
+
+    if req.query_expand_min_artifact_hits is not None:
+        set_app_setting(
+            _query_setting_key("expand_min_artifact_hits"),
+            str(int(req.query_expand_min_artifact_hits)),
+            scope_type,
+            scope_id,
+        )
 
     invalidate_all_context_cache()
     return api_get_query_settings(scope_type=scope_type, scope_id=scope_id)

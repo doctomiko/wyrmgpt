@@ -132,6 +132,7 @@ const qeCHAT = document.getElementById("qeCHAT");
 const queryMaxFullFilesEl = document.getElementById("queryMaxFullFiles");
 const queryMaxFullMemoriesEl = document.getElementById("queryMaxFullMemories");
 const queryMaxFullChatsEl = document.getElementById("queryMaxFullChats");
+const queryExpandMinArtifactHitsEl = document.getElementById("queryExpandMinArtifactHits");
 // #endregion
 
 // #region File Uploads and Management
@@ -1545,6 +1546,208 @@ function renderContext(ctx) {
   const projectName = ctx.project_name || "";
   const projectId = ctx.project_id ?? null;
 
+  const hasDraft = !!ctx.has_user_text;
+  const queryInclude = ctx.query_include || "";
+  const queryExpand = ctx.query_expand_results || "";
+
+  const fileIncludeActive = !!ctx.file_include;
+  const memoryIncludeActive = !!ctx.memory_include;
+  const chatIncludeActive = !!ctx.chat_include;
+  const ftsActive = !!ctx.fts_rag_active;
+  const vectorActive = !!ctx.vector_rag_active;
+
+  const scopedFiles = ctx.scoped_files || [];
+  const includedFiles = ctx.included_file_labels || [];
+  const includedMemories = ctx.included_memory_labels || [];
+  const includedChats = ctx.included_chat_labels || [];
+  const expansionCandidates = ctx.expansion_candidates || [];
+
+  const rawRows = ctx.retrieved_chunks_raw || [];
+  const finalRows = ctx.retrieved_chunks_final || ctx.retrieved_chunk_meta || [];
+  const rd = ctx.retrieval_debug || {};
+
+  if (contextRefreshing) {
+    lines.push("[updating context preview...]");
+    lines.push("");
+  }
+
+  lines.push("CONTEXT SCOPE:");
+  lines.push(`Conversation: ${ctx.conversation_id}`);
+  if (projectId !== null || projectName) {
+    lines.push(`Project: ${projectName || "(unnamed project)"}${projectId !== null ? ` [${projectId}]` : ""}`);
+  } else {
+    lines.push("Project: (none)");
+  }
+  lines.push("");
+
+  lines.push("QUERY BEHAVIOR:");
+  lines.push(`Include: ${queryInclude || "(none)"}`);
+  lines.push(`Expand results: ${queryExpand || "(none)"}`);
+  lines.push(
+    `Caps: files=${ctx.query_max_full_files ?? "?"}, memories=${ctx.query_max_full_memories ?? "?"}, chats=${ctx.query_max_full_chats ?? "?"}`
+  );
+  lines.push(`Expand threshold: min artifact hits=${ctx.query_expand_min_artifact_hits ?? "?"}`);
+
+  if (!hasDraft) {
+    lines.push("Status: idle (no draft text, so retrieval/inclusion is not running)");
+  } else {
+    const activeParts = [];
+    if (fileIncludeActive) activeParts.push("full-file inclusion");
+    if (memoryIncludeActive) activeParts.push("full-memory inclusion");
+    if (chatIncludeActive) activeParts.push("full-chat inclusion");
+    if (ftsActive) activeParts.push("FTS");
+    if (vectorActive) activeParts.push("vector");
+    if (!activeParts.length) activeParts.push("no active retrieval path");
+    lines.push(`Active: ${activeParts.join("; ")}`);
+  }
+  lines.push("");
+
+  lines.push("CONTEXT METRICS:");
+  lines.push("Token and character counts are approximate.");
+  lines.push(`Assembled messages: ${total}`);
+  lines.push(`Context load: ~${approxTokens} text tokens; ${totalChars} characters; ${numImages} images`);
+  lines.push(`Recent history preview limit: ${previewLimit}${truncated ? " (truncated)" : ""}`);
+  lines.push(`Personalization blocks: ${(ctx.personalization_blocks || []).length}`);
+  lines.push(`Included files: ${includedFiles.length}`);
+  lines.push(`Included memories: ${includedMemories.length}`);
+  lines.push(`Included chats: ${includedChats.length}`);
+  lines.push(`RAG raw hits: ${rawRows.length}`);
+  lines.push(`RAG final hits: ${finalRows.length}`);
+  lines.push("");
+
+  lines.push("SYSTEM TEXT:");
+  lines.push(ctx.system_text || ctx.effective_system_prompt || "(none)");
+  lines.push("");
+
+  lines.push("CONVERSATION SUMMARY:");
+  lines.push((ctx.summary || "").trim() || "(none)");
+  lines.push("");
+
+  lines.push("SCOPED FILES:");
+  if (scopedFiles.length) {
+    for (const f of scopedFiles) {
+      const name = f.name || "(unnamed file)";
+      const scope =
+        f.scope_type === "conversation"
+          ? `conversation:${f.scope_uuid || "?"}`
+          : f.scope_type === "project"
+          ? `project:${f.scope_id ?? "?"}`
+          : (f.scope_type || "global");
+      lines.push(`- ${name} [${scope}]`);
+    }
+  } else {
+    lines.push("(none)");
+  }
+  lines.push("");
+
+  lines.push("WHOLE ARTIFACTS INCLUDED:");
+  if (includedFiles.length) {
+    lines.push("Files:");
+    for (const f of includedFiles) lines.push(`  - ${f}`);
+  }
+  if (includedMemories.length) {
+    lines.push("Memories:");
+    for (const m of includedMemories) lines.push(`  - ${m}`);
+  }
+  if (includedChats.length) {
+    lines.push("Chats:");
+    for (const c of includedChats) lines.push(`  - ${c}`);
+  }
+  if (!includedFiles.length && !includedMemories.length && !includedChats.length) {
+    lines.push("(none)");
+  }
+  lines.push("");
+
+  lines.push("EXPANSION RESULTS:");
+  if (expansionCandidates.length) {
+    for (const item of expansionCandidates) {
+      const label =
+        item.kind === "FILE"
+          ? (item.filename || item.artifact_title || item.artifact_id)
+          : item.kind === "MEMORY"
+          ? (item.artifact_title || item.artifact_id)
+          : (item.conversation_title || item.artifact_title || item.artifact_id);
+
+      lines.push(`- ${item.kind}: ${label} (raw hits=${item.raw_hit_count}, score=${item.score})`);
+    }
+  } else {
+    lines.push("(none)");
+  }
+  lines.push("");
+
+  lines.push(`RAG FINAL HITS (${finalRows.length}):`);
+  if (finalRows.length) {
+    for (const r of finalRows) {
+      const src = r.filename || r.scope_key || r.source_kind || "source";
+      const ts = r.artifact_updated_at || r.file_updated_at || r.file_created_at || "";
+      const snippetRaw = r.preview_text || r.text || "";
+      const snippet = snippetRaw.length > 900
+        ? `${snippetRaw.slice(0, 900)}\n[...truncated for preview...]`
+        : snippetRaw;
+
+      lines.push(`- ${src}#${r.chunk_index} chunk_id=${r.chunk_id} score=${r.score} ts=${ts}`);
+      if (snippet) lines.push(snippet);
+      lines.push("");
+    }
+  } else {
+    lines.push("(none)");
+    lines.push("");
+  }
+
+  lines.push(`RAG RAW HITS (${rawRows.length}):`);
+  if (rawRows.length) {
+    for (const r of rawRows.slice(0, 50)) {
+      const src = r.filename || r.scope_key || r.source_kind || "source";
+      lines.push(
+        `- ${src}#${r.chunk_index} chunk_id=${r.chunk_id} artifact_id=${r.artifact_id} file_id=${r.file_id || ""} score=${r.score}`
+      );
+    }
+  } else {
+    lines.push("(none)");
+  }
+  lines.push("");
+
+  lines.push("RECENT CONVERSATION CONTEXT:");
+  for (const m of (ctx.recent_history_preview || [])) {
+    lines.push(`${(m.role || "??").toUpperCase()}: ${m.content || ""}`);
+    lines.push("");
+  }
+
+  // TODO make this .env configurable
+  // Uncomment this only when you're actively debugging retrieval internals.
+  /*
+  lines.push("RAG DEBUG JSON:");
+  if (ctx.retrieval_debug) {
+    try {
+      lines.push(JSON.stringify(ctx.retrieval_debug, null, 2));
+    } catch (e) {
+      lines.push(String(ctx.retrieval_debug));
+    }
+  } else {
+    lines.push("(none)");
+  }
+  lines.push("");
+  */
+
+  contextPreviewEl.textContent = lines.join("\n");
+}
+
+/*
+function renderContext(ctx) {
+  const lines = [];
+
+  const total = ctx.assembled_input_count || 0;
+  const previewLimit = ctx.assembled_input_preview_limit ?? 20;
+  const truncated = !!ctx.assembled_input_preview_truncated;
+
+  const stats = ctx.token_stats || {};
+  const approxTokens = stats.approx_text_tokens ?? 0;
+  const numImages = stats.num_images ?? 0;
+  const totalChars = stats.total_chars ?? 0;
+
+  const projectName = ctx.project_name || "";
+  const projectId = ctx.project_id ?? null;
+
   if (contextRefreshing) {
     lines.push("[updating context preview...]");
     lines.push("");
@@ -1579,7 +1782,7 @@ function renderContext(ctx) {
   lines.push(modeLine);
   lines.push(`Expand results: ${queryExpand || "(none)"}`);
   lines.push(`Caps: files=${ctx.query_max_full_files ?? "?"}, memories=${ctx.query_max_full_memories ?? "?"}, chats=${ctx.query_max_full_chats ?? "?"}`);
-  /*
+  / *
   let modeLine = `Mode: ${queryMode}`;
   if (!hasDraft) {
     modeLine += " (idle: no draft text, so retrieval/file injection is not running)";
@@ -1592,7 +1795,7 @@ function renderContext(ctx) {
     modeLine += ` (${activeParts.join("; ")})`;
   }
   lines.push(modeLine);
-  */
+  * /
 
   // 2) High-level metrics
   lines.push("CONTEXT METRICS:");
@@ -1604,26 +1807,30 @@ function renderContext(ctx) {
   lines.push(`  Personalization blocks: ${(ctx.personalization_blocks || []).length}`);  
   //lines.push(`  Pinned memories: ${(ctx.pinned_memories || []).length}`);
   lines.push("Embedded Assets:");
-  lines.push(`  Included files: ${(ctx.file_labels || []).length}`);
+  //lines.push(`  Included files: ${(ctx.file_labels || []).length}`);
+  lines.push(`  Included files: ${(ctx.included_file_labels || []).length}`);
+  lines.push(`  Included memories: ${(ctx.included_memory_labels || []).length}`);
+  lines.push(`  Included chats: ${(ctx.included_chat_labels || []).length}`);
+
   lines.push("RAG:");
   lines.push(`  RAG raw hits: ${((ctx.retrieved_chunks_raw || []).length)}`);
   lines.push(`  RAG final hits: ${((ctx.retrieved_chunks_final || []).length)}`);
   lines.push("");
 
-  /*
+  / *
   // 3) System + project prompt
   lines.push("SYSTEM + PROJECT PROMPT:");
   lines.push(ctx.effective_system_prompt || "(none)");
   
   This will include personalization and custom instructions.
-  */
+  * /
   // 3) Actual system text sent to the model
   lines.push("SYSTEM TEXT (What is actually sent to the model):");
   lines.push(ctx.system_text || ctx.effective_system_prompt || "(none)");
   lines.push("");
 
   // No longer need this because it is included in system_text
-  /*
+  / *
   // 4) Personalization / instructions
   lines.push("PERSONALIZATION / INSTRUCTIONS:");
   if ((ctx.personalization_blocks || []).length) {
@@ -1635,8 +1842,8 @@ function renderContext(ctx) {
     lines.push("(none)");
     lines.push("");
   }
-  */
-  /*
+  * /
+  / *
   lines.push("PERSONALIZATION / INSTRUCTIONS:");
   if ((ctx.pinned_memories || []).length) {
     for (const t of ctx.pinned_memories) lines.push(`- ${t}`);
@@ -1644,16 +1851,15 @@ function renderContext(ctx) {
     lines.push("(none)");
   }
   lines.push("");
-  */
+  * /
 
   // 5) Conversation summary
   lines.push("CONVERSATION SUMMARY:");
   lines.push((ctx.summary || "").trim() || "(none)");
   lines.push("");
 
-  // 6) In-scope files (only included if query model is ALL or FILES)
-  // TODO In-scope memories too
-  lines.push("IN-SCOPE FILES:");
+  // 6) In-scope assets (files, memories, conversations)
+  lines.push("IN-SCOPE ARTIFACTS:");
   const scopedFiles = ctx.scoped_files || [];
   if (scopedFiles.length) {
     for (const f of scopedFiles) {
@@ -1671,16 +1877,92 @@ function renderContext(ctx) {
   }
   lines.push("");
 
+  lines.push("WHOLE ASSET EXPANSION:");
+  lines.push(`Expand threshold: min artifact hits=${ctx.query_expand_min_artifact_hits ?? "?"}`);
+  if (ctx.file_include) {
+    lines.push("- Full file inclusion is active.");
+  } else {
+    lines.push("- Full file inclusion is not active.");
+  }
+
+  if (ctx.memory_include) {
+    lines.push("- Full memory inclusion is active.");
+  } else {
+    lines.push("- Full memory inclusion is not active.");
+  }
+
+  if (ctx.chat_include) {
+    lines.push("- Full chat transcript inclusion is active.");
+  } else {
+    lines.push("- Full chat transcript inclusion is not active.");
+  }
+
+  lines.push("ASSET EXPANSION RESULTS:");
+  const expansionCandidates = ctx.expansion_candidates || [];
+  if (expansionCandidates.length) {
+    for (const item of expansionCandidates) {
+      const label =
+        item.kind === "FILE"
+          ? (item.filename || item.artifact_title || item.artifact_id)
+          : item.kind === "MEMORY"
+          ? (item.artifact_title || item.artifact_id)
+          : (item.conversation_title || item.artifact_title || item.artifact_id);
+
+      lines.push(`- ${item.kind}: ${label} (raw hits=${item.raw_hit_count}, score=${item.score})`);
+    }
+  } else {
+    lines.push("(none)");
+  }
+  lines.push("");
+
+  const includedFilesNow = ctx.included_file_labels || [];
+  const includedMemoriesNow = ctx.included_memory_labels || [];
+  const includedChatsNow = ctx.included_chat_labels || [];
+
+  if (includedFilesNow.length) {
+    lines.push("- Included files:");
+    for (const f of includedFilesNow) lines.push(`  - ${f}`);
+  }
+
+  if (includedMemoriesNow.length) {
+    lines.push("- Included memories:");
+    for (const m of includedMemoriesNow) lines.push(`  - ${m}`);
+  }
+
+  if (includedChatsNow.length) {
+    lines.push("- Included chats:");
+    for (const c of includedChatsNow) lines.push(`  - ${c}`);
+  }
+
+  if (!includedFilesNow.length && !includedMemoriesNow.length && !includedChatsNow.length) {
+    lines.push("- No whole artifacts are currently injected.");
+  }
+
+  lines.push("");
+  / *
+  lines.push("IN-SCOPE FILES:");
+  const scopedFiles = ctx.scoped_files || [];
+  if (scopedFiles.length) {
+    for (const f of scopedFiles) {
+      const name = f.name || "(unnamed file)";
+      const scope =
+        f.scope_type === "conversation"
+          ? `conversation:${f.scope_uuid || "?"}`
+          : f.scope_type === "project"
+          ? `project:${f.scope_id ?? "?"}`
+          : (f.scope_type || "global");
+      lines.push(`- ${name} [${scope}]`);
+    }
+  } else {
+    lines.push("(none)");
+  }
+  lines.push("");
+  * /
+
   // 7) File suggestions / mode notes
   lines.push("FILE INCLUSION / SUGGESTIONS:");
   const rd = ctx.retrieval_debug || {};
   const includedNow = ctx.included_file_labels || [];
-
-  if (ctx.file_include) {
-    lines.push("- Full file inclusion is active for this draft.");
-  } else {
-    lines.push("- Full file inclusion is not active.");
-  }
 
   if (includedNow.length) {
     lines.push("- Currently included files:");
@@ -1726,7 +2008,7 @@ function renderContext(ctx) {
   }
   lines.push("");
 
-  /*
+  / *
   // 10) RAG final hits (after dedupe/diversify/suppression)
   const finalRows = ctx.retrieved_chunk_meta || [];
   lines.push(`RAG FINAL HITS (${finalRows.length}):`);
@@ -1740,7 +2022,7 @@ function renderContext(ctx) {
     lines.push("(none)");
   }
   lines.push("");
-  */
+  * /
   // 10) RAG final hits (after dedupe/diversify/suppression)
   const finalRows = ctx.retrieved_chunks_final || ctx.retrieved_chunk_meta || [];
   lines.push(`RAG FINAL HITS (${finalRows.length}):`);
@@ -1772,6 +2054,7 @@ function renderContext(ctx) {
 
   contextPreviewEl.textContent = lines.join("\n");
 }
+*/
 
 /*
 function renderContext(ctx) {
@@ -2497,6 +2780,7 @@ function populateQuerySettingsForm(data) {
   if (queryMaxFullFilesEl) queryMaxFullFilesEl.value = String(data?.effective_query_max_full_files ?? 0);
   if (queryMaxFullMemoriesEl) queryMaxFullMemoriesEl.value = String(data?.effective_query_max_full_memories ?? 0);
   if (queryMaxFullChatsEl) queryMaxFullChatsEl.value = String(data?.effective_query_max_full_chats ?? 0);
+  if (queryExpandMinArtifactHitsEl) queryExpandMinArtifactHitsEl.value = String(data?.effective_query_expand_min_artifact_hits ?? 2);
 }
 
 async function loadQuerySettingsForCurrentMode() {
@@ -2526,6 +2810,7 @@ async function saveQuerySettingsForCurrentMode() {
     query_max_full_files: parseInt(queryMaxFullFilesEl?.value || "0", 10) || 0,
     query_max_full_memories: parseInt(queryMaxFullMemoriesEl?.value || "0", 10) || 0,
     query_max_full_chats: parseInt(queryMaxFullChatsEl?.value || "0", 10) || 0,
+    query_expand_min_artifact_hits: parseInt(queryExpandMinArtifactHitsEl?.value || "2", 10) || 2,
   };
 
   const data = await fetchJsonDebug("/api/query_settings", {

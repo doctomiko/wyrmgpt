@@ -138,6 +138,7 @@ class QueryConfig:
     query_max_full_files: int = 50
     query_max_full_memories: int = 500
     query_max_full_chats: int = 5
+    query_expand_min_artifact_hits: int = 2
 
     query_global_artifacts: bool = True # RAG queries will include global artifacts
     max_terms: int = 14
@@ -311,6 +312,7 @@ def load_query_config() -> QueryConfig:
         query_max_full_files=_env_int("QUERY_MAX_FULL_FILES", QUERY_DEFAULTS.query_max_full_files),
         query_max_full_memories=_env_int("QUERY_MAX_FULL_MEMORIES", QUERY_DEFAULTS.query_max_full_memories),
         query_max_full_chats=_env_int("QUERY_MAX_FULL_CHATS", QUERY_DEFAULTS.query_max_full_chats),
+        query_expand_min_artifact_hits=_env_int("QUERY_EXPAND_MIN_ARTIFACT_HITS", QUERY_DEFAULTS.query_expand_min_artifact_hits),
 
         query_global_artifacts=_env_bool("QUERY_GLOBAL_ARTIFACTS", QUERY_DEFAULTS.query_global_artifacts),
         max_terms=_env_int("QUERY_MAX_TERMS", QUERY_DEFAULTS.max_terms),

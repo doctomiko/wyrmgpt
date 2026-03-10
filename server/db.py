@@ -5302,6 +5302,24 @@ def _artifact_scope_key_for_row(conn, artifact_row: dict) -> str:
 
     return "global"
 
+def load_artifact_row_for_context(conn, artifact_id: str) -> dict | None:
+    row = conn.execute(
+        """
+        SELECT *
+        FROM artifacts
+        WHERE id = ?
+          AND (is_deleted IS NULL OR is_deleted = 0)
+        LIMIT 1
+        """,
+        ((artifact_id or "").strip(),),
+    ).fetchone()
+    if not row:
+        return None
+
+    art = dict(row)
+    art["content_text"] = hydrate_artifact_content_text(conn, artifact_id)
+    return art
+
 if (False):
     def _artifact_scope_key_for_row(conn, artifact_row: dict) -> str:
         """
