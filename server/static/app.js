@@ -207,6 +207,18 @@ let editingMemoryId = null;
 let memoriesCache = [];
 let editingPinId = null;
 let pinsCache = [];
+// context diagnostic state:
+let lastRenderedContext = null;
+const contextSectionState = {
+  scopeQuery: true,
+  promptLayers: true,
+  wholeAssets: true,
+  expansion: true,
+  ragFinal: true,
+  ragRaw: false,
+  recentContext: false,
+  ragDebug: false,
+};
 
 // #endregion
 
@@ -1522,6 +1534,101 @@ function applyAdvancedVisibility() {
 
 // #region Context helpers
 
+function allContextSectionsExpanded() {
+  return Object.values(contextSectionState).every(Boolean);
+}
+
+function updateContextToggleButton() {
+  if (!contextPreviewToggleBtn) return;
+  contextPreviewToggleBtn.textContent = allContextSectionsExpanded() ? "Collapse all" : "Expand all";
+}
+
+function createCtxPre(text) {
+  const pre = document.createElement("pre");
+  pre.className = "ctxPre";
+  pre.textContent = text || "(none)";
+  return pre;
+}
+
+function createCtxEmpty(text = "(none)") {
+  const div = document.createElement("div");
+  div.className = "ctxEmpty";
+  div.textContent = text;
+  return div;
+}
+
+function createCtxList(items, emptyText = "(none)") {
+  if (!items || !items.length) return createCtxEmpty(emptyText);
+
+  const ul = document.createElement("ul");
+  ul.className = "ctxList";
+  for (const item of items) {
+    const li = document.createElement("li");
+    li.textContent = item;
+    ul.appendChild(li);
+  }
+  return ul;
+}
+
+function createCtxSubBlock(title, node) {
+  const wrap = document.createElement("div");
+  wrap.className = "ctxSubBlock";
+
+  const hdr = document.createElement("div");
+  hdr.className = "ctxSubTitle";
+  hdr.textContent = title;
+
+  wrap.appendChild(hdr);
+  wrap.appendChild(node);
+  return wrap;
+}
+
+function createCtxSection(key, title, bodyNode, summary = "") {
+  const section = document.createElement("section");
+  section.className = "ctxSection";
+  if (!contextSectionState[key]) section.classList.add("collapsed");
+
+  const header = document.createElement("button");
+  header.type = "button";
+  header.className = "ctxSectionHeader";
+
+  const left = document.createElement("div");
+  left.className = "ctxSectionHeaderLeft";
+
+  const caret = document.createElement("span");
+  caret.className = "ctxSectionCaret";
+  caret.textContent = contextSectionState[key] ? "▾" : "▸";
+
+  const titleEl = document.createElement("span");
+  titleEl.className = "ctxSectionTitle";
+  titleEl.textContent = title;
+
+  left.appendChild(caret);
+  left.appendChild(titleEl);
+
+  header.appendChild(left);
+
+  if (summary) {
+    const summaryEl = document.createElement("span");
+    summaryEl.className = "ctxSectionSummary";
+    summaryEl.textContent = summary;
+    header.appendChild(summaryEl);
+  }
+
+  const body = document.createElement("div");
+  body.className = "ctxSectionBody";
+  body.appendChild(bodyNode);
+
+  header.addEventListener("click", () => {
+    contextSectionState[key] = !contextSectionState[key];
+    if (lastRenderedContext) renderContext(lastRenderedContext);
+  });
+
+  section.appendChild(header);
+  section.appendChild(body);
+  return section;
+}
+
 async function fetchContext(cid, previewLimit = 20, userText = "") {
   const qs = new URLSearchParams();
   qs.set("preview_limit", String(previewLimit));
@@ -1532,7 +1639,10 @@ async function fetchContext(cid, previewLimit = 20, userText = "") {
 }
 
 function renderContext(ctx) {
-  const lines = [];
+  lastRenderedContext = ctx;
+
+  if (!contextPreviewEl) return;
+  contextPreviewEl.innerHTML = "";
 
   const total = ctx.assembled_input_count || 0;
   const previewLimit = ctx.assembled_input_preview_limit ?? 20;
@@ -1547,14 +1657,14 @@ function renderContext(ctx) {
   const projectId = ctx.project_id ?? null;
 
   const hasDraft = !!ctx.has_user_text;
-  const queryInclude = ctx.query_include || "";
-  const queryExpand = ctx.query_expand_results || "";
-
   const fileIncludeActive = !!ctx.file_include;
   const memoryIncludeActive = !!ctx.memory_include;
   const chatIncludeActive = !!ctx.chat_include;
   const ftsActive = !!ctx.fts_rag_active;
   const vectorActive = !!ctx.vector_rag_active;
+
+  const queryInclude = ctx.query_include || "";
+  const queryExpand = ctx.query_expand_results || "";
 
   const scopedFiles = ctx.scoped_files || [];
   const includedFiles = ctx.included_file_labels || [];
@@ -1564,68 +1674,93 @@ function renderContext(ctx) {
 
   const rawRows = ctx.retrieved_chunks_raw || [];
   const finalRows = ctx.retrieved_chunks_final || ctx.retrieved_chunk_meta || [];
-  const rd = ctx.retrieval_debug || {};
 
-  if (contextRefreshing) {
-    lines.push("[updating context preview...]");
+  const accordion = document.createElement("div");
+  accordion.className = "ctxAccordion";
+
+  // Scope & Query
+  {
+    const lines = [];
+    if (contextRefreshing) {
+      lines.push("[updating context preview...]");
+      lines.push("");
+    }
+
+    lines.push(`Conversation: ${ctx.conversation_id}`);
+    if (projectId !== null || projectName) {
+      lines.push(`Project: ${projectName || "(unnamed project)"}${projectId !== null ? ` [${projectId}]` : ""}`);
+    } else {
+      lines.push("Project: (none)");
+    }
+
     lines.push("");
+    lines.push(`Include: ${queryInclude || "(none)"}`);
+    lines.push(`Expand results: ${queryExpand || "(none)"}`);
+    lines.push(
+      `Caps: files=${ctx.query_max_full_files ?? "?"}, memories=${ctx.query_max_full_memories ?? "?"}, chats=${ctx.query_max_full_chats ?? "?"}`
+    );
+    lines.push(`Expand threshold: min artifact hits=${ctx.query_expand_min_artifact_hits ?? "?"}`);
+
+    if (!hasDraft) {
+      lines.push("Status: idle (no draft text, so retrieval/inclusion is not running)");
+    } else {
+      const activeParts = [];
+      if (fileIncludeActive) activeParts.push("full-file inclusion");
+      if (memoryIncludeActive) activeParts.push("full-memory inclusion");
+      if (chatIncludeActive) activeParts.push("full-chat inclusion");
+      if (ftsActive) activeParts.push("FTS");
+      if (vectorActive) activeParts.push("vector");
+      if (!activeParts.length) activeParts.push("no active retrieval path");
+      lines.push(`Active: ${activeParts.join("; ")}`);
+    }
+
+    lines.push("");
+    lines.push("Token and character counts are approximate.");
+    lines.push(`Assembled messages: ${total}`);
+    lines.push(`Context load: ~${approxTokens} text tokens; ${totalChars} characters; ${numImages} images`);
+    lines.push(`Recent history preview limit: ${previewLimit}${truncated ? " (truncated)" : ""}`);
+
+    accordion.appendChild(
+      createCtxSection(
+        "scopeQuery",
+        "Scope & Query",
+        createCtxPre(lines.join("\n")),
+        `msgs=${total} · raw=${rawRows.length} · final=${finalRows.length}`
+      )
+    );
   }
 
-  lines.push("CONTEXT SCOPE:");
-  lines.push(`Conversation: ${ctx.conversation_id}`);
-  if (projectId !== null || projectName) {
-    lines.push(`Project: ${projectName || "(unnamed project)"}${projectId !== null ? ` [${projectId}]` : ""}`);
-  } else {
-    lines.push("Project: (none)");
+  // Prompt Layers
+  {
+    const wrap = document.createElement("div");
+    wrap.appendChild(
+      createCtxSubBlock(
+        "System Text",
+        createCtxPre(ctx.system_text || ctx.effective_system_prompt || "(none)")
+      )
+    );
+    wrap.appendChild(
+      createCtxSubBlock(
+        "Conversation Summary",
+        createCtxPre((ctx.summary || "").trim() || "(none)")
+      )
+    );
+
+    accordion.appendChild(
+      createCtxSection(
+        "promptLayers",
+        "Prompt Layers",
+        wrap,
+        `${(ctx.personalization_blocks || []).length} personalization block(s)`
+      )
+    );
   }
-  lines.push("");
 
-  lines.push("QUERY BEHAVIOR:");
-  lines.push(`Include: ${queryInclude || "(none)"}`);
-  lines.push(`Expand results: ${queryExpand || "(none)"}`);
-  lines.push(
-    `Caps: files=${ctx.query_max_full_files ?? "?"}, memories=${ctx.query_max_full_memories ?? "?"}, chats=${ctx.query_max_full_chats ?? "?"}`
-  );
-  lines.push(`Expand threshold: min artifact hits=${ctx.query_expand_min_artifact_hits ?? "?"}`);
+  // Whole Assets Included
+  {
+    const wrap = document.createElement("div");
 
-  if (!hasDraft) {
-    lines.push("Status: idle (no draft text, so retrieval/inclusion is not running)");
-  } else {
-    const activeParts = [];
-    if (fileIncludeActive) activeParts.push("full-file inclusion");
-    if (memoryIncludeActive) activeParts.push("full-memory inclusion");
-    if (chatIncludeActive) activeParts.push("full-chat inclusion");
-    if (ftsActive) activeParts.push("FTS");
-    if (vectorActive) activeParts.push("vector");
-    if (!activeParts.length) activeParts.push("no active retrieval path");
-    lines.push(`Active: ${activeParts.join("; ")}`);
-  }
-  lines.push("");
-
-  lines.push("CONTEXT METRICS:");
-  lines.push("Token and character counts are approximate.");
-  lines.push(`Assembled messages: ${total}`);
-  lines.push(`Context load: ~${approxTokens} text tokens; ${totalChars} characters; ${numImages} images`);
-  lines.push(`Recent history preview limit: ${previewLimit}${truncated ? " (truncated)" : ""}`);
-  lines.push(`Personalization blocks: ${(ctx.personalization_blocks || []).length}`);
-  lines.push(`Included files: ${includedFiles.length}`);
-  lines.push(`Included memories: ${includedMemories.length}`);
-  lines.push(`Included chats: ${includedChats.length}`);
-  lines.push(`RAG raw hits: ${rawRows.length}`);
-  lines.push(`RAG final hits: ${finalRows.length}`);
-  lines.push("");
-
-  lines.push("SYSTEM TEXT:");
-  lines.push(ctx.system_text || ctx.effective_system_prompt || "(none)");
-  lines.push("");
-
-  lines.push("CONVERSATION SUMMARY:");
-  lines.push((ctx.summary || "").trim() || "(none)");
-  lines.push("");
-
-  lines.push("SCOPED FILES:");
-  if (scopedFiles.length) {
-    for (const f of scopedFiles) {
+    const scopedFileItems = scopedFiles.map((f) => {
       const name = f.name || "(unnamed file)";
       const scope =
         f.scope_type === "conversation"
@@ -1633,34 +1768,27 @@ function renderContext(ctx) {
           : f.scope_type === "project"
           ? `project:${f.scope_id ?? "?"}`
           : (f.scope_type || "global");
-      lines.push(`- ${name} [${scope}]`);
-    }
-  } else {
-    lines.push("(none)");
-  }
-  lines.push("");
+      return `${name} [${scope}]`;
+    });
 
-  lines.push("WHOLE ARTIFACTS INCLUDED:");
-  if (includedFiles.length) {
-    lines.push("Files:");
-    for (const f of includedFiles) lines.push(`  - ${f}`);
-  }
-  if (includedMemories.length) {
-    lines.push("Memories:");
-    for (const m of includedMemories) lines.push(`  - ${m}`);
-  }
-  if (includedChats.length) {
-    lines.push("Chats:");
-    for (const c of includedChats) lines.push(`  - ${c}`);
-  }
-  if (!includedFiles.length && !includedMemories.length && !includedChats.length) {
-    lines.push("(none)");
-  }
-  lines.push("");
+    wrap.appendChild(createCtxSubBlock("Scoped Files", createCtxList(scopedFileItems)));
+    wrap.appendChild(createCtxSubBlock("Included Files", createCtxList(includedFiles)));
+    wrap.appendChild(createCtxSubBlock("Included Memories", createCtxList(includedMemories)));
+    wrap.appendChild(createCtxSubBlock("Included Chats", createCtxList(includedChats)));
 
-  lines.push("EXPANSION RESULTS:");
-  if (expansionCandidates.length) {
-    for (const item of expansionCandidates) {
+    accordion.appendChild(
+      createCtxSection(
+        "wholeAssets",
+        "Whole Assets Included",
+        wrap,
+        `files=${includedFiles.length} · memories=${includedMemories.length} · chats=${includedChats.length}`
+      )
+    );
+  }
+
+  // Expansion Results
+  {
+    const items = expansionCandidates.map((item) => {
       const label =
         item.kind === "FILE"
           ? (item.filename || item.artifact_title || item.artifact_id)
@@ -1668,68 +1796,98 @@ function renderContext(ctx) {
           ? (item.artifact_title || item.artifact_id)
           : (item.conversation_title || item.artifact_title || item.artifact_id);
 
-      lines.push(`- ${item.kind}: ${label} (raw hits=${item.raw_hit_count}, score=${item.score})`);
+      return `${item.kind}: ${label} (raw hits=${item.raw_hit_count}, score=${item.score})`;
+    });
+
+    accordion.appendChild(
+      createCtxSection(
+        "expansion",
+        "Expansion Results",
+        createCtxList(items),
+        `${expansionCandidates.length} candidate(s)`
+      )
+    );
+  }
+
+  // RAG Final Hits
+  {
+    const lines = [];
+    if (finalRows.length) {
+      for (const r of finalRows) {
+        const src = r.filename || r.scope_key || r.source_kind || "source";
+        const ts = r.artifact_updated_at || r.file_updated_at || r.file_created_at || "";
+        const snippetRaw = r.preview_text || r.text || "";
+        const snippet = snippetRaw.length > 900
+          ? `${snippetRaw.slice(0, 900)}\n[...truncated for preview...]`
+          : snippetRaw;
+
+        lines.push(`- ${src}#${r.chunk_index} chunk_id=${r.chunk_id} score=${r.score} ts=${ts}`);
+        if (snippet) lines.push(snippet);
+        lines.push("");
+      }
+    } else {
+      lines.push("(none)");
     }
-  } else {
-    lines.push("(none)");
+
+    accordion.appendChild(
+      createCtxSection(
+        "ragFinal",
+        "RAG Final Hits",
+        createCtxPre(lines.join("\n")),
+        `${finalRows.length} hit(s)`
+      )
+    );
   }
-  lines.push("");
 
-  lines.push(`RAG FINAL HITS (${finalRows.length}):`);
-  if (finalRows.length) {
-    for (const r of finalRows) {
-      const src = r.filename || r.scope_key || r.source_kind || "source";
-      const ts = r.artifact_updated_at || r.file_updated_at || r.file_created_at || "";
-      const snippetRaw = r.preview_text || r.text || "";
-      const snippet = snippetRaw.length > 900
-        ? `${snippetRaw.slice(0, 900)}\n[...truncated for preview...]`
-        : snippetRaw;
-
-      lines.push(`- ${src}#${r.chunk_index} chunk_id=${r.chunk_id} score=${r.score} ts=${ts}`);
-      if (snippet) lines.push(snippet);
-      lines.push("");
+  // RAG Raw Hits
+  {
+    const lines = [];
+    if (rawRows.length) {
+      for (const r of rawRows.slice(0, 50)) {
+        const src = r.filename || r.scope_key || r.source_kind || "source";
+        lines.push(
+          `- ${src}#${r.chunk_index} chunk_id=${r.chunk_id} artifact_id=${r.artifact_id} file_id=${r.file_id || ""} score=${r.score}`
+        );
+      }
+    } else {
+      lines.push("(none)");
     }
-  } else {
-    lines.push("(none)");
-    lines.push("");
+
+    accordion.appendChild(
+      createCtxSection(
+        "ragRaw",
+        "RAG Raw Hits",
+        createCtxPre(lines.join("\n")),
+        `${rawRows.length} raw hit(s)`
+      )
+    );
   }
 
-  lines.push(`RAG RAW HITS (${rawRows.length}):`);
-  if (rawRows.length) {
-    for (const r of rawRows.slice(0, 50)) {
-      const src = r.filename || r.scope_key || r.source_kind || "source";
-      lines.push(
-        `- ${src}#${r.chunk_index} chunk_id=${r.chunk_id} artifact_id=${r.artifact_id} file_id=${r.file_id || ""} score=${r.score}`
-      );
+  // Recent Conversation Context
+  {
+    const lines = [];
+    const preview = ctx.recent_history_preview || [];
+    if (preview.length) {
+      for (const m of preview) {
+        lines.push(`${(m.role || "??").toUpperCase()}: ${m.content || ""}`);
+        lines.push("");
+      }
+    } else {
+      lines.push("(none)");
     }
-  } else {
-    lines.push("(none)");
-  }
-  lines.push("");
 
-  lines.push("RECENT CONVERSATION CONTEXT:");
-  for (const m of (ctx.recent_history_preview || [])) {
-    lines.push(`${(m.role || "??").toUpperCase()}: ${m.content || ""}`);
-    lines.push("");
+    accordion.appendChild(
+      createCtxSection(
+        "recentContext",
+        "Recent Conversation Context",
+        createCtxPre(lines.join("\n")),
+        `${(ctx.recent_history_preview || []).length} message(s)`
+      )
+    );
   }
 
-  // TODO make this .env configurable
-  // Uncomment this only when you're actively debugging retrieval internals.
-  /*
-  lines.push("RAG DEBUG JSON:");
-  if (ctx.retrieval_debug) {
-    try {
-      lines.push(JSON.stringify(ctx.retrieval_debug, null, 2));
-    } catch (e) {
-      lines.push(String(ctx.retrieval_debug));
-    }
-  } else {
-    lines.push("(none)");
-  }
-  lines.push("");
-  */
-
-  contextPreviewEl.textContent = lines.join("\n");
+  contextPreviewEl.appendChild(accordion);
+  updateContextToggleButton();
 }
 
 /*
@@ -2171,7 +2329,8 @@ async function refreshContext() {
     const ctx = await fetchContext(conversationId, limit, draft);
     setContextRefreshing(false);
     renderContext(ctx);
-    contextPreviewToggleBtn.textContent = contextExpanded ? "Show less" : "Show more";
+    updateContextToggleButton();
+    //contextPreviewToggleBtn.textContent = contextExpanded ? "Show less" : "Show more";
   } catch (e) {
     console.error("refreshContext failed", e);
     setContextRefreshing(false);
@@ -4549,11 +4708,22 @@ if (projMenuNewChatBtn) {
 // #region Context Preview Pane Bindings
 
 if (contextPreviewToggleBtn) {
+  contextPreviewToggleBtn.addEventListener("click", () => {
+    const next = !allContextSectionsExpanded();
+    Object.keys(contextSectionState).forEach((key) => {
+      contextSectionState[key] = next;
+    });
+    if (lastRenderedContext) renderContext(lastRenderedContext);
+  });
+}
+/*
+if (contextPreviewToggleBtn) {
   contextPreviewToggleBtn.addEventListener("click", async () => {
     contextExpanded = !contextExpanded;
     await refreshContext();
   });
 }
+*/
 
 // #endregion
 

@@ -129,6 +129,143 @@ body {
   white-space: pre-wrap;
 }
 
+.contextPreview {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  background: #000;
+  border-radius: 4px;
+  padding: 6px;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+}
+
+#rightSidePanel .contextPreview {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(12,19,32,0.85);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.25;
+  /* max-height: 45vh; */
+  /* drop the cap */
+  max-height: none;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.contextHeaderRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+
+.ctxAccordion {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ctxSection {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.02);
+  overflow: hidden;
+}
+
+.ctxSectionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  background: rgba(255,255,255,0.03);
+  border: 0;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+
+.ctxSectionHeader:hover {
+  background: rgba(255,255,255,0.06);
+}
+
+.ctxSectionHeaderLeft {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ctxSectionCaret {
+  width: 1em;
+  text-align: center;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+
+.ctxSectionTitle {
+  font-weight: 600;
+}
+
+.ctxSectionSummary {
+  color: var(--muted);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.ctxSectionBody {
+  padding: 10px;
+  border-top: 1px solid rgba(255,255,255,0.05);
+}
+
+.ctxSection.collapsed .ctxSectionBody {
+  display: none;
+}
+
+.ctxPre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  line-height: 1.35;
+  color: var(--text);
+}
+
+.ctxList {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.ctxList li {
+  margin: 0 0 4px 0;
+}
+
+.ctxEmpty {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.ctxSubBlock + .ctxSubBlock {
+  margin-top: 12px;
+}
+
+.ctxSubTitle {
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: var(--muted);
+}
+
 .sideHeader {
   display: flex;
   align-items: center;
@@ -581,32 +718,6 @@ textarea {
   display: flex;
   flex-direction: column;
   min-height: 0;
-}
-
-#rightSidePanel .contextPreview {
-  flex: 1 1 auto;
-  min-height: 0;
-  margin: 0;
-  padding: 10px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: rgba(12,19,32,0.85);
-  color: var(--text);
-  font-size: 12px;
-  line-height: 1.25;
-  /* max-height: 45vh; */
-  /* drop the cap */
-  max-height: none;
-  overflow: auto;
-  white-space: pre-wrap;
-}
-
-.contextHeaderRow {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 8px;
 }
 
 .convMenu {
