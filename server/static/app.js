@@ -1767,6 +1767,7 @@ function renderContext(ctx) {
   const fileIncludeActive = !!ctx.file_include;
   const memoryIncludeActive = !!ctx.memory_include;
   const chatIncludeActive = !!ctx.chat_include;
+  const chatSummaryIncludeActive = !!ctx.chat_summary_include;
   const ftsActive = !!ctx.fts_rag_active;
   const vectorActive = !!ctx.vector_rag_active;
 
@@ -1818,18 +1819,19 @@ function renderContext(ctx) {
     );
     lines.push(`Expand threshold: min artifact hits=${ctx.query_expand_min_artifact_hits ?? "?"}`);
 
+    const activeParts = [];
+    if (fileIncludeActive) activeParts.push("full-file inclusion");
+    if (memoryIncludeActive) activeParts.push("full-memory inclusion");
+    if (chatIncludeActive) activeParts.push("full-chat inclusion");
+    if (chatSummaryIncludeActive) activeParts.push("chat-summary inclusion");
     if (!hasDraft) {
       lines.push("Status: idle (no draft text, so retrieval/inclusion is not running)");
     } else {
-      const activeParts = [];
-      if (fileIncludeActive) activeParts.push("full-file inclusion");
-      if (memoryIncludeActive) activeParts.push("full-memory inclusion");
-      if (chatIncludeActive) activeParts.push("full-chat inclusion");
       if (ftsActive) activeParts.push("FTS");
       if (vectorActive) activeParts.push("vector");
-      if (!activeParts.length) activeParts.push("no active retrieval path");
-      lines.push(`Active: ${activeParts.join("; ")}`);
     }
+    if (!activeParts.length) activeParts.push("no active retrieval path");
+    lines.push(`Active: ${activeParts.join("; ")}`);
 
     lines.push("");
     // lines.push(`Included chat summaries: ${includedChatSummaries.length}`);
