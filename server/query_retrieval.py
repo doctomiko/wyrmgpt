@@ -143,44 +143,128 @@ def retrieve_chunks_for_message(
         debug["slices"].append(s[:160])
         debug["shapes"].append({"fts": qs.fts_query, "terms": qs.kept_terms, "phrases": qs.kept_phrases})
         debug["search_queries"].append(q)
-    try:
-        rows = search_corpus_for_conversation(
-            conversation_id=conversation_id,
-            query=q,
-            limit=per_slice_limit,
-            cfg=cfg,
-        )
-    except Exception as e:
-        log_debug("RAG search failed for shaped query %r: %r", q, e)
 
-        # Last-ditch retry: quote every token from the original slice.
-        safe_q = " ".join(f'"{tok.replace(chr(34), chr(34) * 2)}"' for tok in qs.kept_terms)
-        if not safe_q and qs.kept_phrases:
-            safe_q = " ".join(f'"{p.replace(chr(34), chr(34) * 2)}"' for p in qs.kept_phrases)
+        rows = []
+        try:
+            rows = search_corpus_for_conversation(
+                conversation_id=conversation_id,
+                query=q,
+                limit=per_slice_limit,
+                cfg=cfg,
+            )
+        except Exception as e:
+            log_debug("RAG search failed for shaped query %r: %r", q, e)
 
-        rows = search_corpus_for_conversation(
-            conversation_id=conversation_id,
-            query=safe_q or s,
-            limit=per_slice_limit,
-            cfg=cfg,
-        )
+        if not rows:
+            safe_q = " ".join(f'"{tok.replace(chr(34), chr(34) * 2)}"' for tok in qs.kept_terms)
+            if not safe_q and qs.kept_phrases:
+                safe_q = " ".join(f'"{p.replace(chr(34), chr(34) * 2)}"' for p in qs.kept_phrases)
+
+            if safe_q or s:
+                retry_q = safe_q or s
+                log_debug("RAG retry search: query=%r", retry_q)
+                rows = search_corpus_for_conversation(
+                    conversation_id=conversation_id,
+                    query=retry_q,
+                    limit=per_slice_limit,
+                    cfg=cfg,
+                )
+
         log_debug("RAG search: query=%r returned=%d", q, len(rows))
         for r in rows:
             raw_rows.append(r)
-            # count chunks
+
             cid = int(r["chunk_id"])
             raw_counts_by_chunk[cid] = raw_counts_by_chunk.get(cid, 0) + 1
-            # count artifacts
+
             aid = (r.get("artifact_id") or "").strip()
             if aid:
                 raw_counts_by_artifact[aid] = raw_counts_by_artifact.get(aid, 0) + 1
-            # count files
+
             fid = (r.get("file_id") or "").strip()
             if fid:
                 raw_counts_by_file[fid] = raw_counts_by_file.get(fid, 0) + 1
-            # keep best (lowest) score per chunk for final result set
+
             if cid not in merged or r.get("score", 1e9) < merged[cid].get("score", 1e9):
                 merged[cid] = r
+    if (False):
+        per_slice_limit = max(3, limit)  # give each slice a chance
+        for s in slices:
+            qs = shape_fts_query(s, cfg)
+            log_debug("RAG slice: text=%r fts=%r terms=%r phrases=%r",
+            s[:160], qs.fts_query, qs.kept_terms, qs.kept_phrases)
+            q = qs.fts_query or s
+            debug["slices"].append(s[:160])
+            debug["shapes"].append({"fts": qs.fts_query, "terms": qs.kept_terms, "phrases": qs.kept_phrases})
+            debug["search_queries"].append(q)
+
+            try:
+                rows = search_corpus_for_conversation(
+                    conversation_id=conversation_id,
+                    query=q,
+                    limit=per_slice_limit,
+                    cfg=cfg,
+                )
+            except Exception as e:
+                log_debug("RAG search failed for shaped query %r: %r", q, e)
+
+                safe_q = " ".join(f'"{tok.replace(chr(34), chr(34) * 2)}"' for tok in qs.kept_terms)
+                if not safe_q and qs.kept_phrases:
+                    safe_q = " ".join(f'"{p.replace(chr(34), chr(34) * 2)}"' for p in qs.kept_phrases)
+
+                rows = search_corpus_for_conversation(
+                    conversation_id=conversation_id,
+                    query=safe_q or s,
+                    limit=per_slice_limit,
+                    cfg=cfg,
+                )
+
+            log_debug("RAG search: query=%r returned=%d", q, len(rows))
+            for r in rows:
+                raw_rows.append(r)
+
+                cid = int(r["chunk_id"])
+                raw_counts_by_chunk[cid] = raw_counts_by_chunk.get(cid, 0) + 1
+
+                aid = (r.get("artifact_id") or "").strip()
+                if aid:
+                    raw_counts_by_artifact[aid] = raw_counts_by_artifact.get(aid, 0) + 1
+
+                fid = (r.get("file_id") or "").strip()
+                if fid:
+                    raw_counts_by_file[fid] = raw_counts_by_file.get(fid, 0) + 1
+
+                if cid not in merged or r.get("score", 1e9) < merged[cid].get("score", 1e9):
+                    merged[cid] = r
+                    
+            # Last-ditch retry: quote every token from the original slice.
+            safe_q = " ".join(f'"{tok.replace(chr(34), chr(34) * 2)}"' for tok in qs.kept_terms)
+            if not safe_q and qs.kept_phrases:
+                safe_q = " ".join(f'"{p.replace(chr(34), chr(34) * 2)}"' for p in qs.kept_phrases)
+
+            rows = search_corpus_for_conversation(
+                conversation_id=conversation_id,
+                query=safe_q or s,
+                limit=per_slice_limit,
+                cfg=cfg,
+            )
+            log_debug("RAG search: query=%r returned=%d", q, len(rows))
+            for r in rows:
+                raw_rows.append(r)
+                # count chunks
+                cid = int(r["chunk_id"])
+                raw_counts_by_chunk[cid] = raw_counts_by_chunk.get(cid, 0) + 1
+                # count artifacts
+                aid = (r.get("artifact_id") or "").strip()
+                if aid:
+                    raw_counts_by_artifact[aid] = raw_counts_by_artifact.get(aid, 0) + 1
+                # count files
+                fid = (r.get("file_id") or "").strip()
+                if fid:
+                    raw_counts_by_file[fid] = raw_counts_by_file.get(fid, 0) + 1
+                # keep best (lowest) score per chunk for final result set
+                if cid not in merged or r.get("score", 1e9) < merged[cid].get("score", 1e9):
+                    merged[cid] = r
 
     # count(chunks per file_id) >= QUERY_INCLUDE_FILE_MATCH_COUNT
     # count(chunks per artifact_id) >= QUERY_INCLUDE_ARTICLE_MATCH_COUNT

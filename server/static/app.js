@@ -208,17 +208,30 @@ let memoriesCache = [];
 let editingPinId = null;
 let pinsCache = [];
 // context diagnostic state:
+let lastContextQueryText = "";
 let lastRenderedContext = null;
-const contextSectionState = {
-  scopeQuery: true,
-  promptLayers: true,
-  wholeAssets: true,
-  expansion: true,
-  ragFinal: true,
-  ragRaw: false,
-  recentContext: false,
-  ragDebug: false,
-};
+const CONTEXT_SECTION_STATE_KEY = "wyrmgpt.contextSectionState";
+const contextSectionState = (() => {
+  const defaults = {
+    scopeQuery: true,
+    promptLayers: true,
+    wholeAssets: true,
+    expansion: true,
+    ragFinal: true,
+    ragRaw: false,
+    recentContext: false,
+    ragDebug: false,
+  };
+
+  try {
+    const raw = localStorage.getItem(CONTEXT_SECTION_STATE_KEY);
+    if (!raw) return defaults;
+    const parsed = JSON.parse(raw);
+    return { ...defaults, ...(parsed || {}) };
+  } catch {
+    return defaults;
+  }
+})();
 
 // #endregion
 
@@ -1543,6 +1556,14 @@ function updateContextToggleButton() {
   contextPreviewToggleBtn.textContent = allContextSectionsExpanded() ? "Collapse all" : "Expand all";
 }
 
+function persistContextSectionState() {
+  try {
+    localStorage.setItem(CONTEXT_SECTION_STATE_KEY, JSON.stringify(contextSectionState));
+  } catch {
+    // TODO should we log it?
+  }
+}
+
 function createCtxPre(text) {
   const pre = document.createElement("pre");
   pre.className = "ctxPre";
@@ -1619,6 +1640,12 @@ function createCtxSection(key, title, bodyNode, summary = "") {
   body.className = "ctxSectionBody";
   body.appendChild(bodyNode);
 
+  header.addEventListener("click", () => {
+    contextSectionState[key] = !contextSectionState[key];
+    persistContextSectionState();
+    if (lastRenderedContext) renderContext(lastRenderedContext);
+  });
+  /*
   header.addEventListener("click", () => {
     contextSectionState[key] = !contextSectionState[key];
     if (lastRenderedContext) renderContext(lastRenderedContext);
@@ -1786,25 +1813,29 @@ function renderContext(ctx) {
     );
   }
 
-  // Expansion Results
+  // RAG Raw Hits
   {
-    const items = expansionCandidates.map((item) => {
-      const label =
-        item.kind === "FILE"
-          ? (item.filename || item.artifact_title || item.artifact_id)
-          : item.kind === "MEMORY"
-          ? (item.artifact_title || item.artifact_id)
-          : (item.conversation_title || item.artifact_title || item.artifact_id);
-
-      return `${item.kind}: ${label} (raw hits=${item.raw_hit_count}, score=${item.score})`;
-    });
+    const lines = [];
+    if (rawRows.length) {
+      for (const r of rawRows.slice(0, 50)) {
+        const src = r.filename || r.scope_key || r.source_kind || "source";
+        lines.push(
+          `- ${src}#${r.chunk_index} chunk_id=${r.chunk_id} artifact_id=${r.artifact_id} file_id=${r.file_id || ""} score=${r.score}`
+        );
+      }
+    } else {
+      lines.push(!hasDraft && !lastContextQueryText
+        ? "Enter a draft message to run retrieval and inclusion diagnostics."
+        : "(none)");
+      //lines.push("(none)");
+    }
 
     accordion.appendChild(
       createCtxSection(
-        "expansion",
-        "Expansion Results",
-        createCtxList(items),
-        `${expansionCandidates.length} candidate(s)`
+        "ragRaw",
+        "RAG Raw Hits",
+        createCtxPre(lines.join("\n")),
+        `${rawRows.length} raw hit(s)`
       )
     );
   }
@@ -1826,7 +1857,10 @@ function renderContext(ctx) {
         lines.push("");
       }
     } else {
-      lines.push("(none)");
+      lines.push(!hasDraft && !lastContextQueryText
+        ? "Enter a draft message to run retrieval and inclusion diagnostics."
+        : "(none)");
+      //lines.push("(none)");
     }
 
     accordion.appendChild(
@@ -1839,26 +1873,25 @@ function renderContext(ctx) {
     );
   }
 
-  // RAG Raw Hits
+  // RAG Expansion Results
   {
-    const lines = [];
-    if (rawRows.length) {
-      for (const r of rawRows.slice(0, 50)) {
-        const src = r.filename || r.scope_key || r.source_kind || "source";
-        lines.push(
-          `- ${src}#${r.chunk_index} chunk_id=${r.chunk_id} artifact_id=${r.artifact_id} file_id=${r.file_id || ""} score=${r.score}`
-        );
-      }
-    } else {
-      lines.push("(none)");
-    }
+    const items = expansionCandidates.map((item) => {
+      const label =
+        item.kind === "FILE"
+          ? (item.filename || item.artifact_title || item.artifact_id)
+          : item.kind === "MEMORY"
+          ? (item.artifact_title || item.artifact_id)
+          : (item.conversation_title || item.artifact_title || item.artifact_id);
+
+      return `${item.kind}: ${label} (raw hits=${item.raw_hit_count}, score=${item.score})`;
+    });
 
     accordion.appendChild(
       createCtxSection(
-        "ragRaw",
-        "RAG Raw Hits",
-        createCtxPre(lines.join("\n")),
-        `${rawRows.length} raw hit(s)`
+        "expansion",
+        "RAG Expansion Results",
+        createCtxList(items),
+        `${expansionCandidates.length} candidate(s)`
       )
     );
   }
@@ -2319,6 +2352,33 @@ async function refreshContext() {
 }
 */
 
+async function refreshContext(draftOverride = null) {
+  if (!conversationId) return;
+  const limit = contextExpanded ? UI_CONFIG.context_preview_limit_max : UI_CONFIG.context_preview_limit_min;
+
+  const liveDraft = (chatWindowInputTextbox?.value || "").trim();
+  const effectiveDraft =
+    draftOverride !== null
+      ? String(draftOverride || "").trim()
+      : (liveDraft || lastContextQueryText || "");
+
+  setContextRefreshing(true);
+  try {
+    const ctx = await fetchContext(conversationId, limit, effectiveDraft);
+    setContextRefreshing(false);
+    renderContext(ctx);
+    updateContextToggleButton();
+  } catch (e) {
+    console.error("refreshContext failed", e);
+    setContextRefreshing(false);
+    if (contextPreviewEl) {
+      contextPreviewEl.textContent = `Context refresh failed: ${e?.message || e}`;
+    }
+  } finally {
+    setContextRefreshing(false);
+  }
+}
+/*
 async function refreshContext() {
   if (!conversationId) return;
   const limit = contextExpanded ? UI_CONFIG.context_preview_limit_max : UI_CONFIG.context_preview_limit_min;
@@ -2341,6 +2401,7 @@ async function refreshContext() {
     setContextRefreshing(false);
   }
 }
+*/
 
 // #endregion
 
@@ -2430,6 +2491,7 @@ async function sendSingle(text, model) {
   //const conversations = await fetchConversations();
   //renderConversations(conversations);
   await refreshConversationLists();
+  lastContextQueryText = text;
   await refreshContext();
   scheduleTranscriptRefresh();
 }
@@ -2517,6 +2579,7 @@ async function sendAB(text, modelA, modelB) {
     markCanonical(rowEl, data.canonical_slot || "A");
 
     await refreshConversationLists();
+    lastContextQueryText = text;
     await refreshContext();
     scheduleTranscriptRefresh();
   } catch (e) {
@@ -2969,7 +3032,8 @@ async function saveQuerySettingsForCurrentMode() {
     query_max_full_files: parseInt(queryMaxFullFilesEl?.value || "0", 10) || 0,
     query_max_full_memories: parseInt(queryMaxFullMemoriesEl?.value || "0", 10) || 0,
     query_max_full_chats: parseInt(queryMaxFullChatsEl?.value || "0", 10) || 0,
-    query_expand_min_artifact_hits: parseInt(queryExpandMinArtifactHitsEl?.value || "2", 10) || 2,
+    query_expand_min_artifact_hits: Math.max(1, parseInt(queryExpandMinArtifactHitsEl?.value || "2", 10) || 2),
+    //query_expand_min_artifact_hits: parseInt(queryExpandMinArtifactHitsEl?.value || "2", 10) || 2,
   };
 
   const data = await fetchJsonDebug("/api/query_settings", {
@@ -4713,9 +4777,21 @@ if (contextPreviewToggleBtn) {
     Object.keys(contextSectionState).forEach((key) => {
       contextSectionState[key] = next;
     });
+    persistContextSectionState();
     if (lastRenderedContext) renderContext(lastRenderedContext);
   });
 }
+/*
+if (contextPreviewToggleBtn) {
+  contextPreviewToggleBtn.addEventListener("click", () => {
+    const next = !allContextSectionsExpanded();
+    Object.keys(contextSectionState).forEach((key) => {
+      contextSectionState[key] = next;
+    });
+    if (lastRenderedContext) renderContext(lastRenderedContext);
+  });
+}
+*/
 /*
 if (contextPreviewToggleBtn) {
   contextPreviewToggleBtn.addEventListener("click", async () => {

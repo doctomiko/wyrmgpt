@@ -614,13 +614,21 @@ def api_update_query_settings(req: QuerySettingsUpdateRequest):
         set_app_setting(_query_setting_key("max_full_chats"), str(int(req.query_max_full_chats)), scope_type, scope_id)
 
     if req.query_expand_min_artifact_hits is not None:
+        if req.query_expand_min_artifact_hits is not None:
+            min_hits = max(1, int(req.query_expand_min_artifact_hits))
         set_app_setting(
             _query_setting_key("expand_min_artifact_hits"),
-            str(int(req.query_expand_min_artifact_hits)),
+            str(min_hits),
             scope_type,
             scope_id,
         )
-
+    if (False):
+        set_app_setting(
+                _query_setting_key("expand_min_artifact_hits"),
+                str(int(req.query_expand_min_artifact_hits)),
+                scope_type,
+                scope_id,
+            )
     invalidate_all_context_cache()
     return api_get_query_settings(scope_type=scope_type, scope_id=scope_id)
 

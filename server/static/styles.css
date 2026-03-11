@@ -266,6 +266,10 @@ body {
   color: var(--muted);
 }
 
+.ctxWarning {
+  color: #fbbf24;
+}
+
 .sideHeader {
   display: flex;
   align-items: center;
