@@ -1650,6 +1650,7 @@ function createCtxSection(key, title, bodyNode, summary = "") {
     contextSectionState[key] = !contextSectionState[key];
     if (lastRenderedContext) renderContext(lastRenderedContext);
   });
+  */
 
   section.appendChild(header);
   section.appendChild(body);
