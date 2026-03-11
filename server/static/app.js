@@ -1029,6 +1029,93 @@ function addABRow(modelA, modelB, createdAtIsoA = null, createdAtIsoB = null) {
     left.appendChild(label);
     left.appendChild(timeEl);
 
+    right.appendChild(btn);
+    right.appendChild(info);
+
+    meta.appendChild(left);
+    meta.appendChild(right);
+
+    const msg = document.createElement("div");
+    msg.className = "msg assistant abMsg";
+    msg.textContent = "Thinking…";
+
+    col.appendChild(meta);
+    col.appendChild(msg);
+
+    return { col, meta, label, btn, info, msg, timeEl };
+  };
+
+  let safeLabelA = modelA && modelA.trim() ? modelA : "Unknown Model A";
+  if (safeLabelA === "model A") safeLabelA = "Unknown Model A";
+
+  let safeLabelB = modelB && modelB.trim() ? modelB : "Unknown Model B";
+  if (safeLabelB === "model B") safeLabelB = "Unknown Model B";
+
+  const A = makeCol(safeLabelA, createdAtIsoA);
+  const B = makeCol(safeLabelB, createdAtIsoB);
+
+  row.appendChild(A.col);
+  row.appendChild(B.col);
+
+  chatWindow.appendChild(row);
+  chatWindow.scrollTop = chatWindow.scrollHeight;
+
+  // This was missing in the live function.
+  A.btn.addEventListener("click", () => chooseCanonical(row, "A"));
+  B.btn.addEventListener("click", () => chooseCanonical(row, "B"));
+
+  return {
+    rowEl: row,
+    msgAEl: A.msg,
+    msgBEl: B.msg,
+    labelAEl: A.label,
+    labelBEl: B.label,
+    timeAEl: A.timeEl,
+    timeBEl: B.timeEl,
+    btnAEl: A.btn,
+    btnBEl: B.btn,
+    infoAEl: A.info,
+    infoBEl: B.info,
+  };
+}
+/*
+function addABRow(modelA, modelB, createdAtIsoA = null, createdAtIsoB = null) {
+  const row = document.createElement("div");
+  row.className = "abRow";
+
+  const makeCol = (labelText, timeIso) => {
+    const meta = document.createElement("div");
+    meta.className = "abMeta";
+
+    const left = document.createElement("div");
+    left.className = "abMetaLeft";
+
+    const right = document.createElement("div");
+    right.className = "abMetaRight";
+
+    const col = document.createElement("div");
+    col.className = "abCol";
+
+    const label = document.createElement("span");
+    label.className = "abLabel";
+    label.textContent = labelText;
+
+    const timeEl = document.createElement("span");
+    timeEl.className = "msgTime";
+    timeEl.textContent = timeIso ? formatReadableDateTime(timeIso) : "";
+
+    const btn = document.createElement("button");
+    btn.className = "abChoose";
+    btn.textContent = "Use";
+
+    const info = document.createElement("button");
+    info.className = "abInfo";
+    info.textContent = "i";
+    info.title = "Details";
+
+    left.appendChild(label);
+    left.appendChild(timeEl);
+
     // ✅ cluster buttons together on the right
     right.appendChild(btn);
     right.appendChild(info);
@@ -1075,6 +1162,7 @@ function addABRow(modelA, modelB, createdAtIsoA = null, createdAtIsoB = null) {
     infoBEl: B.info,
   };
 }
+*/
 
 /*
 function addABRow(modelA, modelB, createdAtIsoA = null, createdAtIsoB = null) {

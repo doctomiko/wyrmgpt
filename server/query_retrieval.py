@@ -88,7 +88,8 @@ def retrieve_chunks_for_message(
     app_cfg = load_app_config()
 
     debug: Dict = {
-        "query_mode": cfg.query_mode,
+        #"query_mode": cfg.query_mode,
+        "query_include": cfg.query_include,
         "include_globals": cfg.query_global_artifacts,
         "original_user_message": user_message,
         "slices": [],
@@ -114,11 +115,13 @@ def retrieve_chunks_for_message(
     if cached is not None:
         return {
             "ok": True,
-            "mode": cfg.query_mode,
+            "mode": cfg.query_include,
+            #"mode": cfg.query_mode,
             "cached": True,
             "results": cached,
             "debug": {
-                "query_mode": cfg.query_mode,
+                "query_include": cfg.query_include,
+                #"query_mode": cfg.query_mode,
                 "include_globals": cfg.query_global_artifacts,
                 "original_user_message": user_message,
                 "cache_hit": True,
@@ -132,8 +135,8 @@ def retrieve_chunks_for_message(
         }
 
     slices = slice_user_query(user_message, cfg=cfg)
-    log_debug("RAG retrieve start: cid=%s mode=%s slices=%d limit=%d msg_len=%d",
-        conversation_id, cfg.query_mode, len(slices), limit, len(user_message or ""))
+    log_debug("RAG retrieve start: cid=%s include=%s slices=%d limit=%d msg_len=%d",
+        conversation_id, cfg.query_include, len(slices), limit, len(user_message or ""))
 
     # First pass: FTS over each slice
     merged: Dict[int, dict] = {}  # chunk_id -> best row
@@ -241,7 +244,7 @@ def retrieve_chunks_for_message(
     _cache_put(cache_key, results, cfg.retrieval_cache_ttl_sec, cfg.retrieval_cache_max_entries)
     return {
         "ok": True,
-        "mode": cfg.query_mode,
+        "mode": cfg.query_include,
         "cached": False,
         "raw_results": raw_rows,
         "results": results,
