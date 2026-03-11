@@ -23,9 +23,10 @@ from .db import (
     list_conversations,
     load_artifact_row_for_context,
     memory_artifact_id,
+    conversation_summary_artifact_id,
     conversation_transcript_artifact_id,
     db_session,
-    hydrate_artifact_content_text,
+    hydrate_artifact_content_text,    
 )
 
 from .config import (
@@ -206,6 +207,7 @@ def _format_retrieved_chunks(
             continue
 
         text = _excerpt_around_query(full_text, excerpt_query, max_chars=max_chars)
+        chat_prefix = _build_chat_chunk_context_prefix(r)
 
         chunk_id = r.get("chunk_id")
         artifact_id = r.get("artifact_id")
@@ -237,7 +239,11 @@ def _format_retrieved_chunks(
             f"src={src_label} artifact_id={artifact_id} chunk_index={chunk_index} file_id={file_id}]"
         )
 
-        block_parts.append(header + "\n" + text)
+        # block_parts.append(header + "\n" + text)
+        block_body = text
+        if chat_prefix:
+            block_body = f"{chat_prefix}\n\n{text}"
+        block_parts.append(header + "\n" + block_body)
 
         meta.append({
             "chunk_id": chunk_id,
@@ -254,6 +260,11 @@ def _format_retrieved_chunks(
             "file_created_at": file_created_at,
             "file_updated_at": file_updated_at,
             "mime_type": mime_type,
+            "conversation_id": r.get("conversation_id"),
+            "conversation_title": r.get("conversation_title"),
+            "conversation_summary_excerpt": r.get("conversation_summary_excerpt"),
+            "conversation_started_at": r.get("conversation_started_at"),
+            "conversation_ended_at": r.get("conversation_ended_at"),
             "preview_text": text,
             "full_text_chars": len(full_text),
         })
@@ -261,6 +272,113 @@ def _format_retrieved_chunks(
         cites.append(f"{src_label}#{chunk_index} (chunk_id={chunk_id})")
 
     return ("\n\n".join(block_parts)).strip(), meta, cites
+
+def _format_conversation_range(started_at: str | None, ended_at: str | None) -> str:
+    start = (started_at or "").strip()
+    end = (ended_at or "").strip()
+    if start and end:
+        return f"{start} → {end}"
+    if start:
+        return start
+    if end:
+        return end
+    return ""
+
+def _build_chat_chunk_context_prefix(r: dict) -> str:
+    source_kind = (r.get("source_kind") or "").strip().lower()
+    artifact_id = (r.get("artifact_id") or "").strip()
+
+    is_chat = (
+        artifact_id.startswith("conversation_transcript--")
+        or source_kind in ("conversation:transcript", "conversation_transcript")
+    )
+    if not is_chat:
+        return ""
+
+    title = (r.get("conversation_title") or "").strip()
+    summary = (r.get("conversation_summary_excerpt") or "").strip()
+    started_at = r.get("conversation_started_at")
+    ended_at = r.get("conversation_ended_at")
+    dt_range = _format_conversation_range(started_at, ended_at)
+
+    lines = ["[CHAT CONTEXT]"]
+    if title:
+        lines.append(f"Conversation: {title}")
+    if dt_range:
+        lines.append(f"Range: {dt_range}")
+    if summary:
+        lines.append(f"Summary: {summary}")
+
+    return "\n".join(lines).strip()
+
+def _select_other_project_conversation_rows_for_context(
+    conversation_id: str,
+    project_id: int | None,
+    *,
+    limit: int,
+) -> list[dict]:
+    if project_id is None or limit <= 0:
+        return []
+
+    rows = list_conversations(limit=max(limit * 8, 200), include_archived=False)
+    out: list[dict] = []
+
+    for c in rows:
+        if str(c.get("id") or "").strip() == str(conversation_id).strip():
+            continue
+        if int(c.get("project_id") or 0) != int(project_id):
+            continue
+        out.append(c)
+        if len(out) >= limit:
+            break
+
+    return out
+
+def _conversation_span_map(conn, conversation_ids: list[str]) -> dict[str, tuple[str | None, str | None]]:
+    if not conversation_ids:
+        return {}
+
+    placeholders = ",".join("?" * len(conversation_ids))
+    rows = conn.execute(
+        f"""
+        SELECT
+            conversation_id,
+            MIN(created_at) AS started_at,
+            MAX(created_at) AS ended_at
+        FROM messages
+        WHERE conversation_id IN ({placeholders})
+        GROUP BY conversation_id
+        """,
+        tuple(conversation_ids),
+    ).fetchall()
+
+    return {
+        str(r["conversation_id"]): (r["started_at"], r["ended_at"])
+        for r in rows
+    }
+
+def _conversation_summary_to_input_message(
+    *,
+    conversation_id: str,
+    title: str,
+    summary_text: str,
+    started_at: str | None,
+    ended_at: str | None,
+    artifact_id: str,
+) -> dict:
+    dt_range = _format_conversation_range(started_at, ended_at)
+
+    lines = ["SCOPED CHAT SUMMARY"]
+    if title:
+        lines.append(f"Conversation: {title}")
+    if dt_range:
+        lines.append(f"Range: {dt_range}")
+    if artifact_id:
+        lines.append(f"Artifact ID: {artifact_id}")
+    lines.append("")
+    lines.append(summary_text.strip())
+
+    return {"role": "user", "content": "\n".join(lines).strip()}
 
 def zeitgeber_prefix(created_at: str, raw_content: str) -> str:
     stamp = iso_to_compact_utc(created_at)
@@ -674,7 +792,11 @@ def _recommend_expansion_candidates(
             "artifact_title": row.get("artifact_title"),
             "conversation_id": row.get("conversation_id"),
             "conversation_title": row.get("conversation_title"),
+            "conversation_summary_excerpt": row.get("conversation_summary_excerpt"),
+            "conversation_started_at": row.get("conversation_started_at"),
+            "conversation_ended_at": row.get("conversation_ended_at"),
             "filename": row.get("filename"),
+            "chunk_index": row.get("chunk_index"),
         })
 
     ranked.sort(key=lambda x: (-int(x.get("raw_hit_count") or 0), float(x.get("score") or 1e9)))
@@ -703,6 +825,66 @@ def _recommend_expansion_candidates(
     return out
 
 # endregion
+
+def _load_transcript_chunk_window(
+    conn,
+    *,
+    artifact_id: str,
+    center_chunk_index: int,
+    before: int,
+    after: int,
+) -> list[dict]:
+    lo = max(0, int(center_chunk_index) - max(0, int(before)))
+    hi = int(center_chunk_index) + max(0, int(after))
+
+    rows = conn.execute(
+        """
+        SELECT chunk_index, text
+        FROM corpus_chunks
+        WHERE artifact_id = ?
+          AND chunk_index BETWEEN ? AND ?
+        ORDER BY chunk_index ASC
+        """,
+        (artifact_id, lo, hi),
+    ).fetchall()
+
+    return [dict(r) for r in rows]
+
+
+def _chat_window_to_input_message(
+    item: dict,
+    window_rows: list[dict],
+) -> dict:
+    title = (item.get("conversation_title") or "").strip()
+    summary = (item.get("conversation_summary_excerpt") or "").strip()
+    dt_range = _format_conversation_range(
+        item.get("conversation_started_at"),
+        item.get("conversation_ended_at"),
+    )
+    artifact_id = (item.get("artifact_id") or "").strip()
+
+    lines = ["EXPANDED CHAT WINDOW"]
+    if title:
+        lines.append(f"Conversation: {title}")
+    if dt_range:
+        lines.append(f"Range: {dt_range}")
+    if summary:
+        lines.append(f"Summary: {summary}")
+    if artifact_id:
+        lines.append(f"Artifact ID: {artifact_id}")
+
+    lines.append("")
+
+    for row in window_rows:
+        idx = row.get("chunk_index")
+        text = (row.get("text") or "").strip()
+        if not text:
+            continue
+        lines.append(f"[chunk {idx}]")
+        lines.append(text)
+        lines.append("")
+
+    return {"role": "user", "content": "\n".join(lines).strip()}
 
 def build_context(
         conversation_id: str, # shapes the context by scope
@@ -751,11 +933,15 @@ def build_context(
     expand_flags = set(effective_query_expand_results.split(",")) if effective_query_expand_results else set()
     include_flags = set(effective_query_include.split(",")) if effective_query_include else set()
 
-    do_include_files = has_user_text and ("FILE" in include_flags)
+    # Wholesale inclusion should reflect config even when the draft box is empty.
+    # Retrieval stays gated on live query text.
+    do_include_files = "FILE" in include_flags
+    do_include_chat_summaries = "CHAT_SUMMARY" in include_flags
+    do_include_memories = "MEMORY" in include_flags
+    do_include_chats = "CHAT" in include_flags
+    # RAG is dependent on there being user text
     do_fts_rag = has_user_text and ("FTS" in include_flags)
     do_vector_rag = has_user_text and ("EMBEDDING" in include_flags)
-    do_include_memories = has_user_text and ("MEMORY" in include_flags)
-    do_include_chats = has_user_text and ("CHAT" in include_flags)
 
     max_full_files = int(_effective_query_setting(project_id, "max_full_files", str(query_cfg.query_max_full_files)))
     max_full_memories = int(_effective_query_setting(project_id, "max_full_memories", str(query_cfg.query_max_full_memories)))
@@ -767,6 +953,8 @@ def build_context(
             str(query_cfg.query_expand_min_artifact_hits),
         )
     )
+    query_expand_chat_window_before = max(0, int(query_cfg.query_expand_chat_window_before))
+    query_expand_chat_window_after = max(0, int(query_cfg.query_expand_chat_window_after))
 
     # Fetch a wider pool first, then scope/order locally so project pins do not get crowded out by globals.
     all_pins = list_memory_pins(limit=max(int(ctx_cfg.memory_pin_limit or 50) * 4, 200))
@@ -789,6 +977,7 @@ def build_context(
     log_debug("[context] personalization blocks: %s", personalization["blocks"])
     log_debug("[context] pinned_texts: %s", pinned_texts)
     
+    # TODO if it doesn't exist, maybe generate one, assuming enough conversation history?
     # Pull summary if present
     summary = get_conversation_summary_text(conversation_id)
 
@@ -798,6 +987,8 @@ def build_context(
     whole_artifact_messages: list[dict] = []
     included_memory_labels: list[str] = []
     included_chat_labels: list[str] = []
+    included_chat_summary_labels: list[str] = []
+    
     # File Expansion
     included_file_artifact_labels: list[str] = []
     expansion_candidates: list[dict] = []
@@ -811,6 +1002,56 @@ def build_context(
         )
         whole_artifact_messages.extend(file_messages)
         included_artifact_ids.update(file_artifact_ids)
+
+    if do_include_chat_summaries:
+        summary_rows = _select_other_project_conversation_rows_for_context(
+            conversation_id,
+            project_id,
+            limit=max_full_chats,
+        )
+
+        if summary_rows:
+            with db_session() as conn:
+                span_map = _conversation_span_map(conn, [str(r["id"]) for r in summary_rows])
+
+                for row in summary_rows:
+                    cid = str(row.get("id") or "").strip()
+                    if not cid:
+                        continue
+
+                    artifact_id = conversation_summary_artifact_id(cid)
+                    if artifact_id in included_artifact_ids:
+                        continue
+
+                    art = load_artifact_row_for_context(conn, artifact_id)
+                    if not art or not (art.get("content_text") or "").strip():
+                        continue
+
+                    included_artifact_ids.add(artifact_id)
+
+                    started_at, ended_at = span_map.get(cid, (None, None))
+                    title = (row.get("title") or art.get("title") or cid).strip()
+
+                    whole_artifact_messages.append(
+                        _conversation_summary_to_input_message(
+                            conversation_id=cid,
+                            title=title,
+                            summary_text=art.get("content_text") or "",
+                            started_at=started_at,
+                            ended_at=ended_at,
+                            artifact_id=artifact_id,
+                        )
+                    )
+
+                    dt_range = _format_conversation_range(started_at, ended_at)
+                    if dt_range:
+                        included_chat_summary_labels.append(f"{title} [{dt_range}; summary]")
+                    else:
+                        included_chat_summary_labels.append(f"{title} [summary]")
+                    #if dt_range:
+                    #    included_chat_labels.append(f"{title} [{dt_range}; summary]")
+                    #else:
+                    #    included_chat_labels.append(f"{title} [summary]")
 
     if do_include_memories:
         scoped_memories = _order_scoped_memories_for_context(
@@ -994,6 +1235,42 @@ def build_context(
                             continue
 
                         kind = item.get("kind") or "ARTIFACT"
+
+                        if kind == "CHAT":
+                            center_chunk_index = int(item.get("chunk_index") or 0)
+                            window_rows = _load_transcript_chunk_window(
+                                conn,
+                                artifact_id=artifact_id,
+                                center_chunk_index=center_chunk_index,
+                                before=query_expand_chat_window_before,
+                                after=query_expand_chat_window_after,
+                            )
+                            if not window_rows:
+                                continue
+
+                            included_artifact_ids.add(artifact_id)
+                            expanded_artifact_ids.add(artifact_id)
+
+                            whole_artifact_messages.append(
+                                _chat_window_to_input_message(item, window_rows)
+                            )
+
+                            title = (
+                                (item.get("conversation_title") or "").strip()
+                                or (art.get("title") or "").strip()
+                                or str(item.get("conversation_id") or artifact_id)
+                            )
+                            dt_range = _format_conversation_range(
+                                item.get("conversation_started_at"),
+                                item.get("conversation_ended_at"),
+                            )
+                            if dt_range:
+                                included_chat_labels.append(f"{title} [{dt_range}; expanded window]")
+                            else:
+                                included_chat_labels.append(f"{title} [expanded window]")
+
+                            continue
+
                         included_artifact_ids.add(artifact_id)
                         expanded_artifact_ids.add(artifact_id)
 
@@ -1009,7 +1286,56 @@ def build_context(
                             title = (art.get("title") or f"Memory {item.get('source_id')}").strip()
                             included_memory_labels.append(f"{title} [expanded]")
 
-                        elif kind == "CHAT":
+                        if (False):
+                            kind = item.get("kind") or "ARTIFACT"
+                            included_artifact_ids.add(artifact_id)
+                            expanded_artifact_ids.add(artifact_id)
+
+                            whole_artifact_messages.append(
+                                _artifact_to_input_message(art, label=f"EXPANDED {kind} ARTIFACT")
+                            )
+
+                            if kind == "FILE":
+                                title = (art.get("title") or item.get("filename") or artifact_id).strip()
+                                included_file_artifact_labels.append(title)
+
+                            elif kind == "MEMORY":
+                                title = (art.get("title") or f"Memory {item.get('source_id')}").strip()
+                                included_memory_labels.append(f"{title} [expanded]")
+
+                            elif kind == "CHAT":
+                                center_chunk_index = int(item.get("chunk_index") or 0)
+                                window_rows = _load_transcript_chunk_window(
+                                    conn,
+                                    artifact_id=artifact_id,
+                                    center_chunk_index=center_chunk_index,
+                                    before=query_expand_chat_window_before,
+                                    after=query_expand_chat_window_after,
+                                )
+                                if not window_rows:
+                                    continue
+
+                                # Replace the generic whole-artifact expansion for chats with a local window.
+                                whole_artifact_messages.pop()  # remove the generic EXPANDED CHAT ARTIFACT we just appended
+                                whole_artifact_messages.append(
+                                    _chat_window_to_input_message(item, window_rows)
+                                )
+
+                                title = (
+                                    (item.get("conversation_title") or "").strip()
+                                    or (art.get("title") or "").strip()
+                                    or str(item.get("conversation_id") or artifact_id)
+                                )
+                                dt_range = _format_conversation_range(
+                                    item.get("conversation_started_at"),
+                                    item.get("conversation_ended_at"),
+                                )
+                                if dt_range:
+                                    included_chat_labels.append(f"{title} [{dt_range}; expanded window]")
+                                else:
+                                    included_chat_labels.append(f"{title} [expanded window]")
+
+                        if (False): #elif kind == "CHAT":
                             title = (
                                 (item.get("conversation_title") or "").strip()
                                 or (art.get("title") or "").strip()
@@ -1153,7 +1479,7 @@ def build_context(
         "file_include": bool(do_include_files),
         "fts_rag_active": bool(do_fts_rag),
         "vector_rag_active": bool(do_vector_rag),
-        "query_mode": query_cfg.query_mode,  # legacy
+        #"query_mode": query_cfg.query_mode,  # legacy
         "query_include": effective_query_include,
         "query_expand_results": effective_query_expand_results,
         "query_max_full_files": int(_effective_query_setting(project_id, "max_full_files", str(query_cfg.query_max_full_files))),
@@ -1190,6 +1516,7 @@ def build_context(
         "included_artifact_ids": sorted(included_artifact_ids),
         "included_memory_labels": included_memory_labels,
         "included_chat_labels": included_chat_labels,
+        "included_chat_summary_labels": included_chat_summary_labels,
         "scoped_files": scoped_files,
         "included_file_artifact_labels": included_file_artifact_labels,
         "whole_artifact_messages": whole_artifact_messages,
@@ -1291,6 +1618,7 @@ def build_context_panel_payload(
         "included_file_labels": included_file_labels,
         "included_memory_labels": included_memory_labels,
         "included_chat_labels": included_chat_labels,
+        "llm_input_messages": full_input,
     }
 
 def _panel_label_for_file_message(msg: dict) -> str:

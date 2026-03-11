@@ -127,22 +127,23 @@
           </div>
           <div class="memGrid2">
             <label class="span2">
-              Include wholesale
+              Include whole artifacts (when in-scope)
               <div class="checkboxGrid" id="queryIncludeBox">
-                <label><input type="checkbox" id="qiFILE" /> FILE</label>
-                <label><input type="checkbox" id="qiMEMORY" /> MEMORY</label>
-                <label><input type="checkbox" id="qiCHAT" /> CHAT</label>
-                <label><input type="checkbox" id="qiFTS" /> FTS</label>
-                <label><input type="checkbox" id="qiEMBEDDING" /> EMBEDDING</label>
+                <label><input type="checkbox" id="qiFTS" /> Full-Text Search</label>
+                <label><input type="checkbox" id="qiEMBEDDING" /> Embeddings</label>
+                <label><input type="checkbox" id="qiCHAT_SUMMARY" /> Chat Summaries</label>
+                <label><input type="checkbox" id="qiFILE" /> Files</label>
+                <label><input type="checkbox" id="qiMEMORY" /> Memories</label>
+                <label><input type="checkbox" id="qiCHAT" /> Chat Transcripts</label>
               </div>
             </label>
 
             <label class="span2">
-              Expand retrieval results into full artifacts
+              Expand FTS/Embeddings based retrieval results into full artifacts
               <div class="checkboxGrid" id="queryExpandBox">
-                <label><input type="checkbox" id="qeFILE" /> FILE</label>
-                <label><input type="checkbox" id="qeMEMORY" /> MEMORY</label>
-                <label><input type="checkbox" id="qeCHAT" /> CHAT</label>
+                <label><input type="checkbox" id="qeFILE" /> Files</label>
+                <label><input type="checkbox" id="qeMEMORY" /> Memories</label>
+                <label><input type="checkbox" id="qeCHAT" /> Chat Transcripts</label>
               </div>
             </label>
 
@@ -165,6 +166,16 @@
               Min hits to expand artifact
               <input id="queryExpandMinArtifactHits" type="number" min="1" />
             </label>
+
+            <label>
+              Expand chat window before
+              <input id="queryExpandChatWindowBefore" type="number" min="0" />
+            </label>
+
+            <label>
+              Expand chat window after
+              <input id="queryExpandChatWindowAfter" type="number" min="0" />
+            </label>            
           </div>
 
           <div class="memAdd">

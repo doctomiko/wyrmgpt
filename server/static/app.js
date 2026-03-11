@@ -124,6 +124,7 @@ const saveQuerySettingsBtn = document.getElementById("saveQuerySettings");
 const qiFILE = document.getElementById("qiFILE");
 const qiMEMORY = document.getElementById("qiMEMORY");
 const qiCHAT = document.getElementById("qiCHAT");
+const qiCHAT_SUMMARY = document.getElementById("qiCHAT_SUMMARY");
 const qiFTS = document.getElementById("qiFTS");
 const qiEMBEDDING = document.getElementById("qiEMBEDDING");
 const qeFILE = document.getElementById("qeFILE");
@@ -133,6 +134,9 @@ const queryMaxFullFilesEl = document.getElementById("queryMaxFullFiles");
 const queryMaxFullMemoriesEl = document.getElementById("queryMaxFullMemories");
 const queryMaxFullChatsEl = document.getElementById("queryMaxFullChats");
 const queryExpandMinArtifactHitsEl = document.getElementById("queryExpandMinArtifactHits");
+const queryExpandChatWindowBeforeEl = document.getElementById("queryExpandChatWindowBefore");
+const queryExpandChatWindowAfterEl = document.getElementById("queryExpandChatWindowAfter");
+
 // #endregion
 
 // #region File Uploads and Management
@@ -210,6 +214,7 @@ let pinsCache = [];
 // context diagnostic state:
 let lastContextQueryText = "";
 let lastRenderedContext = null;
+let contextPayloadMessageState = {};
 const CONTEXT_SECTION_STATE_KEY = "wyrmgpt.contextSectionState";
 const contextSectionState = (() => {
   const defaults = {
@@ -221,6 +226,7 @@ const contextSectionState = (() => {
     ragRaw: false,
     recentContext: false,
     ragDebug: false,
+    llmPayload: false,
   };
 
   try {
@@ -1632,7 +1638,7 @@ function createCtxSection(key, title, bodyNode, summary = "") {
   if (summary) {
     const summaryEl = document.createElement("span");
     summaryEl.className = "ctxSectionSummary";
-    summaryEl.textContent = summary;
+    summaryEl.innerHTML = summary.replace("\n", "<br />");
     header.appendChild(summaryEl);
   }
 
@@ -1651,6 +1657,79 @@ function createCtxSection(key, title, bodyNode, summary = "") {
     if (lastRenderedContext) renderContext(lastRenderedContext);
   });
   */
+
+  section.appendChild(header);
+  section.appendChild(body);
+  return section;
+}
+
+function formatLlmMessageContent(content) {
+  if (typeof content === "string") {
+    return content;
+  }
+  try {
+    return JSON.stringify(content, null, 2);
+  } catch {
+    return String(content);
+  }
+}
+
+function summarizeLlmMessage(content) {
+  const raw = typeof content === "string"
+    ? content
+    : (() => {
+        try {
+          return JSON.stringify(content);
+        } catch {
+          return String(content);
+        }
+      })();
+
+  const oneLine = String(raw || "").replace(/\s+/g, " ").trim();
+  if (!oneLine) return "(empty)";
+  return oneLine.length > 120 ? `${oneLine.slice(0, 117)}...` : oneLine;
+}
+
+function createCtxMessageSection(idx, msg) {
+  const key = String(idx);
+  const isOpen = !!contextPayloadMessageState[key];
+
+  const section = document.createElement("div");
+  section.className = "ctxMsgSection";
+  if (!isOpen) section.classList.add("collapsed");
+
+  const header = document.createElement("button");
+  header.type = "button";
+  header.className = "ctxMsgHeader";
+
+  const left = document.createElement("div");
+  left.className = "ctxMsgHeaderLeft";
+
+  const caret = document.createElement("span");
+  caret.className = "ctxMsgCaret";
+  caret.textContent = isOpen ? "▾" : "▸";
+
+  const title = document.createElement("span");
+  title.className = "ctxMsgTitle";
+  title.textContent = `#${idx + 1} ${String(msg?.role || "unknown").toUpperCase()}`;
+
+  left.appendChild(caret);
+  left.appendChild(title);
+  header.appendChild(left);
+
+  const summary = document.createElement("span");
+  summary.className = "ctxMsgSummary";
+  summary.textContent = summarizeLlmMessage(msg?.content);
+  header.appendChild(summary);
+
+  const body = document.createElement("div");
+  body.className = "ctxMsgBody";
+  body.appendChild(createCtxPre(formatLlmMessageContent(msg?.content)));
+
+  header.addEventListener("click", () => {
+    contextPayloadMessageState[key] = !contextPayloadMessageState[key];
+    if (lastRenderedContext) renderContext(lastRenderedContext);
+  });
 
   section.appendChild(header);
   section.appendChild(body);
@@ -1697,6 +1776,7 @@ function renderContext(ctx) {
   const scopedFiles = ctx.scoped_files || [];
   const includedFiles = ctx.included_file_labels || [];
   const includedMemories = ctx.included_memory_labels || [];
+  const includedChatSummaries = ctx.included_chat_summary_labels || [];
   const includedChats = ctx.included_chat_labels || [];
   const expansionCandidates = ctx.expansion_candidates || [];
 
@@ -1705,6 +1785,12 @@ function renderContext(ctx) {
   const suppressedIncluded = (ctx.retrieval_debug?.suppressed_included_artifact_rows || []).length;
   const suppressedExpanded = (ctx.retrieval_debug?.suppressed_expanded_artifact_rows || []).length;
   const expandedCount = (ctx.expanded_artifact_ids || []).length;
+  const llmInputMessages = ctx.llm_input_messages || [];
+  const nextPayloadState = {};
+  for (let i = 0; i < llmInputMessages.length; i++) {
+    nextPayloadState[String(i)] = !!contextPayloadMessageState[String(i)];
+  }
+  contextPayloadMessageState = nextPayloadState;
 
   const accordion = document.createElement("div");
   accordion.className = "ctxAccordion";
@@ -1746,11 +1832,12 @@ function renderContext(ctx) {
     }
 
     lines.push("");
-    lines.push("Token and character counts are approximate.");
+    // lines.push(`Included chat summaries: ${includedChatSummaries.length}`);
     lines.push(`Assembled messages: ${total}`);
-    lines.push(`Context load: ~${approxTokens} text tokens; ${totalChars} characters; ${numImages} images`);
     lines.push(`Recent history preview limit: ${previewLimit}${truncated ? " (truncated)" : ""}`);
-
+    lines.push(`Context load: ~${approxTokens} text tokens*; ${totalChars} characters; ${numImages} images`);
+    lines.push("*Token and character counts are approximate.");
+    
     accordion.appendChild(
       createCtxSection(
         "scopeQuery",
@@ -1805,6 +1892,7 @@ function renderContext(ctx) {
     wrap.appendChild(createCtxSubBlock("Scoped Files", createCtxList(scopedFileItems)));
     wrap.appendChild(createCtxSubBlock("Included Files", createCtxList(includedFiles)));
     wrap.appendChild(createCtxSubBlock("Included Memories", createCtxList(includedMemories)));
+    wrap.appendChild(createCtxSubBlock("Included Chat Summaries", createCtxList(includedChatSummaries)));
     wrap.appendChild(createCtxSubBlock("Included Chats", createCtxList(includedChats)));
 
     accordion.appendChild(
@@ -1812,7 +1900,7 @@ function renderContext(ctx) {
         "wholeAssets",
         "Whole Assets Included",
         wrap,
-        `files=${includedFiles.length} · memories=${includedMemories.length} · chats=${includedChats.length}`
+        `files=${includedFiles.length} · memories=${includedMemories.length} \n summaries=${includedChatSummaries.length} · chats=${includedChats.length}`
       )
     );
   }
@@ -1826,6 +1914,15 @@ function renderContext(ctx) {
         lines.push(
           `- ${src}#${r.chunk_index} chunk_id=${r.chunk_id} artifact_id=${r.artifact_id} file_id=${r.file_id || ""} score=${r.score}`
         );
+        if (r.conversation_title || r.conversation_summary_excerpt || r.conversation_started_at || r.conversation_ended_at) {
+          const range =
+            (r.conversation_started_at || r.conversation_ended_at)
+              ? `${r.conversation_started_at || "?"} → ${r.conversation_ended_at || "?"}`
+              : "";
+          if (r.conversation_title) lines.push(`  chat: ${r.conversation_title}`);
+          if (range) lines.push(`  range: ${range}`);
+          if (r.conversation_summary_excerpt) lines.push(`  summary: ${r.conversation_summary_excerpt}`);
+        }
       }
     } else {
       lines.push(!hasDraft && !lastContextQueryText
@@ -1858,6 +1955,15 @@ function renderContext(ctx) {
           : snippetRaw;
 
         lines.push(`- ${src}#${r.chunk_index} chunk_id=${r.chunk_id} score=${r.score} ts=${ts}`);
+        if (r.conversation_title || r.conversation_summary_excerpt || r.conversation_started_at || r.conversation_ended_at) {
+          const range =
+            (r.conversation_started_at || r.conversation_ended_at)
+              ? `${r.conversation_started_at || "?"} → ${r.conversation_ended_at || "?"}`
+              : "";
+          if (r.conversation_title) lines.push(`  chat: ${r.conversation_title}`);
+          if (range) lines.push(`  range: ${range}`);
+          if (r.conversation_summary_excerpt) lines.push(`  summary: ${r.conversation_summary_excerpt}`);
+        }
         if (snippet) lines.push(snippet);
         lines.push("");
       }
@@ -1874,7 +1980,7 @@ function renderContext(ctx) {
         "RAG Final Hits",
         createCtxPre(lines.join("\n")),
         //`${finalRows.length} hit(s)`
-        `${finalRows.length} final · ${suppressedIncluded} suppressed(included) · ${suppressedExpanded} suppressed(expanded)`
+        `${finalRows.length} final · ${suppressedIncluded} suppressed(included) \n ${suppressedExpanded} suppressed(expanded)`
       )
     );
   }
@@ -1887,8 +1993,22 @@ function renderContext(ctx) {
           ? (item.filename || item.artifact_title || item.artifact_id)
           : item.kind === "MEMORY"
           ? (item.artifact_title || item.artifact_id)
+          : (() => {
+              const base = item.conversation_title || item.artifact_title || item.artifact_id;
+              const range =
+                (item.conversation_started_at || item.conversation_ended_at)
+                  ? ` [${item.conversation_started_at || "?"} → ${item.conversation_ended_at || "?"}]`
+                  : "";
+              return `${base}${range}`;
+            })();
+      /*
+      const label =
+        item.kind === "FILE"
+          ? (item.filename || item.artifact_title || item.artifact_id)
+          : item.kind === "MEMORY"
+          ? (item.artifact_title || item.artifact_id)
           : (item.conversation_title || item.artifact_title || item.artifact_id);
-
+      */
       return `${item.kind}: ${label} (raw hits=${item.raw_hit_count}, score=${item.score})`;
     });
 
@@ -1925,6 +2045,32 @@ function renderContext(ctx) {
       )
     );
   }
+
+  // Exact LLM payload
+  {
+    const wrap = document.createElement("div");
+    const nested = document.createElement("div");
+    nested.className = "ctxNestedAccordion";
+
+    if (llmInputMessages.length) {
+      llmInputMessages.forEach((msg, idx) => {
+        nested.appendChild(createCtxMessageSection(idx, msg));
+      });
+    } else {
+      nested.appendChild(createCtxEmpty("(none)"));
+    }
+
+    wrap.appendChild(nested);
+
+    accordion.appendChild(
+      createCtxSection(
+        "llmPayload",
+        "Exact LLM Payload",
+        wrap,
+        `${llmInputMessages.length} message(s)`
+      )
+    );
+  }  
 
   contextPreviewEl.appendChild(accordion);
   updateContextToggleButton();
@@ -2567,6 +2713,7 @@ function populateQuerySettingsForm(data) {
     FILE: qiFILE,
     MEMORY: qiMEMORY,
     CHAT: qiCHAT,
+    CHAT_SUMMARY: qiCHAT_SUMMARY,
     FTS: qiFTS,
     EMBEDDING: qiEMBEDDING,
   });
@@ -2581,6 +2728,8 @@ function populateQuerySettingsForm(data) {
   if (queryMaxFullMemoriesEl) queryMaxFullMemoriesEl.value = String(data?.effective_query_max_full_memories ?? 0);
   if (queryMaxFullChatsEl) queryMaxFullChatsEl.value = String(data?.effective_query_max_full_chats ?? 0);
   if (queryExpandMinArtifactHitsEl) queryExpandMinArtifactHitsEl.value = String(data?.effective_query_expand_min_artifact_hits ?? 2);
+  if (queryExpandChatWindowBeforeEl) queryExpandChatWindowBeforeEl.value = String(data?.effective_query_expand_chat_window_before ?? 1);
+  if (queryExpandChatWindowAfterEl) queryExpandChatWindowAfterEl.value = String(data?.effective_query_expand_chat_window_after ?? 1);  
 }
 
 async function loadQuerySettingsForCurrentMode() {
@@ -2599,6 +2748,7 @@ async function saveQuerySettingsForCurrentMode() {
       FILE: qiFILE,
       MEMORY: qiMEMORY,
       CHAT: qiCHAT,
+      CHAT_SUMMARY: qiCHAT_SUMMARY,
       FTS: qiFTS,
       EMBEDDING: qiEMBEDDING,
     }),
@@ -2611,7 +2761,8 @@ async function saveQuerySettingsForCurrentMode() {
     query_max_full_memories: parseInt(queryMaxFullMemoriesEl?.value || "0", 10) || 0,
     query_max_full_chats: parseInt(queryMaxFullChatsEl?.value || "0", 10) || 0,
     query_expand_min_artifact_hits: Math.max(1, parseInt(queryExpandMinArtifactHitsEl?.value || "2", 10) || 2),
-    //query_expand_min_artifact_hits: parseInt(queryExpandMinArtifactHitsEl?.value || "2", 10) || 2,
+    query_expand_chat_window_before: Math.max(0,parseInt(queryExpandChatWindowBeforeEl?.value || "1", 10) || 0),
+    query_expand_chat_window_after: Math.max(0,parseInt(queryExpandChatWindowAfterEl?.value || "1", 10) || 0),
   };
 
   const data = await fetchJsonDebug("/api/query_settings", {
@@ -4355,10 +4506,31 @@ if (contextPreviewToggleBtn) {
     Object.keys(contextSectionState).forEach((key) => {
       contextSectionState[key] = next;
     });
+
+    if (lastRenderedContext?.llm_input_messages?.length) {
+      const newMsgState = {};
+      for (let i = 0; i < lastRenderedContext.llm_input_messages.length; i++) {
+        newMsgState[String(i)] = next;
+      }
+      contextPayloadMessageState = newMsgState;
+    }
+
     persistContextSectionState();
     if (lastRenderedContext) renderContext(lastRenderedContext);
   });
 }
+/*
+if (contextPreviewToggleBtn) {
+  contextPreviewToggleBtn.addEventListener("click", () => {
+    const next = !allContextSectionsExpanded();
+    Object.keys(contextSectionState).forEach((key) => {
+      contextSectionState[key] = next;
+    });
+    persistContextSectionState();
+    if (lastRenderedContext) renderContext(lastRenderedContext);
+  });
+}
+*/
 /*
 if (contextPreviewToggleBtn) {
   contextPreviewToggleBtn.addEventListener("click", () => {

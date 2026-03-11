@@ -131,14 +131,16 @@ CONTEXT_DEFAULTS: ContextConfig = ContextConfig()
 
 @dataclass(frozen=True)
 class QueryConfig:
-    query_mode: str = "ALL"  # legacy fallback only
+    # query_mode: str = "ALL"  # legacy fallback only
 
-    query_include: str = "FTS,EMBEDDING" # FILE,MEMORY,CHAT and FTS,EMBEDDING
+    query_include: str = "CHAT_SUMMARY,FTS,EMBEDDING" # FILE,MEMORY,CHAT,CHAT_SUMMARY and FTS,EMBEDDING
     query_expand_results: str = "FILE,MEMORY,CHAT" # FILE,MEMORY,CHAT
     query_max_full_files: int = 50
     query_max_full_memories: int = 500
     query_max_full_chats: int = 5
     query_expand_min_artifact_hits: int = 2
+    query_expand_chat_window_before: int = 1
+    query_expand_chat_window_after: int = 1
 
     query_global_artifacts: bool = True # RAG queries will include global artifacts
     max_terms: int = 14
@@ -182,7 +184,7 @@ class QueryConfig:
 
 QUERY_DEFAULTS: QueryConfig = QueryConfig()
 
-QUERY_INCLUDE_ALLOWED = {"FILE", "MEMORY", "CHAT", "FTS", "EMBEDDING"}
+QUERY_INCLUDE_ALLOWED = {"FILE", "MEMORY", "CHAT", "CHAT_SUMMARY", "FTS", "EMBEDDING"}
 QUERY_EXPAND_ALLOWED = {"FILE", "MEMORY", "CHAT"}
 
 def _legacy_query_mode_to_include(mode: str) -> str:
@@ -297,43 +299,51 @@ def load_context_config() -> ContextConfig:
     )
 
 def load_query_config() -> QueryConfig:
-    legacy_mode = _env_str("QUERY_MODE", QUERY_DEFAULTS.query_mode).upper()
+    #legacy_mode = _env_str("QUERY_MODE", QUERY_DEFAULTS.query_mode).upper()
 
     raw_include = _env_str("QUERY_INCLUDE", "")
-    if not raw_include:
-        raw_include = _legacy_query_mode_to_include(legacy_mode)
+    #if not raw_include:
+    #    raw_include = _legacy_query_mode_to_include(legacy_mode)
 
     raw_expand = _env_str("QUERY_EXPAND_RESULTS", QUERY_DEFAULTS.query_expand_results)
 
     return QueryConfig(
-        query_mode=legacy_mode,  # keep for old diagnostics until we kill it
+        #query_mode=legacy_mode,  # keep for old diagnostics until we kill it
         query_include=_normalize_csv_set(raw_include, QUERY_INCLUDE_ALLOWED),
         query_expand_results=_normalize_csv_set(raw_expand, QUERY_EXPAND_ALLOWED),
-        query_max_full_files=_env_int("QUERY_MAX_FULL_FILES", QUERY_DEFAULTS.query_max_full_files),
-        query_max_full_memories=_env_int("QUERY_MAX_FULL_MEMORIES", QUERY_DEFAULTS.query_max_full_memories),
-        query_max_full_chats=_env_int("QUERY_MAX_FULL_CHATS", QUERY_DEFAULTS.query_max_full_chats),
+        query_max_full_files=max(1,_env_int("QUERY_MAX_FULL_FILES", QUERY_DEFAULTS.query_max_full_files)),
+        query_max_full_memories=max(1,_env_int("QUERY_MAX_FULL_MEMORIES", QUERY_DEFAULTS.query_max_full_memories)),
+        query_max_full_chats=max(1,_env_int("QUERY_MAX_FULL_CHATS", QUERY_DEFAULTS.query_max_full_chats)),
         #query_expand_min_artifact_hits=_env_int("QUERY_EXPAND_MIN_ARTIFACT_HITS", QUERY_DEFAULTS.query_expand_min_artifact_hits),
         query_expand_min_artifact_hits=max(1, _env_int("QUERY_EXPAND_MIN_ARTIFACT_HITS", QUERY_DEFAULTS.query_expand_min_artifact_hits),),
+        query_expand_chat_window_before=max(0,_env_int(
+                "QUERY_EXPAND_CHAT_WINDOW_BEFORE",
+                QUERY_DEFAULTS.query_expand_chat_window_before,
+        )),
+        query_expand_chat_window_after=max(0,_env_int(
+            "QUERY_EXPAND_CHAT_WINDOW_AFTER",
+            QUERY_DEFAULTS.query_expand_chat_window_after,
+        )),
 
         query_global_artifacts=_env_bool("QUERY_GLOBAL_ARTIFACTS", QUERY_DEFAULTS.query_global_artifacts),
-        max_terms=_env_int("QUERY_MAX_TERMS", QUERY_DEFAULTS.max_terms),
-        max_phrase_words=_env_int("QUERY_MAX_PHRASE_WORDS", QUERY_DEFAULTS.max_phrase_words),
-        max_phrase_chars=_env_int("QUERY_MAX_PHRASE_CHARS", QUERY_DEFAULTS.max_phrase_chars),
+        max_terms=max(1,_env_int("QUERY_MAX_TERMS", QUERY_DEFAULTS.max_terms)),
+        max_phrase_words=max(1,_env_int("QUERY_MAX_PHRASE_WORDS", QUERY_DEFAULTS.max_phrase_words)),
+        max_phrase_chars=max(1,_env_int("QUERY_MAX_PHRASE_CHARS", QUERY_DEFAULTS.max_phrase_chars)),
         filler_words_file=_env_str("QUERY_FILLER_WORDS_FILE", QUERY_DEFAULTS.filler_words_file),
         filler_words=_env_str("QUERY_FILLER_WORDS", QUERY_DEFAULTS.filler_words),
-        long_query_chars=_env_int("QUERY_LONG_CHARS", QUERY_DEFAULTS.long_query_chars),
-        max_query_slices=_env_int("QUERY_MAX_SLICES", QUERY_DEFAULTS.max_query_slices),
+        long_query_chars=max(1,_env_int("QUERY_LONG_CHARS", QUERY_DEFAULTS.long_query_chars)),
+        max_query_slices=max(1,_env_int("QUERY_MAX_SLICES", QUERY_DEFAULTS.max_query_slices)),
 
         llm_expand_enabled=_env_bool("QUERY_LLM_EXPAND", QUERY_DEFAULTS.llm_expand_enabled),
         llm_expand_prompt_file=_env_str("EXPAND_QUERY_PROMPT_FILE", QUERY_DEFAULTS.llm_expand_prompt_file),
-        llm_expand_min_terms=_env_int("QUERY_LLM_MIN_TERMS", QUERY_DEFAULTS.llm_expand_min_terms),
-        llm_expand_min_results=_env_int("QUERY_LLM_MIN_RESULTS", QUERY_DEFAULTS.llm_expand_min_results),
-        llm_expand_max_keywords=_env_int("QUERY_LLM_MAX_KEYWORDS", QUERY_DEFAULTS.llm_expand_max_keywords),
+        llm_expand_min_terms=max(1,_env_int("QUERY_LLM_MIN_TERMS", QUERY_DEFAULTS.llm_expand_min_terms)),
+        llm_expand_min_results=max(1,_env_int("QUERY_LLM_MIN_RESULTS", QUERY_DEFAULTS.llm_expand_min_results)),
+        llm_expand_max_keywords=max(1,_env_int("QUERY_LLM_MAX_KEYWORDS", QUERY_DEFAULTS.llm_expand_max_keywords)),
         llm_expand_model=_env_str("QUERY_LLM_EXPAND_MODEL", QUERY_DEFAULTS.llm_expand_model),
-        llm_expand_max_tokens=_env_int("QUERY_LLM_EXPAND_MAX_TOKENS", QUERY_DEFAULTS.llm_expand_max_tokens),
+        llm_expand_max_tokens=max(1,_env_int("QUERY_LLM_EXPAND_MAX_TOKENS", QUERY_DEFAULTS.llm_expand_max_tokens)),
 
         retrieval_cache_ttl_sec=_env_float("QUERY_CACHE_TTL_SEC", QUERY_DEFAULTS.retrieval_cache_ttl_sec),
-        retrieval_cache_max_entries=_env_int("QUERY_CACHE_MAX", QUERY_DEFAULTS.retrieval_cache_max_entries),
+        retrieval_cache_max_entries=max(1,_env_int("QUERY_CACHE_MAX", QUERY_DEFAULTS.retrieval_cache_max_entries)),
 
         query_include_project_conversation_transcripts=_env_bool(
             "QUERY_INCLUDE_PROJECT_CONVERSATION_TRANSCRIPTS",
@@ -347,10 +357,8 @@ def load_query_config() -> QueryConfig:
             "QUERY_INCLUDE_RECENT_CONVERSATION_TRANSCRIPTS",
             QUERY_DEFAULTS.query_include_recent_conversation_transcripts,
         ),
-        recent_conversation_transcript_limit=_env_int(
+        recent_conversation_transcript_limit=max(1,_env_int(
             "QUERY_RECENT_CONVERSATION_TRANSCRIPT_LIMIT",
             QUERY_DEFAULTS.recent_conversation_transcript_limit,
-        ),
-
-                
+        )),
     )

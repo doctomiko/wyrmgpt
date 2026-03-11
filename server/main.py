@@ -166,6 +166,8 @@ class QuerySettingsUpdateRequest(BaseModel):
     query_max_full_memories: int | None = None
     query_max_full_chats: int | None = None
     query_expand_min_artifact_hits: int | None = None
+    query_expand_chat_window_before: int | None = None
+    query_expand_chat_window_after: int | None = None
 
 class FileDescriptionUpdate(BaseModel):
     description: str | None = None
@@ -551,6 +553,16 @@ def api_get_query_settings(scope_type: str = "global", scope_id: str = ""):
         "expand_min_artifact_hits",
         str(qcfg.query_expand_min_artifact_hits),
     )
+    effective_chat_window_before = _get_effective_query_setting(
+        project_id,
+        "expand_chat_window_before",
+        str(qcfg.query_expand_chat_window_before),
+    )
+    effective_chat_window_after = _get_effective_query_setting(
+        project_id,
+        "expand_chat_window_after",
+        str(qcfg.query_expand_chat_window_after),
+    )    
 
     local_expand_min_hits = get_app_setting(
         _query_setting_key("expand_min_artifact_hits"),
@@ -558,7 +570,18 @@ def api_get_query_settings(scope_type: str = "global", scope_id: str = ""):
         scope_type,
         scope_id,
     )
-
+    local_chat_window_before = get_app_setting(
+        _query_setting_key("expand_chat_window_before"),
+        None,
+        scope_type,
+        scope_id,
+    )
+    local_chat_window_after = get_app_setting(
+        _query_setting_key("expand_chat_window_after"),
+        None,
+        scope_type,
+        scope_id,
+    )
     return JSONResponse({
         "scope_type": scope_type,
         "scope_id": scope_id,
@@ -568,6 +591,8 @@ def api_get_query_settings(scope_type: str = "global", scope_id: str = ""):
         "query_max_full_memories": int(local_max_memories) if local_max_memories not in (None, "") else None,
         "query_max_full_chats": int(local_max_chats) if local_max_chats not in (None, "") else None,
         "query_expand_min_artifact_hits": int(local_expand_min_hits) if local_expand_min_hits not in (None, "") else None,
+        "query_expand_chat_window_before": int(local_chat_window_before) if local_chat_window_before not in (None, "") else None,
+        "query_expand_chat_window_after": int(local_chat_window_after) if local_chat_window_after not in (None, "") else None,
 
         "effective_query_include": _normalize_csv_set(effective_query_include, QUERY_INCLUDE_ALLOWED),
         "effective_query_expand_results": _normalize_csv_set(effective_query_expand, QUERY_EXPAND_ALLOWED),
@@ -575,6 +600,8 @@ def api_get_query_settings(scope_type: str = "global", scope_id: str = ""):
         "effective_query_max_full_memories": int(effective_max_memories),
         "effective_query_max_full_chats": int(effective_max_chats),
         "effective_query_expand_min_artifact_hits": int(effective_expand_min_hits),
+        "effective_query_expand_chat_window_before": int(effective_chat_window_before),
+        "effective_query_expand_chat_window_after": int(effective_chat_window_after),
     })
 
 @app.post("/api/query_settings")
@@ -622,6 +649,23 @@ def api_update_query_settings(req: QuerySettingsUpdateRequest):
             scope_type,
             scope_id,
         )
+
+    if req.query_expand_chat_window_before is not None:
+        set_app_setting(
+            _query_setting_key("expand_chat_window_before"),
+            str(max(0, int(req.query_expand_chat_window_before))),
+            scope_type,
+            scope_id,
+        )
+
+    if req.query_expand_chat_window_after is not None:
+        set_app_setting(
+            _query_setting_key("expand_chat_window_after"),
+            str(max(0, int(req.query_expand_chat_window_after))),
+            scope_type,
+            scope_id,
+        )
+                
     invalidate_all_context_cache()
     return api_get_query_settings(scope_type=scope_type, scope_id=scope_id)
 

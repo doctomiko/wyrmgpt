@@ -3710,6 +3710,8 @@ def search_corpus_for_conversation(
               conv.id AS conversation_id,
               conv.title AS conversation_title,
               substr(COALESCE(sumart.summary_text, ''), 1, 220) AS conversation_summary_excerpt,
+              convspan.conversation_started_at AS conversation_started_at,
+              convspan.conversation_ended_at AS conversation_ended_at,
 
               COALESCE(mem.importance, 0) AS memory_importance,
               bm25(corpus_fts) AS score
@@ -3727,6 +3729,15 @@ def search_corpus_for_conversation(
               ON sumart.source_kind = 'conversation:summary'
              AND sumart.source_id = conv.id
              AND (sumart.is_deleted IS NULL OR sumart.is_deleted = 0)
+            LEFT JOIN (
+                SELECT
+                    conversation_id,
+                    MIN(created_at) AS conversation_started_at,
+                    MAX(created_at) AS conversation_ended_at
+                FROM messages
+                GROUP BY conversation_id
+            ) convspan
+            ON convspan.conversation_id = conv.id                        
             WHERE corpus_fts MATCH ?
               AND (
                     c.scope_key IN ({scope_placeholders})
@@ -3832,6 +3843,8 @@ def search_corpus(*, scope_keys: list[str], query: str, limit: int = 10) -> list
               conv.id AS conversation_id,
               conv.title AS conversation_title,
               substr(COALESCE(sumart.summary_text, ''), 1, 220) AS conversation_summary_excerpt,
+              convspan.conversation_started_at AS conversation_started_at,
+              convspan.conversation_ended_at AS conversation_ended_at,
 
               COALESCE(mem.importance, 0) AS memory_importance,
               bm25(corpus_fts) AS score
@@ -3849,6 +3862,15 @@ def search_corpus(*, scope_keys: list[str], query: str, limit: int = 10) -> list
               ON sumart.source_kind = 'conversation:summary'
              AND sumart.source_id = conv.id
              AND (sumart.is_deleted IS NULL OR sumart.is_deleted = 0)
+            LEFT JOIN (
+              SELECT
+                conversation_id,
+                MIN(created_at) AS conversation_started_at,
+                MAX(created_at) AS conversation_ended_at
+              FROM messages
+              GROUP BY conversation_id
+            ) convspan
+            ON convspan.conversation_id = conv.id
             WHERE corpus_fts MATCH ?
               AND c.scope_key IN ({placeholders})
               AND (

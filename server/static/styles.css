@@ -206,13 +206,6 @@ body {
   min-width: 0;
 }
 
-.ctxSectionCaret {
-  width: 1em;
-  text-align: center;
-  color: var(--muted);
-  flex: 0 0 auto;
-}
-
 .ctxSectionTitle {
   font-weight: 600;
 }
@@ -268,6 +261,80 @@ body {
 
 .ctxWarning {
   color: #fbbf24;
+}
+
+.ctxNestedAccordion {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ctxMsgSection {
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 6px;
+  background: rgba(255,255,255,0.015);
+  overflow: hidden;
+}
+
+.ctxMsgHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 8px;
+  background: rgba(255,255,255,0.03);
+  border: 0;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+
+.ctxMsgHeader:hover {
+  background: rgba(255,255,255,0.06);
+}
+
+.ctxMsgHeaderLeft {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ctxSectionCaret {
+  width: 1em;
+  text-align: center;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+.ctxMsgCaret {
+  width: 1em;
+  text-align: center;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+
+.ctxMsgTitle {
+  font-weight: 600;
+}
+
+.ctxMsgSummary {
+  color: var(--muted);
+  font-size: 0.75rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 50%;
+}
+
+.ctxMsgBody {
+  padding: 8px 10px;
+  border-top: 1px solid rgba(255,255,255,0.05);
+}
+
+.ctxMsgSection.collapsed .ctxMsgBody {
+  display: none;
 }
 
 .sideHeader {
