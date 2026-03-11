@@ -312,7 +312,8 @@ def load_query_config() -> QueryConfig:
         query_max_full_files=_env_int("QUERY_MAX_FULL_FILES", QUERY_DEFAULTS.query_max_full_files),
         query_max_full_memories=_env_int("QUERY_MAX_FULL_MEMORIES", QUERY_DEFAULTS.query_max_full_memories),
         query_max_full_chats=_env_int("QUERY_MAX_FULL_CHATS", QUERY_DEFAULTS.query_max_full_chats),
-        query_expand_min_artifact_hits=_env_int("QUERY_EXPAND_MIN_ARTIFACT_HITS", QUERY_DEFAULTS.query_expand_min_artifact_hits),
+        #query_expand_min_artifact_hits=_env_int("QUERY_EXPAND_MIN_ARTIFACT_HITS", QUERY_DEFAULTS.query_expand_min_artifact_hits),
+        query_expand_min_artifact_hits=max(1, _env_int("QUERY_EXPAND_MIN_ARTIFACT_HITS", QUERY_DEFAULTS.query_expand_min_artifact_hits),),
 
         query_global_artifacts=_env_bool("QUERY_GLOBAL_ARTIFACTS", QUERY_DEFAULTS.query_global_artifacts),
         max_terms=_env_int("QUERY_MAX_TERMS", QUERY_DEFAULTS.max_terms),
@@ -350,46 +351,6 @@ def load_query_config() -> QueryConfig:
             "QUERY_RECENT_CONVERSATION_TRANSCRIPT_LIMIT",
             QUERY_DEFAULTS.recent_conversation_transcript_limit,
         ),
+
+                
     )
-if (False):
-    def load_query_config() -> QueryConfig:
-        return QueryConfig(
-            query_mode=_env_str("QUERY_MODE", QUERY_DEFAULTS.query_mode).upper(),
-            query_global_artifacts=_env_bool("QUERY_GLOBAL_ARTIFACTS", QUERY_DEFAULTS.query_global_artifacts),
-            max_terms=_env_int("QUERY_MAX_TERMS", QUERY_DEFAULTS.max_terms),
-            max_phrase_words=_env_int("QUERY_MAX_PHRASE_WORDS", QUERY_DEFAULTS.max_phrase_words),
-            max_phrase_chars=_env_int("QUERY_MAX_PHRASE_CHARS", QUERY_DEFAULTS.max_phrase_chars),
-            filler_words_file=_env_str("QUERY_FILLER_WORDS_FILE", QUERY_DEFAULTS.filler_words_file),
-            filler_words=_env_str("QUERY_FILLER_WORDS", QUERY_DEFAULTS.filler_words),
-            long_query_chars=_env_int("QUERY_LONG_CHARS", QUERY_DEFAULTS.long_query_chars),
-            max_query_slices=_env_int("QUERY_MAX_SLICES", QUERY_DEFAULTS.max_query_slices),
-
-            llm_expand_enabled=_env_bool("QUERY_LLM_EXPAND", QUERY_DEFAULTS.llm_expand_enabled),
-            llm_expand_prompt_file=_env_str("EXPAND_QUERY_PROMPT_FILE", QUERY_DEFAULTS.llm_expand_prompt_file),
-            llm_expand_min_terms=_env_int("QUERY_LLM_MIN_TERMS", QUERY_DEFAULTS.llm_expand_min_terms),
-            llm_expand_min_results=_env_int("QUERY_LLM_MIN_RESULTS", QUERY_DEFAULTS.llm_expand_min_results),
-            llm_expand_max_keywords=_env_int("QUERY_LLM_MAX_KEYWORDS", QUERY_DEFAULTS.llm_expand_max_keywords),
-            # This is the model we'll use if we need query optimization of user input    
-            llm_expand_model=_env_str("QUERY_LLM_EXPAND_MODEL", QUERY_DEFAULTS.llm_expand_model),
-            llm_expand_max_tokens=_env_int("QUERY_LLM_EXPAND_MAX_TOKENS", QUERY_DEFAULTS.llm_expand_max_tokens),
-
-            retrieval_cache_ttl_sec=_env_float("QUERY_CACHE_TTL_SEC", QUERY_DEFAULTS.retrieval_cache_ttl_sec),
-            retrieval_cache_max_entries=_env_int("QUERY_CACHE_MAX", QUERY_DEFAULTS.retrieval_cache_max_entries),
-
-            query_include_project_conversation_transcripts=_env_bool(
-                "QUERY_INCLUDE_PROJECT_CONVERSATION_TRANSCRIPTS",
-                QUERY_DEFAULTS.query_include_project_conversation_transcripts,
-            ),
-            query_include_global_conversation_transcripts=_env_bool(
-                "QUERY_INCLUDE_GLOBAL_CONVERSATION_TRANSCRIPTS",
-                QUERY_DEFAULTS.query_include_global_conversation_transcripts,
-            ),
-            query_include_recent_conversation_transcripts=_env_bool(
-                "QUERY_INCLUDE_RECENT_CONVERSATION_TRANSCRIPTS",
-                QUERY_DEFAULTS.query_include_recent_conversation_transcripts,
-            ),
-            recent_conversation_transcript_limit=_env_int(
-                "QUERY_RECENT_CONVERSATION_TRANSCRIPT_LIMIT",
-                QUERY_DEFAULTS.recent_conversation_transcript_limit,
-            ),
-        )

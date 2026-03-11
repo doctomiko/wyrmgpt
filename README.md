@@ -43,6 +43,12 @@ Transparency:
 * Chat with two different models at the same time and compare results. Heck, you can try talking to the same model in both A and B channels to see if it is variable.
 * AB mode lets you decide which response is the one you want to keep in the canon conversation context. Change that at any time during your chat session.
 
+### Lies We're Telling You
+
+* “Average people can get this up and running” might be a lie today, but it doesn’t have to be a permanent lie. It may just be an ambition ahead of its packaging. There’s a difference between “this is easy” and “this can be made easy.” Right now it sounds more like the second.
+* “We’re giving it away for free and won’t make money” is not a lie unless you’re quietly hoping never to confront the economics. If the project has to grow teeth eventually, better to admit that early. This project is source accessible for a reason. It isn't OSS because we've seen a few dozen scammers out there with clones of ChatGPT, trying to grift the public as various models they loved got not-so-slowly phased out. We want this project to be accessible. That being said, we may monetize support, hosting, convenience, or advanced features later. We all need to eat. We are open to licensing what we are building to other entrepreneurs interested in leveraging it for their own ambitions.
+* And finally, it would be a lie if we didn't show you exactly where each reply comes from. That means chat history (recent and historical), uploaded files, memories you input, and the model that was used in that particular interchange. Because of this, we do our best to show provenance on every assistant message. We show which model authored it, and whether the current responder is continuing a transcript partly authored by others. Users can decide whether they want “single-continuity assistant mode” or “strict per-model continuity mode.” One gives you the illusion of a single soul moving between bodies. The other gives you honest parallel minds. Both are useful. The lie is forcing one while pretending it’s the other.
+
 ## Quick start
 
 Prereqs:

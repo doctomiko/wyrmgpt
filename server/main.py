@@ -622,13 +622,6 @@ def api_update_query_settings(req: QuerySettingsUpdateRequest):
             scope_type,
             scope_id,
         )
-    if (False):
-        set_app_setting(
-                _query_setting_key("expand_min_artifact_hits"),
-                str(int(req.query_expand_min_artifact_hits)),
-                scope_type,
-                scope_id,
-            )
     invalidate_all_context_cache()
     return api_get_query_settings(scope_type=scope_type, scope_id=scope_id)
 

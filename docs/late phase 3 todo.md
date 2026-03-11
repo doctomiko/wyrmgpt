@@ -1,4 +1,4 @@
-First, finish the query settings/UI truth so global and project behavior are equally editable. In the current build, that query settings section still appears to live inside the project settings block in the HTML, so global editing is probably still structurally wrong unless you fixed it after this zip. That’s a small but real cleanup item.
+* THIS IS DONE 3/10: First, finish the query settings/UI truth so global and project behavior are equally editable. In the current build, that query settings section still appears to live inside the project settings block in the HTML, so global editing is probably still structurally wrong unless you fixed it after this zip. That’s a small but real cleanup item.
 
 Second, make the include/expand collector fully honest for files too. Right now you’ve got caps and diagnostics for files, memories, and chats, but the “all scoped files” path still smells like it is being handled through the older file-message path rather than one perfectly unified collector with per-kind caps enforced symmetrically. It works, but it is not yet as conceptually clean as memories and chats.
 
@@ -16,7 +16,7 @@ Sixth, memory workflow is still not fully “mature” by your own spec. You’v
 
 wyrmgpt_corpus_rag_vision_spec
 
-Seventh, there’s still some diagnostic cleanup and truthfulness work. The context panel is much better now, but the next refinement is to make every section reflect exactly one conceptual layer: scope/query, prompt layers, whole assets, RAG final, RAG raw, RAG expansion, recent history. That’s mostly UX polish now, not architecture.
+* THIS IS DONE 3/10: Seventh, there’s still some diagnostic cleanup and truthfulness work. The context panel is much better now, but the next refinement is to make every section reflect exactly one conceptual layer: scope/query, prompt layers, whole assets, RAG final, RAG raw, RAG expansion, recent history. That’s mostly UX polish now, not architecture.
 
 So the blunt summary is:
 

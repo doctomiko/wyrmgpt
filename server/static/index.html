@@ -118,10 +118,8 @@
           <div class="memHint" id="projectSettingsHint">
             Global personalization settings including Memories, Custom Instructions, and “About You” still apply everywhere. Project prompt, instructions, and memories only affect this project.
           </div>
-          <div class="memAdd">
-            <button id="saveProjectSettings">Save Project Settings</button>
-          </div>
         </div>
+
         <div id="querySettingsSection" class="memSection">
           <div id="querySettingsTitle" class="memTitle">Query / Retrieval Settings</div>
           <div class="memHint">
@@ -138,6 +136,7 @@
                 <label><input type="checkbox" id="qiEMBEDDING" /> EMBEDDING</label>
               </div>
             </label>
+
             <label class="span2">
               Expand retrieval results into full artifacts
               <div class="checkboxGrid" id="queryExpandBox">
@@ -146,28 +145,33 @@
                 <label><input type="checkbox" id="qeCHAT" /> CHAT</label>
               </div>
             </label>
+
             <label>
               Max full files
               <input id="queryMaxFullFiles" type="number" min="0" />
             </label>
+
             <label>
               Max full memories
               <input id="queryMaxFullMemories" type="number" min="0" />
             </label>
+
             <label>
               Max full chats
               <input id="queryMaxFullChats" type="number" min="0" />
             </label>
+
             <label>
               Min hits to expand artifact
               <input id="queryExpandMinArtifactHits" type="number" min="1" />
-            </label>              
+            </label>
           </div>
+
           <div class="memAdd">
             <button id="saveQuerySettings">Save Query Settings</button>
           </div>
         </div>
-        <div class="memSection">
+          <div class="memSection">
           <div class="memTitle">About You</div>
           <div class="memGrid2">
             <label>
@@ -214,6 +218,9 @@
               Strength
               <input id="memoryImportance" type="number" value="0" min="0" max="10" />
             </label>
+            <div class="memHint" id="memorySettingsHint">
+              A strength of 10 will appear at the top of the list of memories and be effectively pinned. Zero strength is effectively archived and will never appear to be active in context.
+            </div>
             <button id="saveMemory">Save</button>
             <button id="cancelMemoryEdit" class="hidden">Cancel Edit</button>
           </div>

@@ -1265,101 +1265,6 @@ def update_project(
         "updated_at": row["updated_at"],
     }
 
-if (False):
-    def update_project(project_id: int, name: str | None = None, visibility: str | None = None, description: str | None = None) -> dict:
-        sets = []
-        params = []
-        visibility_changed = visibility is not None
-
-        if name is not None:
-            n = (name or "").strip()
-            if not n:
-                raise ValueError("Project name cannot be empty.")
-            sets.append("name = ?")
-            params.append(n)
-
-        if description is not None:
-            sets.append("description = ?")
-            params.append(description)
-
-        if visibility is not None:
-            v = (visibility or "").strip().lower()
-            if v not in ("private", "global"):
-                raise ValueError("visibility must be 'private' or 'global'")
-            sets.append("visibility = ?")
-            params.append(v)
-
-        if not sets:
-            raise ValueError("No changes provided.")
-
-        sets.append("updated_at = ?")
-        params.append(_utc_now_iso())
-        params.append(int(project_id))
-
-        with db_session() as conn:
-            _ensure_project_exists(conn, int(project_id))
-            conn.execute(f"UPDATE projects SET {', '.join(sets)} WHERE id = ?", tuple(params))
-            row = conn.execute(
-                "SELECT id, name, visibility, description, created_at, updated_at FROM projects WHERE id = ?",
-                (int(project_id),),
-            ).fetchone()
-
-        if visibility_changed:
-            invalidate_all_context_cache()
-
-        return {
-            "id": int(row["id"]),
-            "name": row["name"],
-            "visibility": row["visibility"],
-            "description": row["description"],
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
-        }
-
-if (False):
-    def update_project(project_id: int, name: str | None = None, visibility: str | None = None, description: str | None = None) -> dict:
-        sets = []
-        params = []
-
-        if name is not None:
-            n = (name or "").strip()
-            if not n:
-                raise ValueError("Project name cannot be empty.")
-            sets.append("name = ?")
-            params.append(n)
-
-        if description is not None:
-            sets.append("description = ?")
-            params.append(description)
-
-        if visibility is not None:
-            sets.append("visibility = ?")
-            params.append(visibility)
-
-        if not sets:
-            raise ValueError("No changes provided.")
-
-        sets.append("updated_at = ?")
-        params.append(_utc_now_iso())
-        params.append(int(project_id))
-
-        with db_session() as conn:
-            _ensure_project_exists(conn, int(project_id))
-            conn.execute(f"UPDATE projects SET {', '.join(sets)} WHERE id = ?", tuple(params))
-            row = conn.execute(
-                "SELECT id, name, visibility, description, created_at, updated_at FROM projects WHERE id = ?",
-                (int(project_id),),
-            ).fetchone()
-
-        return {
-            "id": int(row["id"]),
-            "name": row["name"],
-            "visibility": row["visibility"],
-            "description": row["description"],
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
-        }
-
 def project_import(
     project_id: int,
     source_project_id: int,
@@ -1430,34 +1335,6 @@ def _scope_keys_for_conversation(conn, conversation_id: str, include_global: boo
         keys.append("global")
 
     return keys
-
-if (False):
-    def _scope_keys_for_conversation(conn, conversation_id: str, include_global: bool = False) -> list[str]:
-        cid = (conversation_id or "").strip()
-        keys = [f"conversation:{cid}", f"chat:{cid}"]  # TODO remove chat alias after DB cleanup
-
-        row = conn.execute("SELECT project_id FROM conversations WHERE id = ?", (cid,)).fetchone()
-        if row and row["project_id"] is not None:
-            keys.append(f"project:{int(row['project_id'])}")
-
-        if include_global:
-            keys.append("global")
-
-        return keys
-
-if (False):
-    def _scope_keys_for_conversation(conn, conversation_id: str, include_global: bool = False) -> list[str]:
-        cid = (conversation_id or "").strip()
-        keys = [f"conversation:{cid}"]
-
-        row = conn.execute("SELECT project_id FROM conversations WHERE id = ?", (cid,)).fetchone()
-        if row and row["project_id"] is not None:
-            keys.append(f"project:{int(row['project_id'])}")
-
-        if include_global:
-            keys.append("global")
-
-        return keys
 
 def _ensure_conversation_exists(conn: sqlite3.Connection, conversation_id: str) -> None:
     row = conn.execute("SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
@@ -1541,48 +1418,6 @@ def list_conversations(limit: int = 200, include_archived: bool = False) -> list
             }
             for r in rows
         ]
-
-if (False):
-    def list_conversations(limit: int = 200, include_archived: bool = False) -> list[dict]:
-        with db_session() as conn:
-            if include_archived:
-                where = ""
-                params: tuple[Any, ...] = (limit,)
-            else:
-                where = "WHERE c.archived = 0"
-                params = (limit,)
-
-            rows = conn.execute(
-                f"""
-                SELECT
-                    c.id,
-                    c.title,
-                    c.created_at,
-                    c.updated_at,
-                    c.project_id,
-                    c.archived,
-                    p.name AS project_name
-                FROM conversations c
-                LEFT JOIN projects p ON p.id = c.project_id
-                {where}
-                ORDER BY COALESCE(c.updated_at, c.created_at) DESC
-                LIMIT ?
-                """,
-                params,
-            ).fetchall()
-
-            return [
-                {
-                    "id": r["id"],
-                    "title": r["title"] or "New chat",
-                    "created_at": r["created_at"],
-                    "updated_at": r["updated_at"],
-                    "project_id": (int(r["project_id"]) if r["project_id"] is not None else None),
-                    "project_name": r["project_name"],
-                    "archived": bool(r["archived"]),
-                }
-                for r in rows
-            ]
 
 def set_conversation_project(conversation_id: str, project_id: int | None) -> None:
     with db_session() as conn:
@@ -1699,29 +1534,6 @@ def save_conversation_summary_artifact(conversation_id: str, summary_text: str, 
     reindex_artifact_by_id(artifact_id)
     return artifact_id
 
-if (False):
-    def save_conversation_summary_artifact(conversation_id: str, summary_text: str, model: str) -> str:
-        """
-        Stores summary as artifact summary metadata, not in conversations.summary_json.
-        """
-        title = get_conversation_title(conversation_id) or "Conversation"
-        artifact_id = conversation_summary_artifact_id(conversation_id)
-
-        with db_session() as conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO artifacts (id, source_kind, source_id, title, scope_type, scope_id, updated_at)
-                VALUES (?, ?, ?, ?, 'conversation', ?, ?)
-                """,
-                (artifact_id, "conversation:summary", conversation_id, f"Summary: {title}", conversation_id, _utc_now_iso()),
-            )
-            set_artifact_summary(conn, artifact_id, summary_text, model)
-
-            # Optional: stop carrying old legacy summary_json once new summary exists
-            conn.execute("UPDATE conversations SET summary_json = NULL WHERE id = ?", (conversation_id,))
-
-        return artifact_id
-
 def get_conversation_summary_text(conversation_id: str) -> str:
     """
     Preferred: artifact summary.
@@ -1764,15 +1576,6 @@ def get_transcript_for_summary(conversation_id: str) -> tuple[str, str]:
 
     transcript = "\n\n".join(f"{m['role']}: {m['content']}" for m in msgs)
     return title, transcript
-
-if (False): # We're saving these to articles now
-    def save_conversation_summary(conversation_id: str, summary_text: str, model: str) -> None:
-        summary_obj = {"model": model, "summary": summary_text}
-        with db_session() as conn:
-            conn.execute(
-                "UPDATE conversations SET summary_json = ?, updated_at = ? WHERE id = ?",
-                (json.dumps(summary_obj), _utc_now_iso(), conversation_id),
-            )
 
 # region Conversation Transcript Artifacts
 
@@ -1974,57 +1777,6 @@ def _ensure_conversation_transcript_artifact_row(
     )
 
     return artifact_id
-
-if (False): # table does not have created_at
-    def _ensure_conversation_transcript_artifact_row(
-        conn: sqlite3.Connection,
-        conversation_id: str,
-        *,
-        title: str | None = None,
-    ) -> str:
-        artifact_id = conversation_transcript_artifact_id(conversation_id)
-        now = _utc_now_iso()
-        title = (title or "").strip() or f"Transcript: {conversation_id}"
-
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO artifacts
-            (id, source_kind, source_id, title, scope_type, scope_uuid, created_at, updated_at)
-            VALUES (?, ?, ?, ?, 'conversation', ?, ?, ?)
-            """,
-            (
-                artifact_id,
-                TRANSCRIPT_SOURCE_KIND,
-                conversation_id,
-                title,
-                conversation_id,
-                now,
-                now,
-            ),
-        )
-
-        conn.execute(
-            """
-            UPDATE artifacts
-            SET source_kind = ?,
-                source_id = ?,
-                title = ?,
-                scope_type = 'conversation',
-                scope_uuid = ?,
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (
-                TRANSCRIPT_SOURCE_KIND,
-                conversation_id,
-                title,
-                conversation_id,
-                now,
-                artifact_id,
-            ),
-        )
-        return artifact_id
-
 
 def _artifact_meta_json(conn: sqlite3.Connection, artifact_id: str) -> dict:
     row = conn.execute("SELECT meta_json FROM artifacts WHERE id = ?", (artifact_id,)).fetchone()
@@ -2725,43 +2477,6 @@ def add_message(
 
     return new_message_id
 
-if (False):
-    def add_message(
-            conversation_id: str,
-            role: str,
-            content: str,
-            meta: dict | None = None,
-            author_meta: dict | None = None,
-            ) -> None:
-        now = _utc_now_iso()
-        meta_json = json.dumps(meta) if meta is not None else None
-        author_meta_json = json.dumps(author_meta) if author_meta is not None else None
-        with db_session() as conn:
-            conn.execute(
-                """
-                INSERT INTO messages(conversation_id, role, content, created_at, meta, author_meta)
-                VALUES(?, ?, ?, ?, ?, ?)
-                """,
-                (conversation_id, role, content, now, meta_json, author_meta_json),
-            )
-
-            if role == "user":
-                count = _message_count(conn, conversation_id)
-                if count == 1:
-                    row = conn.execute(
-                        "SELECT title FROM conversations WHERE id = ?",
-                        (conversation_id,),
-                    ).fetchone()
-                    current_title = (row["title"] if row else None) or ""
-                    if current_title.strip() == "" or current_title.strip().lower() == "new chat":
-                        t = content.strip().replace("\n", " ")
-                        if len(t) > 60:
-                            t = t[:57] + "…"
-                        conn.execute(
-                            "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?",
-                            (t, _utc_now_iso(), conversation_id),
-                        )
-
 def get_messages_raw(conversation_id: str, limit: int = 200) -> list[dict]:
     with db_session() as conn:
         rows = conn.execute(
@@ -2893,28 +2608,6 @@ def _memory_row_to_dict(row: sqlite3.Row) -> dict:
         "updated_at": row["updated_at"],
     }
 
-if (False):
-    def _memory_row_to_dict(row: sqlite3.Row) -> dict:
-        def _split_csv(value: Any) -> list[str]:
-            if value is None:
-                return []
-            return [part for part in str(value).split(",") if part]
-
-        return {
-            "id": row["id"],
-            "content": row["content"],
-            "importance": int(row["importance"]) if row["importance"] is not None else 0,
-            "tags": row["tags"],
-            "created_by": row["created_by"] or "user",
-            "origin_kind": row["origin_kind"] or "user_asserted",
-            "source_conversation_id": row["source_conversation_id"],
-            "source_message_id": row["source_message_id"],
-            "project_ids": [int(x) for x in _split_csv(row["project_ids_csv"]) if str(x).isdigit()],
-            "conversation_ids": _split_csv(row["conversation_ids_csv"]),
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
-        }
-
 def _fetch_memory_row(conn: sqlite3.Connection, memory_id: str) -> dict:
     row = conn.execute("""
         SELECT
@@ -3026,125 +2719,12 @@ def create_memory(
     mem["artifact_reindex"] = reindex_info
     return mem
 
-if (False):
-    def create_memory(
-        content: str,
-        importance: int = 0,
-        tags: Any = None,
-        created_by: str = "user",
-        origin_kind: str = "user_asserted",
-        source_conversation_id: str | None = None,
-        source_message_id: str | None = None,
-        scope_type: str = "global",
-        scope_id: int | None = None,
-    ) -> dict:
-        content = (content or "").strip()
-        if not content:
-            raise ValueError("Memory content cannot be empty.")
-
-        mem_id = new_uuid()
-        now = _utc_now_iso()
-        tags_text = _normalize_tags(tags)
-        created_by = (created_by or "user").strip() or "user"
-        origin_kind = (origin_kind or "user_asserted").strip() or "user_asserted"
-        source_conversation_id = (source_conversation_id or "").strip() or None
-        source_message_id = (source_message_id or "").strip() or None
-
-        scope_type = (scope_type or "global").strip().lower()
-        if scope_type not in ("global", "project"):
-            scope_type = "global"
-        if scope_type == "global":
-            scope_id = None
-        elif scope_id is None:
-            raise ValueError("project-scoped memories require scope_id")
-
-        with db_session() as conn:
-            conn.execute("""
-                INSERT INTO memories (
-                    id,
-                    content,
-                    importance,
-                    tags,
-                    scope_type,
-                    scope_id,
-                    created_by,
-                    origin_kind,
-                    source_conversation_id,
-                    source_message_id,
-                    created_at,
-                    updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                mem_id,
-                content,
-                int(importance or 0),
-                tags_text,
-                scope_type,
-                scope_id,
-                created_by,
-                origin_kind,
-                source_conversation_id,
-                source_message_id,
-                now,
-                now,
-            ))
-
-            return _fetch_memory_row(conn, mem_id)
-
-if (False):
-    def create_memory(
-        content: str,
-        importance: int = 0,
-        tags: Any = None,
-        created_by: str = "user",
-        origin_kind: str = "user_asserted",
-        source_conversation_id: str | None = None,
-        source_message_id: str | None = None,
-    ) -> dict:
-        content = (content or "").strip()
-        if not content:
-            raise ValueError("Memory content cannot be empty.")
-
-        mem_id = new_uuid()
-        now = _utc_now_iso()
-        tags_text = _normalize_tags(tags)
-        created_by = (created_by or "user").strip() or "user"
-        origin_kind = (origin_kind or "user_asserted").strip() or "user_asserted"
-        source_conversation_id = (source_conversation_id or "").strip() or None
-        source_message_id = (source_message_id or "").strip() or None
-
-        with db_session() as conn:
-            conn.execute("""
-                INSERT INTO memories (
-                    id,
-                    content,
-                    importance,
-                    tags,
-                    created_by,
-                    origin_kind,
-                    source_conversation_id,
-                    source_message_id,
-                    created_at,
-                    updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                mem_id,
-                content,
-                int(importance or 0),
-                tags_text,
-                created_by,
-                origin_kind,
-                source_conversation_id,
-                source_message_id,
-                now,
-                now,
-            ))
-
-            return _fetch_memory_row(conn, mem_id)
-
 def list_memories(limit: int = 200) -> list[dict]:
+    """
+    Query memories in order by highest importance first.
+    Those with zero importance are effectively ignored,
+    though they are retained for special use cases.
+    """
     with db_session() as conn:
         rows = conn.execute("""
             SELECT
@@ -3172,11 +2752,50 @@ def list_memories(limit: int = 200) -> list[dict]:
                 ) AS conversation_ids_csv
             FROM memories m
             WHERE COALESCE(m.is_deleted, 0) = 0
-            ORDER BY COALESCE(m.updated_at, m.created_at) DESC, m.id DESC
+              AND COALESCE(m.importance, 0) > 0
+            ORDER BY
+              COALESCE(m.importance, 0) DESC,
+              COALESCE(m.updated_at, m.created_at) DESC,
+              m.id DESC
             LIMIT ?
         """, (limit,)).fetchall()
 
         return [_memory_row_to_dict(r) for r in rows]
+    
+if (False):
+    def list_memories(limit: int = 200) -> list[dict]:
+        with db_session() as conn:
+            rows = conn.execute("""
+                SELECT
+                    m.id,
+                    m.scope_type,
+                    m.scope_id,
+                    m.content,
+                    m.importance,
+                    m.tags,
+                    COALESCE(m.created_by, 'user') AS created_by,
+                    COALESCE(m.origin_kind, 'user_asserted') AS origin_kind,
+                    m.source_conversation_id,
+                    m.source_message_id,
+                    m.created_at,
+                    m.updated_at,
+                    (
+                        SELECT GROUP_CONCAT(mp.project_id)
+                        FROM memory_projects mp
+                        WHERE mp.memory_id = m.id
+                    ) AS project_ids_csv,
+                    (
+                        SELECT GROUP_CONCAT(mc.conversation_id)
+                        FROM memory_conversations mc
+                        WHERE mc.memory_id = m.id
+                    ) AS conversation_ids_csv
+                FROM memories m
+                WHERE COALESCE(m.is_deleted, 0) = 0
+                ORDER BY COALESCE(m.updated_at, m.created_at) DESC, m.id DESC
+                LIMIT ?
+            """, (limit,)).fetchall()
+
+            return [_memory_row_to_dict(r) for r in rows]
 
 def update_memory(
     memory_id: str,
@@ -3251,117 +2870,6 @@ def update_memory(
     mem["artifact_reindex"] = reindex_info
     return mem
 
-if (False):
-    def update_memory(
-        memory_id: str,
-        content: str,
-        importance: int = 0,
-        tags: Any = None,
-        created_by: str = "user",
-        origin_kind: str = "user_asserted",
-        scope_type: str | None = None,
-        scope_id: int | None = None,
-    ) -> dict:
-        memory_id = (memory_id or "").strip()
-        if not memory_id:
-            raise ValueError("memory_id is required.")
-
-        content = (content or "").strip()
-        if not content:
-            raise ValueError("Memory content cannot be empty.")
-
-        tags_text = _normalize_tags(tags)
-        created_by = (created_by or "user").strip() or "user"
-        origin_kind = (origin_kind or "user_asserted").strip() or "user_asserted"
-        now = _utc_now_iso()
-
-        with db_session() as conn:
-            existing = _fetch_memory_row(conn, memory_id)
-
-            final_scope_type = (scope_type if scope_type is not None else existing.get("scope_type") or "global").strip().lower()
-            if final_scope_type not in ("global", "project"):
-                final_scope_type = "global"
-
-            if final_scope_type == "global":
-                final_scope_id = None
-            else:
-                final_scope_id = scope_id if scope_id is not None else existing.get("scope_id")
-                if final_scope_id is None:
-                    raise ValueError("project-scoped memories require scope_id")
-
-            conn.execute("""
-                UPDATE memories
-                SET
-                    content = ?,
-                    importance = ?,
-                    tags = ?,
-                    scope_type = ?,
-                    scope_id = ?,
-                    created_by = ?,
-                    origin_kind = ?,
-                    updated_at = ?
-                WHERE id = ?
-            """, (
-                content,
-                int(importance or 0),
-                tags_text,
-                final_scope_type,
-                final_scope_id,
-                created_by,
-                origin_kind,
-                now,
-                memory_id,
-            ))
-
-            return _fetch_memory_row(conn, memory_id)
-
-if (False):
-    def update_memory(
-        memory_id: str,
-        content: str,
-        importance: int = 0,
-        tags: Any = None,
-        created_by: str = "user",
-        origin_kind: str = "user_asserted",
-    ) -> dict:
-        memory_id = (memory_id or "").strip()
-        if not memory_id:
-            raise ValueError("memory_id is required.")
-
-        content = (content or "").strip()
-        if not content:
-            raise ValueError("Memory content cannot be empty.")
-
-        tags_text = _normalize_tags(tags)
-        created_by = (created_by or "user").strip() or "user"
-        origin_kind = (origin_kind or "user_asserted").strip() or "user_asserted"
-        now = _utc_now_iso()
-
-        with db_session() as conn:
-            _ensure_memory_exists(conn, memory_id)
-
-            conn.execute("""
-                UPDATE memories
-                SET
-                    content = ?,
-                    importance = ?,
-                    tags = ?,
-                    created_by = ?,
-                    origin_kind = ?,
-                    updated_at = ?
-                WHERE id = ?
-            """, (
-                content,
-                int(importance or 0),
-                tags_text,
-                created_by,
-                origin_kind,
-                now,
-                memory_id,
-            ))
-
-            return _fetch_memory_row(conn, memory_id)
-
 def delete_memory(memory_id: str) -> None:
     memory_id = (memory_id or "").strip()
     if not memory_id:
@@ -3375,19 +2883,6 @@ def delete_memory(memory_id: str) -> None:
         conn.execute("DELETE FROM memory_projects WHERE memory_id = ?", (memory_id,))
         conn.execute("DELETE FROM memory_conversations WHERE memory_id = ?", (memory_id,))
         conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
-
-if (False):
-    def delete_memory(memory_id: str) -> None:
-        memory_id = (memory_id or "").strip()
-        if not memory_id:
-            raise ValueError("memory_id is required.")
-
-        with db_session() as conn:
-            _ensure_memory_exists(conn, memory_id)
-
-            conn.execute("DELETE FROM memory_projects WHERE memory_id = ?", (memory_id,))
-            conn.execute("DELETE FROM memory_conversations WHERE memory_id = ?", (memory_id,))
-            conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
 
 def memory_link_project(memory_id: str, project_id: int) -> None:
     if not memory_id or not str(memory_id).strip():
@@ -3419,94 +2914,6 @@ def memory_link_conversation(memory_id: str, conversation_id: str) -> None:
             INSERT OR IGNORE INTO memory_conversations (memory_id, conversation_id)
             VALUES (?, ?)
         """, (memory_id, conversation_id))
-
-if (False):
-    def _ensure_memory_exists(conn: sqlite3.Connection, memory_id: str) -> None:
-        row = conn.execute("SELECT 1 FROM memories WHERE id = ?", (memory_id,)).fetchone()
-        if not row:
-            raise ValueError(f"Memory not found: {memory_id}")
-
-    def create_memory(content: str, importance: int = 0, tags: Any = None) -> dict:
-        """
-        Create a memory record and return it as a dict.
-        memory_id is a TEXT uuid.
-        """
-        content = (content or "").strip()
-        if not content:
-            raise ValueError("Memory content cannot be empty.")
-
-        mem_id = str(uuid.uuid4())
-        now = _utc_now_iso()
-        tags_text = _normalize_tags(tags)
-
-        with db_session() as conn:
-            conn.execute(
-                """
-                INSERT INTO memories (id, content, importance, tags, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (mem_id, content, int(importance or 0), tags_text, now, now),
-            )
-
-            row = conn.execute(
-                "SELECT id, content, importance, tags, created_at, updated_at FROM memories WHERE id = ?",
-                (mem_id,),
-            ).fetchone()
-
-        return {
-            "id": row["id"],
-            "content": row["content"],
-            "importance": int(row["importance"]) if row["importance"] is not None else 0,
-            "tags": row["tags"],
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
-        }
-
-    def memory_link_project(memory_id: str, project_id: int) -> None:
-        """
-        Link an existing memory to an existing project.
-        Idempotent via PRIMARY KEY (memory_id, project_id).
-        """
-        if not memory_id or not str(memory_id).strip():
-            raise ValueError("memory_id is required.")
-        if project_id is None:
-            raise ValueError("project_id is required.")
-
-        with db_session() as conn:
-            _ensure_memory_exists(conn, memory_id)
-            _ensure_project_exists(conn, int(project_id))
-
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO memory_projects (memory_id, project_id)
-                VALUES (?, ?)
-                """,
-                (memory_id, int(project_id)),
-            )
-
-
-    def memory_link_conversation(memory_id: str, conversation_id: str) -> None:
-        """
-        Link an existing memory to an existing conversation.
-        Idempotent via PRIMARY KEY (memory_id, conversation_id).
-        """
-        if not memory_id or not str(memory_id).strip():
-            raise ValueError("memory_id is required.")
-        conversation_id = (conversation_id or "").strip()
-        if not conversation_id:
-            raise ValueError("conversation_id is required.")
-
-        with db_session() as conn:
-            _ensure_memory_exists(conn, memory_id)
-            _ensure_conversation_exists(conn, conversation_id)
-
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO memory_conversations (memory_id, conversation_id)
-                VALUES (?, ?)
-                """,
-                (memory_id, conversation_id),
-            )
 
 def memory_artifact_id(memory_id: str) -> str:
     memory_id = (memory_id or "").strip()
@@ -4304,11 +3711,15 @@ def search_corpus_for_conversation(
               conv.title AS conversation_title,
               substr(COALESCE(sumart.summary_text, ''), 1, 220) AS conversation_summary_excerpt,
 
+              COALESCE(mem.importance, 0) AS memory_importance,
               bm25(corpus_fts) AS score
             FROM corpus_fts
             JOIN corpus_chunks c ON corpus_fts.rowid = c.id
             LEFT JOIN artifacts a ON a.id = c.artifact_id
             LEFT JOIN files f ON f.id = c.file_id
+            LEFT JOIN memories mem
+              ON c.source_kind = 'memory'
+             AND c.source_id = mem.id
             LEFT JOIN conversations conv
               ON c.source_kind = '{TRANSCRIPT_SOURCE_KIND}'
              AND c.source_id = conv.id
@@ -4324,11 +3735,68 @@ def search_corpus_for_conversation(
                         AND c.source_id IN ({transcript_placeholders})
                     )
                   )
-            ORDER BY score ASC
+              AND (
+                    c.source_kind <> 'memory'
+                    OR COALESCE(mem.importance, 0) > 0
+                  )
+            ORDER BY
+              CASE WHEN COALESCE(mem.importance, 0) >= 10 THEN 0 ELSE 1 END ASC,
+              COALESCE(mem.importance, 0) DESC,
+              score ASC
             LIMIT ?
             """,
             tuple(params),
         ).fetchall()
+        if (False):
+            rows = conn.execute(
+                f"""
+                SELECT
+                c.id AS chunk_id,
+                c.scope_key,
+                c.artifact_id,
+                c.chunk_index,
+                c.source_kind,
+                c.source_id,
+                c.file_id,
+                c.filename,
+                c.mime_type,
+                c.text,
+
+                a.title AS artifact_title,
+                a.updated_at AS artifact_updated_at,
+
+                f.created_at AS file_created_at,
+                f.updated_at AS file_updated_at,
+
+                conv.id AS conversation_id,
+                conv.title AS conversation_title,
+                substr(COALESCE(sumart.summary_text, ''), 1, 220) AS conversation_summary_excerpt,
+
+                bm25(corpus_fts) AS score
+                FROM corpus_fts
+                JOIN corpus_chunks c ON corpus_fts.rowid = c.id
+                LEFT JOIN artifacts a ON a.id = c.artifact_id
+                LEFT JOIN files f ON f.id = c.file_id
+                LEFT JOIN conversations conv
+                ON c.source_kind = '{TRANSCRIPT_SOURCE_KIND}'
+                AND c.source_id = conv.id
+                LEFT JOIN artifacts sumart
+                ON sumart.source_kind = 'conversation:summary'
+                AND sumart.source_id = conv.id
+                AND (sumart.is_deleted IS NULL OR sumart.is_deleted = 0)
+                WHERE corpus_fts MATCH ?
+                AND (
+                        c.scope_key IN ({scope_placeholders})
+                        OR (
+                            c.source_kind = ?
+                            AND c.source_id IN ({transcript_placeholders})
+                        )
+                    )
+                ORDER BY score ASC
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
 
         return [dict(r) for r in rows]
 
@@ -4365,105 +3833,37 @@ def search_corpus(*, scope_keys: list[str], query: str, limit: int = 10) -> list
               conv.title AS conversation_title,
               substr(COALESCE(sumart.summary_text, ''), 1, 220) AS conversation_summary_excerpt,
 
+              COALESCE(mem.importance, 0) AS memory_importance,
               bm25(corpus_fts) AS score
             FROM corpus_fts
             JOIN corpus_chunks c ON corpus_fts.rowid = c.id
             LEFT JOIN artifacts a ON a.id = c.artifact_id
             LEFT JOIN files f ON f.id = c.file_id
-
+            LEFT JOIN memories mem
+              ON c.source_kind = 'memory'
+             AND c.source_id = mem.id
             LEFT JOIN conversations conv
               ON c.source_kind = '{TRANSCRIPT_SOURCE_KIND}'
              AND c.source_id = conv.id
-
             LEFT JOIN artifacts sumart
               ON sumart.source_kind = 'conversation:summary'
              AND sumart.source_id = conv.id
              AND (sumart.is_deleted IS NULL OR sumart.is_deleted = 0)
-
             WHERE corpus_fts MATCH ?
               AND c.scope_key IN ({placeholders})
-            ORDER BY score ASC
+              AND (
+                    c.source_kind <> 'memory'
+                    OR COALESCE(mem.importance, 0) > 0
+                  )
+            ORDER BY
+              CASE WHEN COALESCE(mem.importance, 0) >= 10 THEN 0 ELSE 1 END ASC,
+              COALESCE(mem.importance, 0) DESC,
+              score ASC
             LIMIT ?
             """,
             tuple(params),
         ).fetchall()
         if (False):
-            rows = conn.execute(        
-                f"""
-                SELECT
-                c.id AS chunk_id,
-                c.scope_key,
-                c.artifact_id,
-                c.chunk_index,
-                c.source_kind,
-                c.source_id,
-                c.file_id,
-                c.filename,
-                c.mime_type,
-                c.text,
-                a.title AS artifact_title,
-                a.updated_at AS artifact_updated_at,
-                f.created_at AS file_created_at,
-                f.updated_at AS file_updated_at,
-                bm25(corpus_fts) AS score
-                FROM corpus_fts
-                JOIN corpus_chunks c ON corpus_fts.rowid = c.id
-                LEFT JOIN artifacts a ON a.id = c.artifact_id
-                LEFT JOIN files f ON f.id = c.file_id
-                WHERE corpus_fts MATCH ?
-                AND c.scope_key IN ({placeholders})
-                ORDER BY score ASC
-                LIMIT ?
-                """,
-                tuple(params),
-            ).fetchall()
-
-        return [dict(r) for r in rows]
-
-if (False):
-    def search_corpus_for_conversation(
-        *,
-        conversation_id: str,
-        query: str,
-        limit: int = 10,
-        cfg: QueryConfig | None = None,
-        #include_global: bool = False,
-    ) -> list[dict]:
-        cid = (conversation_id or "").strip()
-        if not cid:
-            return []
-
-        cfg = cfg or load_query_config()
-
-        with db_session() as conn:
-            scope_keys = _scope_keys_for_conversation(conn, cid, include_global=cfg.query_global_artifacts)
-        log_debug("RAG scope keys for cid=%s include_global=%s keys=%r", cid, cfg.query_global_artifacts, scope_keys)
-        return search_corpus(scope_keys=scope_keys, query=query, limit=limit)
-
-if (False):
-    def search_corpus_for_conversation(
-        *,
-        conversation_id: str,
-        query: str,
-        limit: int = 10,
-        include_global: bool = False,
-    ) -> list[dict]:
-        """
-        FTS search across chunks visible to conversation (conversation + project [+global]).
-        Returns best matches with provenance.
-        """
-        cid = (conversation_id or "").strip()
-        q = (query or "").strip()
-        if not cid or not q:
-            return []
-
-        with db_session() as conn:
-            scope_keys = _scope_keys_for_conversation(conn, cid, include_global=include_global)
-
-            # FTS scope filter
-            placeholders = ",".join("?" * len(scope_keys))
-            params = [q] + scope_keys + [int(limit)]
-
             rows = conn.execute(
                 f"""
                 SELECT
@@ -4484,11 +3884,25 @@ if (False):
                 f.created_at AS file_created_at,
                 f.updated_at AS file_updated_at,
 
+                conv.id AS conversation_id,
+                conv.title AS conversation_title,
+                substr(COALESCE(sumart.summary_text, ''), 1, 220) AS conversation_summary_excerpt,
+
                 bm25(corpus_fts) AS score
                 FROM corpus_fts
                 JOIN corpus_chunks c ON corpus_fts.rowid = c.id
                 LEFT JOIN artifacts a ON a.id = c.artifact_id
                 LEFT JOIN files f ON f.id = c.file_id
+
+                LEFT JOIN conversations conv
+                ON c.source_kind = '{TRANSCRIPT_SOURCE_KIND}'
+                AND c.source_id = conv.id
+
+                LEFT JOIN artifacts sumart
+                ON sumart.source_kind = 'conversation:summary'
+                AND sumart.source_id = conv.id
+                AND (sumart.is_deleted IS NULL OR sumart.is_deleted = 0)
+
                 WHERE corpus_fts MATCH ?
                 AND c.scope_key IN ({placeholders})
                 ORDER BY score ASC
@@ -4497,32 +3911,7 @@ if (False):
                 tuple(params),
             ).fetchall()
 
-            if (False): # Expanded to include source info
-                rows = conn.execute(
-                    f"""
-                    SELECT
-                    c.id AS chunk_id,
-                    c.scope_key,
-                    c.artifact_id,
-                    c.chunk_index,
-                    c.source_kind,
-                    c.source_id,
-                    c.file_id,
-                    c.filename,
-                    c.mime_type,
-                    c.text,
-                    bm25(corpus_fts) AS score
-                    FROM corpus_fts
-                    JOIN corpus_chunks c ON corpus_fts.rowid = c.id
-                    WHERE corpus_fts MATCH ?
-                    AND c.scope_key IN ({placeholders})
-                    ORDER BY score ASC
-                    LIMIT ?
-                    """,
-                    tuple(params),
-                ).fetchall()
-
-            return [dict(r) for r in rows]
+        return [dict(r) for r in rows]
 
 # endregion
 
@@ -4695,14 +4084,6 @@ def list_global_files(include_deleted: bool = False) -> list[dict]:
         rows = conn.execute(sql).fetchall()
 
     return [dict(r) for r in rows]
-
-if (False):
-    def list_global_files(include_deleted: bool = False) -> list[dict]:
-        id: int = get_global_project_id()
-        return list_files_for_project(
-            project_id = id,
-            include_deleted = include_deleted,
-        )
 
 def get_files_summary() -> dict:
     """
@@ -5320,24 +4701,6 @@ def load_artifact_row_for_context(conn, artifact_id: str) -> dict | None:
     art["content_text"] = hydrate_artifact_content_text(conn, artifact_id)
     return art
 
-if (False):
-    def _artifact_scope_key_for_row(conn, artifact_row: dict) -> str:
-        """
-        Map your artifact scope fields to scope_key.
-        Adjust this if your artifacts table uses different columns.
-        """
-        # Common patterns in your project:
-        # - scope_type in ("conversation","project","global")
-        # - scope_id is conversation_id or project_id as string
-        st = (artifact_row.get("scope_type") or "").strip().lower()
-        sid = artifact_row.get("scope_id")
-
-        if st == "conversation" and sid:
-            return f"conversation:{sid}"
-        if st == "project" and sid:
-            return f"project:{sid}"
-        return "global"
-
 # region File Artifact Summaries
 
 def _compute_artifact_summary_input_hash(conn, art: dict) -> str:
@@ -5608,113 +4971,6 @@ def ensure_files_artifacted_for_conversation(
             include_global=include_global,
         )
 
-if (False): # Above function uses its own conn
-    def get_conversation_project_id(conn, conversation_id: str) -> int | None:
-        row = conn.execute(
-            "SELECT project_id FROM conversations WHERE id = ?",
-            (conversation_id,),
-        ).fetchone()
-        if not row:
-            return None
-        pid = row["project_id"]
-        return int(pid) if pid not in (None, "") else None
-
-if (False): # above version makes its own conn
-    def list_files_missing_artifacts_for_scope(
-        conn,
-        *,
-        scope_type: str,
-        scope_id: int | None = None,
-        scope_uuid: str | None = None,
-        limit: int = 10,
-    ) -> list[dict]:
-        """
-        Returns file rows in a scope that have no non-deleted file:* artifact.
-        """
-        rows = conn.execute(
-            """
-            SELECT f.*
-            FROM files f
-            LEFT JOIN artifacts a
-            ON a.source_id = f.id
-            AND a.source_kind LIKE 'file:%'
-            AND a.is_deleted = 0
-            WHERE f.is_deleted = 0
-            AND f.scope_type = ?
-            AND ( ? IS NULL OR f.scope_id = ? )
-            AND ( ? IS NULL OR f.scope_uuid = ? )
-            AND a.id IS NULL
-            ORDER BY f.created_at DESC
-            LIMIT ?
-            """,
-            (scope_type, scope_id, scope_id, scope_uuid, scope_uuid, int(limit)),
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-if (False): # above version makes its own conn
-    def ensure_files_artifacted_for_conversation(
-        conn,
-        *,
-        conversation_id: str,
-        limit_per_scope: int = 5,
-        include_global: bool = False,
-    ) -> dict:
-        """
-        Best-effort self-heal:
-        - conversation-scoped files
-        - project-scoped files for the conversation's project_id
-        - optionally global files
-        Returns counts for diagnostics.
-        """
-        cid = (conversation_id or "").strip()
-        if not cid:
-            return {"checked": 0, "created": 0, "details": {}}
-
-        created_total = 0
-        checked_total = 0
-        details: dict[str, dict[str, int]] = {}
-
-        def _heal(scope_label: str, scope_type: str, scope_id: int | None, scope_uuid: str | None) -> None:
-            nonlocal created_total, checked_total, details
-            missing = list_files_missing_artifacts_for_scope(
-                conn,
-                scope_type=scope_type,
-                scope_id=scope_id,
-                scope_uuid=scope_uuid,
-                limit=limit_per_scope,
-            )
-            checked_total += len(missing)
-            created = 0
-            for f in missing:
-                try:
-                    # Upsert artifact and scope it consistently
-                    upsert_file_artifact(
-                        conn,
-                        file_row=f,
-                        scope_type=scope_type,
-                        scope_id=str(scope_id) if scope_id is not None else (scope_uuid if scope_uuid else None),
-                    )
-                    created += 1
-                    created_total += 1
-                except Exception:
-                    # your existing logging in upsert_file_artifact / artifactor will record details
-                    pass
-            details[scope_label] = {"missing_checked": len(missing), "created": created}
-
-        # Conversation scope
-        _heal("conversation", "conversation", None, cid)
-
-        # Project scope (if this conversation belongs to a project)
-        pid = get_conversation_project_id(conn, cid)
-        if pid is not None:
-            _heal("project", "project", pid, None)
-
-        # Global scope optional (only if you actually use global files)
-        if include_global:
-            _heal("global", "global", None, None)
-
-        return {"checked": checked_total, "created": created_total, "details": details}
-
 def count_files_missing_artifacts(conn, *, scope_type: str, scope_id: str | None) -> int:
     """
     Count files that exist in a scope but have no non-deleted artifact row.
@@ -5735,7 +4991,6 @@ def count_files_missing_artifacts(conn, *, scope_type: str, scope_id: str | None
         (scope_type, scope_id, scope_id),
     ).fetchone()
     return int(row["n"] if row else 0)
-
 
 def list_files_missing_artifacts(conn, *, scope_type: str, scope_id: str | None, limit: int = 10) -> list[dict]:
     """
@@ -5759,7 +5014,6 @@ def list_files_missing_artifacts(conn, *, scope_type: str, scope_id: str | None,
         (scope_type, scope_id, scope_id, int(limit)),
     ).fetchall()
     return [dict(r) for r in rows]
-
 
 def ensure_scope_file_artifacts(conn, *, scope_type: str, scope_id: str | None, limit: int = 5) -> int:
     """
