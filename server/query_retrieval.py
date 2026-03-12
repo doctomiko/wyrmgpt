@@ -1,13 +1,28 @@
-# server/retrieval.py
 import time
 from collections import OrderedDict
+from functools import lru_cache
 from typing import Dict, List, Tuple
 
-from .config import QueryConfig, load_query_config, load_app_config
+from .config import (
+    RetrievalConfig,
+    load_retrieval_config,
+    load_app_config,
+    load_embedding_config,
+    load_vector_config,
+)
 from .query_slicer import slice_user_query
 from .query_shaper import shape_fts_query
 from .logging_helper import log_debug
-from .db import search_corpus_for_conversation  # your existing function
+from .db import (
+    search_corpus_for_conversation,
+    get_vector_search_scope,
+    get_corpus_chunks_by_ids,
+    _sha256_hex,
+)
+from .providers.openai_embeddings import OpenAIEmbeddingProvider
+from .vector.qdrant_local import QdrantLocalVectorStore
+
+# region Cache Helpers
 
 # Simple TTL LRU cache: key -> (expires_at, results)
 _CACHE: "OrderedDict[Tuple[str,str], Tuple[float, List[dict]]]" = OrderedDict()
@@ -33,6 +48,25 @@ def _cache_put(key, data, ttl_sec: float, max_entries: int):
     _CACHE.move_to_end(key)
     while len(_CACHE) > max_entries:
         _CACHE.popitem(last=False)
+
+# endregion
+# region Singletons for Vector DB Stuffs
+
+@lru_cache(maxsize=1)
+def _embedding_provider():
+    emb_cfg = load_embedding_config()
+    if emb_cfg.provider != "openai":
+        raise NotImplementedError(f"Embedding provider not implemented yet: {emb_cfg.provider}")
+    return OpenAIEmbeddingProvider(emb_cfg=emb_cfg)
+
+@lru_cache(maxsize=1)
+def _vector_store():
+    vec_cfg = load_vector_config()
+    if vec_cfg.backend != "qdrant_local":
+        raise NotImplementedError(f"Vector backend not implemented yet: {vec_cfg.backend}")
+    return QdrantLocalVectorStore(cfg=vec_cfg)
+
+# endregion
 
 def diversify_results(rows: list[dict], limit: int) -> list[dict]:
     out = []
@@ -77,15 +111,96 @@ def _retrieval_rank_key(r: dict) -> tuple:
         float(r.get("score", 1e9)),
     )
 
+def _retrieve_vector_rows_for_query(
+    *,
+    conversation_id: str,
+    query_text: str,
+    limit: int,
+    cfg: RetrievalConfig,
+) -> list[dict]:
+    scope = get_vector_search_scope(conversation_id=conversation_id, cfg=cfg)
+    query_vector = _embedding_provider().embed_query(query_text)
+    if not query_vector:
+        return []
+
+    store = _vector_store()
+    vec_cfg = load_vector_config()
+    store.ensure_collection(vec_cfg.collection_name, len(query_vector))
+
+    hits = store.search(
+        query_vector,
+        top_k=limit,
+        scope_keys=scope["scope_keys"],
+        transcript_ids=scope["transcript_cids"],
+    )
+    if not hits:
+        return []
+
+    rows = get_corpus_chunks_by_ids([int(h.chunk_id) for h in hits])
+    by_id = {int(r["chunk_id"]): dict(r) for r in rows}
+
+    out: list[dict] = []
+    for h in hits:
+        row = by_id.get(int(h.chunk_id))
+        if not row:
+            continue
+        row["vector_score"] = float(h.score)
+        row["fts_score"] = None
+        row["retrieval_channels"] = ["vector"]
+        out.append(row)
+
+    out.sort(key=lambda r: float(r.get("vector_score") or 0.0), reverse=True)
+    return out
+
+def _rrf_merge(
+    *,
+    fts_rows: list[dict],
+    vector_rows: list[dict],
+    limit: int,
+    rrf_k: int = 60,
+) -> list[dict]:
+    merged: dict[int, dict] = {}
+
+    for rank, row in enumerate(sorted(fts_rows, key=_retrieval_rank_key), start=1):
+        cid = int(row["chunk_id"])
+        cur = merged.setdefault(cid, dict(row))
+        cur["rrf_score"] = float(cur.get("rrf_score") or 0.0) + (1.0 / (rrf_k + rank))
+        cur["fts_score"] = row.get("score")
+        cur.setdefault("retrieval_channels", [])
+        if "fts" not in cur["retrieval_channels"]:
+            cur["retrieval_channels"].append("fts")
+
+    for rank, row in enumerate(sorted(vector_rows, key=lambda r: float(r.get("vector_score") or 0.0), reverse=True), start=1):
+        cid = int(row["chunk_id"])
+        cur = merged.setdefault(cid, dict(row))
+        cur["rrf_score"] = float(cur.get("rrf_score") or 0.0) + (1.0 / (rrf_k + rank))
+        cur["vector_score"] = row.get("vector_score")
+        cur.setdefault("retrieval_channels", [])
+        if "vector" not in cur["retrieval_channels"]:
+            cur["retrieval_channels"].append("vector")
+
+    out = list(merged.values())
+    out.sort(
+        key=lambda r: (
+            -float(r.get("rrf_score") or 0.0),
+            _retrieval_rank_key(r),
+        )
+    )
+    return diversify_results(out, limit)
+
 def retrieve_chunks_for_message(
     *,
     conversation_id: str,
     user_message: str,
     limit: int = 8,
-    cfg: QueryConfig | None = None,
+    cfg: RetrievalConfig | None = None,
 ) -> dict:
-    cfg = cfg or load_query_config()
+    cfg = cfg or load_retrieval_config()
     app_cfg = load_app_config()
+
+    include_flags = {x.strip().upper() for x in (cfg.query_include or "").split(",") if x.strip()}
+    do_fts = "FTS" in include_flags
+    do_vector = "EMBEDDING" in include_flags
 
     debug: Dict = {
         #"query_mode": cfg.query_mode,
@@ -121,7 +236,8 @@ def retrieve_chunks_for_message(
             "results": cached,
             "debug": {
                 "query_include": cfg.query_include,
-                #"query_mode": cfg.query_mode,
+                "fts_enabled": do_fts,
+                "vector_enabled": do_vector,
                 "include_globals": cfg.query_global_artifacts,
                 "original_user_message": user_message,
                 "cache_hit": True,
@@ -140,6 +256,9 @@ def retrieve_chunks_for_message(
 
     # First pass: FTS over each slice
     merged: Dict[int, dict] = {}  # chunk_id -> best row
+    
+    fts_rows_all: List[dict] = []
+    vector_rows_all: List[dict] = []
     raw_rows: List[dict] = []
     raw_counts_by_chunk: Dict[int, int] = {}
     raw_counts_by_artifact: Dict[str, int] = {}
@@ -147,72 +266,125 @@ def retrieve_chunks_for_message(
 
     per_slice_limit = max(3, limit)  # give each slice a chance
     for s in slices:
-        qs = shape_fts_query(s, cfg)
-        log_debug("RAG slice: text=%r fts=%r terms=%r phrases=%r",
-          s[:160], qs.fts_query, qs.kept_terms, qs.kept_phrases)
-        q = qs.fts_query or s
-        debug["slices"].append(s[:160])
-        debug["shapes"].append({"fts": qs.fts_query, "terms": qs.kept_terms, "phrases": qs.kept_phrases})
-        debug["search_queries"].append(q)
+        if do_fts:
+            # existing FTS code stays here
+            qs = shape_fts_query(s, cfg)
+            log_debug("RAG slice: text=%r fts=%r terms=%r phrases=%r",
+            s[:160], qs.fts_query, qs.kept_terms, qs.kept_phrases)
+            q = qs.fts_query or s
+            debug["slices"].append(s[:160])
+            debug["shapes"].append({"fts": qs.fts_query, "terms": qs.kept_terms, "phrases": qs.kept_phrases})
+            debug["search_queries"].append(q)
 
-        rows = []
-        try:
-            rows = search_corpus_for_conversation(
-                conversation_id=conversation_id,
-                query=q,
-                limit=per_slice_limit,
-                cfg=cfg,
-            )
-        except Exception as e:
-            log_debug("RAG search failed for shaped query %r: %r", q, e)
-
-        if not rows:
-            safe_q = " ".join(f'"{tok.replace(chr(34), chr(34) * 2)}"' for tok in qs.kept_terms)
-            if not safe_q and qs.kept_phrases:
-                safe_q = " ".join(f'"{p.replace(chr(34), chr(34) * 2)}"' for p in qs.kept_phrases)
-
-            if safe_q or s:
-                retry_q = safe_q or s
-                log_debug("RAG retry search: query=%r", retry_q)
+            rows = []
+            try:
                 rows = search_corpus_for_conversation(
                     conversation_id=conversation_id,
-                    query=retry_q,
+                    query=q,
                     limit=per_slice_limit,
                     cfg=cfg,
                 )
+            except Exception as e:
+                log_debug("RAG search failed for shaped query %r: %r", q, e)
 
-        log_debug("RAG search: query=%r returned=%d", q, len(rows))
-        for r in rows:
-            raw_rows.append(r)
+            if not rows:
+                safe_q = " ".join(f'"{tok.replace(chr(34), chr(34) * 2)}"' for tok in qs.kept_terms)
+                if not safe_q and qs.kept_phrases:
+                    safe_q = " ".join(f'"{p.replace(chr(34), chr(34) * 2)}"' for p in qs.kept_phrases)
 
-            cid = int(r["chunk_id"])
-            raw_counts_by_chunk[cid] = raw_counts_by_chunk.get(cid, 0) + 1
+                if safe_q or s:
+                    retry_q = safe_q or s
+                    log_debug("RAG retry search: query=%r", retry_q)
+                    rows = search_corpus_for_conversation(
+                        conversation_id=conversation_id,
+                        query=retry_q,
+                        limit=per_slice_limit,
+                        cfg=cfg,
+                    )
 
-            aid = (r.get("artifact_id") or "").strip()
-            if aid:
-                raw_counts_by_artifact[aid] = raw_counts_by_artifact.get(aid, 0) + 1
+            log_debug("RAG search: query=%r returned=%d", q, len(rows))
+            for r in rows:
+                raw_rows.append(r)
 
-            fid = (r.get("file_id") or "").strip()
-            if fid:
-                raw_counts_by_file[fid] = raw_counts_by_file.get(fid, 0) + 1
+                cid = int(r["chunk_id"])
+                raw_counts_by_chunk[cid] = raw_counts_by_chunk.get(cid, 0) + 1
 
-            #if cid not in merged or r.get("score", 1e9) < merged[cid].get("score", 1e9):
-            if cid not in merged or _retrieval_rank_key(r) < _retrieval_rank_key(merged[cid]):
-                merged[cid] = r
+                aid = (r.get("artifact_id") or "").strip()
+                if aid:
+                    raw_counts_by_artifact[aid] = raw_counts_by_artifact.get(aid, 0) + 1
+
+                fid = (r.get("file_id") or "").strip()
+                if fid:
+                    raw_counts_by_file[fid] = raw_counts_by_file.get(fid, 0) + 1
+
+                #if cid not in merged or r.get("score", 1e9) < merged[cid].get("score", 1e9):
+                if cid not in merged or _retrieval_rank_key(r) < _retrieval_rank_key(merged[cid]):
+                    merged[cid] = r
+        if do_vector:
+            try:
+                vrows = _retrieve_vector_rows_for_query(
+                    conversation_id=conversation_id,
+                    query_text=s,
+                    limit=per_slice_limit,
+                    cfg=cfg,
+                )
+            except Exception as e:
+                log_debug("Vector retrieval failed for query %r: %r", s, e)
+                vrows = []
+
+            for r in vrows:
+                raw_rows.append(r)
+                vector_rows_all.append(r)
 
     raw_result_count = len(raw_rows)
 
-    results = list(merged.values())
-    #results.sort(key=lambda r: r.get("score", 1e9))
-    results.sort(key=_retrieval_rank_key)
+    # Results list
+    fts_rows = []
+    if do_fts:
+        # keep your existing merged FTS logic if you want:
+        fts_merged: Dict[int, dict] = {}
+        for r in raw_rows:
+            if "vector" in (r.get("retrieval_channels") or []):
+                continue
+            cid = int(r["chunk_id"])
+            if cid not in fts_merged or _retrieval_rank_key(r) < _retrieval_rank_key(fts_merged[cid]):
+                fts_merged[cid] = r
+        fts_rows = list(fts_merged.values())
+        fts_rows.sort(key=_retrieval_rank_key)
 
-    before_diversify_count = len(results)
-    results = diversify_results(results, limit)
+    vector_rows = []
+    if do_vector:
+        vector_best: Dict[int, dict] = {}
+        for r in vector_rows_all:
+            cid = int(r["chunk_id"])
+            if cid not in vector_best or float(r.get("vector_score") or 0.0) > float(vector_best[cid].get("vector_score") or 0.0):
+                vector_best[cid] = r
+        vector_rows = list(vector_best.values())
+        vector_rows.sort(key=lambda r: float(r.get("vector_score") or 0.0), reverse=True)
+
+    before_diversify_count = len(fts_rows) + len(vector_rows)
+    if do_fts and do_vector:
+        results = _rrf_merge(fts_rows=fts_rows, vector_rows=vector_rows, limit=limit)
+    elif do_vector:
+        results = diversify_results(vector_rows, limit)
+    else:
+        results = diversify_results(fts_rows, limit)
+
+    if (False):
+        results = list(merged.values())
+        #results.sort(key=lambda r: r.get("score", 1e9))
+        results.sort(key=_retrieval_rank_key)
+
+        before_diversify_count = len(results)
+        results = diversify_results(results, limit)
+    
     after_diversify_count = len(results)
     # Report pre/post result counts
     debug["raw_result_count"] = raw_result_count
     debug["result_count_before_diversify"] = before_diversify_count
     debug["result_count_after_diversify"] = after_diversify_count
+    debug["fts_result_count"] = len(fts_rows)
+    debug["vector_result_count"] = len(vector_rows)
     # Report raw counts by asset type
     debug["raw_counts_by_chunk"] = raw_counts_by_chunk
     debug["raw_counts_by_artifact"] = raw_counts_by_artifact

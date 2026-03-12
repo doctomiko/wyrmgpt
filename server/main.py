@@ -31,7 +31,7 @@ from .config import (
     CoreConfig, load_core_config,
     ContextConfig, load_context_config,
     OpenAIConfig, load_openai_config,
-    QueryConfig, load_query_config,
+    RetrievalConfig, load_retrieval_config,
     SummaryConfig, load_summary_config,
     UIConfig, load_ui_config,
     # app_settings access
@@ -524,7 +524,7 @@ def api_update_app_config(req: AppConfigUpdateRequest):
 def api_get_query_settings(scope_type: str = "global", scope_id: str = ""):
     from .db import get_app_setting
 
-    qcfg = load_query_config()
+    qcfg = load_retrieval_config()
 
     scope_type = (scope_type or "global").strip().lower()
     scope_id = (scope_id or "").strip()
@@ -1425,7 +1425,7 @@ if (False):
 
 @app.get("/api/conversation/{conversation_id}/artifacts/debug")
 def api_conversation_artifacts_debug(conversation_id: str):
-    query_cfg = load_query_config()
+    query_cfg = load_retrieval_config()
     data = get_scoped_artifact_debug(
         conversation_id,
         include_global=query_cfg.query_global_artifacts,
@@ -2357,7 +2357,7 @@ def corpus_search(req: CorpusSearchRequest):
 
     # We normally would bother to load here, since function will load QueryConfig
     # but we need it anyway for healing function
-    cfg: QueryConfig = load_query_config()
+    cfg: RetrievalConfig = load_retrieval_config()
     include_global=req.include_global
     if req.include_global:
         include_global=req.include_global

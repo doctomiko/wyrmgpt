@@ -130,7 +130,7 @@ class ContextConfig:
 CONTEXT_DEFAULTS: ContextConfig = ContextConfig()
 
 @dataclass(frozen=True)
-class QueryConfig:
+class RetrievalConfig:
     # query_mode: str = "ALL"  # legacy fallback only
 
     query_include: str = "CHAT_SUMMARY,FTS,EMBEDDING" # FILE,MEMORY,CHAT,CHAT_SUMMARY and FTS,EMBEDDING
@@ -182,7 +182,63 @@ class QueryConfig:
     query_include_recent_conversation_transcripts: bool = True
     recent_conversation_transcript_limit: int = 40
 
-QUERY_DEFAULTS: QueryConfig = QueryConfig()
+RETRIEVAL_DEFAULTS: RetrievalConfig = RetrievalConfig()
+
+if (False):
+    @dataclass(frozen=True)
+    class QueryConfig: 
+        query_include: str = "CHAT_SUMMARY,FTS,EMBEDDING" # FILE,MEMORY,CHAT,CHAT_SUMMARY and FTS,EMBEDDING
+        query_expand_results: str = "FILE,MEMORY,CHAT" # FILE,MEMORY,CHAT
+        query_max_full_files: int = 50
+        query_max_full_memories: int = 500
+        query_max_full_chats: int = 5
+        query_expand_min_artifact_hits: int = 2
+        query_expand_chat_window_before: int = 1
+        query_expand_chat_window_after: int = 1
+
+        query_global_artifacts: bool = True # RAG queries will include global artifacts
+        max_terms: int = 14
+        max_phrase_words: int = 8
+        max_phrase_chars: int = 64
+        filler_words_file: str = ".\\FTS filler+stop words.txt"
+        filler_words: str = """
+            a, an, the, and, or, but, so, if, then, than, because, while, though,
+            to, of, in, on, at, by, for, with, from, as, into, about, over, under,
+            is, are, was, were, be, been, being, do, does, did, have, has, had,
+            i, me, my, mine, we, us, our, you, your, yours, he, him, his, she, her, hers, they, them, their, theirs,
+            it, its, this, that, these, those, there, here,
+            not, no, yes, ok, okay, like, just, really, very, maybe, basically, actually,
+            what, which, who, whom, when, where, why, how,
+            tell, know, about, please, show, explain, give, want, need
+            """
+
+        # Long-query slicing
+        long_query_chars: int = 400
+        max_query_slices: int = 6
+
+        # When to ask LLM for keywords
+        llm_expand_enabled: bool = True
+        llm_expand_prompt_file: str = ".\\prompts\\_expand_query_prompt.txt"
+        llm_expand_min_terms: int = 4          # if shaped terms < this, consider LLM
+        llm_expand_min_results: int = 3        # if results < this, consider LLM
+        llm_expand_max_keywords: int = 10
+        # TODO move to OpenAIConfig after that code is isolated in OpenAI.py
+        llm_expand_model: str = "gpt-5-mini"
+        llm_expand_max_tokens: int = 800
+
+        # “Keep what we loaded” cache
+        retrieval_cache_ttl_sec: float = 180.0
+        retrieval_cache_max_entries: int = 64
+
+        # Scoping of conversation transcripts
+        query_include_project_conversation_transcripts: bool = True
+        query_include_global_conversation_transcripts: bool = True
+        query_include_recent_conversation_transcripts: bool = True
+        recent_conversation_transcript_limit: int = 40
+    QUERY_DEFAULTS: QueryConfig = QueryConfig()
+# TODO for now just a clone of RetrievalConfig; trim it up by getting rid of things that are not relevant to a query
+QueryConfig = RetrievalConfig
+QUERY_DEFAULTS: RetrievalConfig = RETRIEVAL_DEFAULTS
 
 QUERY_INCLUDE_ALLOWED = {"FILE", "MEMORY", "CHAT", "CHAT_SUMMARY", "FTS", "EMBEDDING"}
 QUERY_EXPAND_ALLOWED = {"FILE", "MEMORY", "CHAT"}
@@ -199,7 +255,30 @@ def _legacy_query_mode_to_include(mode: str) -> str:
         return "FTS,EMBEDDING"
     if mode == "ALL":
         return "FILE,FTS,EMBEDDING"
-    return QUERY_DEFAULTS.query_include
+    return RETRIEVAL_DEFAULTS.query_include
+
+@dataclass(frozen=True)
+class EmbeddingConfig:
+    provider: str = "openai"
+    model: str = "text-embedding-3-large"
+    dimensions: int = 0
+    batch_size: int = 64
+    cache_enabled: bool = True
+    cache_dir: str = ".\\data\\embedding_cache"
+
+EMBEDDING_DEFAULTS: EmbeddingConfig = EmbeddingConfig()
+
+@dataclass(frozen=True)
+class VectorConfig:
+    backend: str = "qdrant_local"
+    collection_name: str = "wyrmgpt_chunks"
+    local_path: str = ".\\data\\qdrant"
+    server_url: str = ""
+    api_key: str = ""
+    distance_metric: str = "cosine"
+    search_limit: int = 24
+
+VECTOR_DEFAULTS: VectorConfig = VectorConfig()
 
 # intentionally not frozen because these can change at runtime
 @dataclass
@@ -298,67 +377,95 @@ def load_context_config() -> ContextConfig:
         estimate_model=_env_str("CONTEXT_ESTIMATE_MODEL", CONTEXT_DEFAULTS.estimate_model),
     )
 
-def load_query_config() -> QueryConfig:
+# TODO start reading vars from toml
+def load_query_config() -> RetrievalConfig:
+    return load_retrieval_config()
+if (False):
+    def load_query_config() -> QueryConfig:
+        return QueryConfig()
+
+def load_retrieval_config() -> RetrievalConfig:
     #legacy_mode = _env_str("QUERY_MODE", QUERY_DEFAULTS.query_mode).upper()
 
     raw_include = _env_str("QUERY_INCLUDE", "")
     #if not raw_include:
     #    raw_include = _legacy_query_mode_to_include(legacy_mode)
 
-    raw_expand = _env_str("QUERY_EXPAND_RESULTS", QUERY_DEFAULTS.query_expand_results)
+    raw_expand = _env_str("QUERY_EXPAND_RESULTS", RETRIEVAL_DEFAULTS.query_expand_results)
 
-    return QueryConfig(
+    return RetrievalConfig(
         #query_mode=legacy_mode,  # keep for old diagnostics until we kill it
         query_include=_normalize_csv_set(raw_include, QUERY_INCLUDE_ALLOWED),
         query_expand_results=_normalize_csv_set(raw_expand, QUERY_EXPAND_ALLOWED),
-        query_max_full_files=max(1,_env_int("QUERY_MAX_FULL_FILES", QUERY_DEFAULTS.query_max_full_files)),
-        query_max_full_memories=max(1,_env_int("QUERY_MAX_FULL_MEMORIES", QUERY_DEFAULTS.query_max_full_memories)),
-        query_max_full_chats=max(1,_env_int("QUERY_MAX_FULL_CHATS", QUERY_DEFAULTS.query_max_full_chats)),
+        query_max_full_files=max(1,_env_int("QUERY_MAX_FULL_FILES", RETRIEVAL_DEFAULTS.query_max_full_files)),
+        query_max_full_memories=max(1,_env_int("QUERY_MAX_FULL_MEMORIES", RETRIEVAL_DEFAULTS.query_max_full_memories)),
+        query_max_full_chats=max(1,_env_int("QUERY_MAX_FULL_CHATS", RETRIEVAL_DEFAULTS.query_max_full_chats)),
         #query_expand_min_artifact_hits=_env_int("QUERY_EXPAND_MIN_ARTIFACT_HITS", QUERY_DEFAULTS.query_expand_min_artifact_hits),
-        query_expand_min_artifact_hits=max(1, _env_int("QUERY_EXPAND_MIN_ARTIFACT_HITS", QUERY_DEFAULTS.query_expand_min_artifact_hits),),
+        query_expand_min_artifact_hits=max(1, _env_int("QUERY_EXPAND_MIN_ARTIFACT_HITS", RETRIEVAL_DEFAULTS.query_expand_min_artifact_hits),),
         query_expand_chat_window_before=max(0,_env_int(
                 "QUERY_EXPAND_CHAT_WINDOW_BEFORE",
-                QUERY_DEFAULTS.query_expand_chat_window_before,
+                RETRIEVAL_DEFAULTS.query_expand_chat_window_before,
         )),
         query_expand_chat_window_after=max(0,_env_int(
             "QUERY_EXPAND_CHAT_WINDOW_AFTER",
-            QUERY_DEFAULTS.query_expand_chat_window_after,
+            RETRIEVAL_DEFAULTS.query_expand_chat_window_after,
         )),
 
-        query_global_artifacts=_env_bool("QUERY_GLOBAL_ARTIFACTS", QUERY_DEFAULTS.query_global_artifacts),
-        max_terms=max(1,_env_int("QUERY_MAX_TERMS", QUERY_DEFAULTS.max_terms)),
-        max_phrase_words=max(1,_env_int("QUERY_MAX_PHRASE_WORDS", QUERY_DEFAULTS.max_phrase_words)),
-        max_phrase_chars=max(1,_env_int("QUERY_MAX_PHRASE_CHARS", QUERY_DEFAULTS.max_phrase_chars)),
-        filler_words_file=_env_str("QUERY_FILLER_WORDS_FILE", QUERY_DEFAULTS.filler_words_file),
-        filler_words=_env_str("QUERY_FILLER_WORDS", QUERY_DEFAULTS.filler_words),
-        long_query_chars=max(1,_env_int("QUERY_LONG_CHARS", QUERY_DEFAULTS.long_query_chars)),
-        max_query_slices=max(1,_env_int("QUERY_MAX_SLICES", QUERY_DEFAULTS.max_query_slices)),
+        query_global_artifacts=_env_bool("QUERY_GLOBAL_ARTIFACTS", RETRIEVAL_DEFAULTS.query_global_artifacts),
+        max_terms=max(1,_env_int("QUERY_MAX_TERMS", RETRIEVAL_DEFAULTS.max_terms)),
+        max_phrase_words=max(1,_env_int("QUERY_MAX_PHRASE_WORDS", RETRIEVAL_DEFAULTS.max_phrase_words)),
+        max_phrase_chars=max(1,_env_int("QUERY_MAX_PHRASE_CHARS", RETRIEVAL_DEFAULTS.max_phrase_chars)),
+        filler_words_file=_env_str("QUERY_FILLER_WORDS_FILE", RETRIEVAL_DEFAULTS.filler_words_file),
+        filler_words=_env_str("QUERY_FILLER_WORDS", RETRIEVAL_DEFAULTS.filler_words),
+        long_query_chars=max(1,_env_int("QUERY_LONG_CHARS", RETRIEVAL_DEFAULTS.long_query_chars)),
+        max_query_slices=max(1,_env_int("QUERY_MAX_SLICES", RETRIEVAL_DEFAULTS.max_query_slices)),
 
-        llm_expand_enabled=_env_bool("QUERY_LLM_EXPAND", QUERY_DEFAULTS.llm_expand_enabled),
-        llm_expand_prompt_file=_env_str("EXPAND_QUERY_PROMPT_FILE", QUERY_DEFAULTS.llm_expand_prompt_file),
-        llm_expand_min_terms=max(1,_env_int("QUERY_LLM_MIN_TERMS", QUERY_DEFAULTS.llm_expand_min_terms)),
-        llm_expand_min_results=max(1,_env_int("QUERY_LLM_MIN_RESULTS", QUERY_DEFAULTS.llm_expand_min_results)),
-        llm_expand_max_keywords=max(1,_env_int("QUERY_LLM_MAX_KEYWORDS", QUERY_DEFAULTS.llm_expand_max_keywords)),
-        llm_expand_model=_env_str("QUERY_LLM_EXPAND_MODEL", QUERY_DEFAULTS.llm_expand_model),
-        llm_expand_max_tokens=max(1,_env_int("QUERY_LLM_EXPAND_MAX_TOKENS", QUERY_DEFAULTS.llm_expand_max_tokens)),
+        llm_expand_enabled=_env_bool("QUERY_LLM_EXPAND", RETRIEVAL_DEFAULTS.llm_expand_enabled),
+        llm_expand_prompt_file=_env_str("EXPAND_QUERY_PROMPT_FILE", RETRIEVAL_DEFAULTS.llm_expand_prompt_file),
+        llm_expand_min_terms=max(1,_env_int("QUERY_LLM_MIN_TERMS", RETRIEVAL_DEFAULTS.llm_expand_min_terms)),
+        llm_expand_min_results=max(1,_env_int("QUERY_LLM_MIN_RESULTS", RETRIEVAL_DEFAULTS.llm_expand_min_results)),
+        llm_expand_max_keywords=max(1,_env_int("QUERY_LLM_MAX_KEYWORDS", RETRIEVAL_DEFAULTS.llm_expand_max_keywords)),
+        llm_expand_model=_env_str("QUERY_LLM_EXPAND_MODEL", RETRIEVAL_DEFAULTS.llm_expand_model),
+        llm_expand_max_tokens=max(1,_env_int("QUERY_LLM_EXPAND_MAX_TOKENS", RETRIEVAL_DEFAULTS.llm_expand_max_tokens)),
 
-        retrieval_cache_ttl_sec=_env_float("QUERY_CACHE_TTL_SEC", QUERY_DEFAULTS.retrieval_cache_ttl_sec),
-        retrieval_cache_max_entries=max(1,_env_int("QUERY_CACHE_MAX", QUERY_DEFAULTS.retrieval_cache_max_entries)),
+        retrieval_cache_ttl_sec=_env_float("QUERY_CACHE_TTL_SEC", RETRIEVAL_DEFAULTS.retrieval_cache_ttl_sec),
+        retrieval_cache_max_entries=max(1,_env_int("QUERY_CACHE_MAX", RETRIEVAL_DEFAULTS.retrieval_cache_max_entries)),
 
         query_include_project_conversation_transcripts=_env_bool(
             "QUERY_INCLUDE_PROJECT_CONVERSATION_TRANSCRIPTS",
-            QUERY_DEFAULTS.query_include_project_conversation_transcripts,
+            RETRIEVAL_DEFAULTS.query_include_project_conversation_transcripts,
         ),
         query_include_global_conversation_transcripts=_env_bool(
             "QUERY_INCLUDE_GLOBAL_CONVERSATION_TRANSCRIPTS",
-            QUERY_DEFAULTS.query_include_global_conversation_transcripts,
+            RETRIEVAL_DEFAULTS.query_include_global_conversation_transcripts,
         ),
         query_include_recent_conversation_transcripts=_env_bool(
             "QUERY_INCLUDE_RECENT_CONVERSATION_TRANSCRIPTS",
-            QUERY_DEFAULTS.query_include_recent_conversation_transcripts,
+            RETRIEVAL_DEFAULTS.query_include_recent_conversation_transcripts,
         ),
         recent_conversation_transcript_limit=max(1,_env_int(
             "QUERY_RECENT_CONVERSATION_TRANSCRIPT_LIMIT",
-            QUERY_DEFAULTS.recent_conversation_transcript_limit,
+            RETRIEVAL_DEFAULTS.recent_conversation_transcript_limit,
         )),
+    )
+
+def load_embedding_config() -> EmbeddingConfig:
+    return EmbeddingConfig(
+        provider=_env_str("EMBEDDING_PROVIDER", EMBEDDING_DEFAULTS.provider),
+        model=_env_str("EMBEDDING_MODEL", EMBEDDING_DEFAULTS.model),
+        dimensions=max(0, _env_int("EMBEDDING_DIMENSIONS", EMBEDDING_DEFAULTS.dimensions)),
+        batch_size=max(1, _env_int("EMBEDDING_BATCH_SIZE", EMBEDDING_DEFAULTS.batch_size)),
+        cache_enabled=_env_bool("EMBEDDING_CACHE_ENABLED", EMBEDDING_DEFAULTS.cache_enabled),
+        cache_dir=_env_str("EMBEDDING_CACHE_DIR", EMBEDDING_DEFAULTS.cache_dir),
+    )
+
+def load_vector_config() -> VectorConfig:
+    return VectorConfig(
+        backend=_env_str("VECTOR_BACKEND", VECTOR_DEFAULTS.backend),
+        collection_name=_env_str("VECTOR_COLLECTION_NAME", VECTOR_DEFAULTS.collection_name),
+        local_path=_env_str("VECTOR_LOCAL_PATH", VECTOR_DEFAULTS.local_path),
+        server_url=_env_str("VECTOR_SERVER_URL", VECTOR_DEFAULTS.server_url),
+        api_key=_env_str("VECTOR_API_KEY", VECTOR_DEFAULTS.api_key),
+        distance_metric=_env_str("VECTOR_DISTANCE_METRIC", VECTOR_DEFAULTS.distance_metric),
+        search_limit=max(1, _env_int("VECTOR_SEARCH_LIMIT", VECTOR_DEFAULTS.search_limit)),
     )

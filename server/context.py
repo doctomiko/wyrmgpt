@@ -27,14 +27,16 @@ from .db import (
     conversation_transcript_artifact_id,
     db_session,
     hydrate_artifact_content_text,    
+    
 )
 
 from .config import (
     CoreConfig, load_core_config, 
     ContextConfig, load_context_config,
-    QueryConfig, load_query_config, 
+    RetrievalConfig, load_retrieval_config, 
     QUERY_INCLUDE_ALLOWED, QUERY_EXPAND_ALLOWED,
-    _normalize_csv_set
+    _normalize_csv_set,
+    load_embedding_config, load_vector_config
 )
 # TODO untagle dependencies later if needed
 # Now artifactor is used entirely from the database layer
@@ -890,11 +892,11 @@ def build_context(
         conversation_id: str, # shapes the context by scope
         user_text: str, # needed for RAG queries
         ctx_cfg: ContextConfig | None = None,
-        query_cfg: QueryConfig | None = None,
+        query_cfg: RetrievalConfig | None = None,
         include_preview: bool = True,
         ) -> dict:
     ctx_cfg = ctx_cfg or load_context_config()
-    query_cfg = query_cfg or load_query_config()
+    query_cfg = query_cfg or load_retrieval_config()
 
     # 3A lazy repair: keep the conversation transcript artifact reasonably fresh
     try:
@@ -1320,11 +1322,26 @@ def build_context(
     retrieved_cites: list[str] = []
     retrieval_debug: dict | None = None
 
-    if do_fts_rag:
+    emb_cfg = load_embedding_config()
+    vec_cfg = load_vector_config()
+
+    # obsolete and we have moved on
+    if (False):
+        if do_fts_rag:
+            chunks_resp = retrieve_chunks_for_message(
+                conversation_id=conversation_id,
+                user_message=user_text,
+                limit=8,
+                cfg=query_cfg,
+            )
+
+    rag_limit = 24 # was 8, but why bigger now?
+    max_chars = 2200 #1200
+    if do_fts_rag or do_vector_rag:
         chunks_resp = retrieve_chunks_for_message(
             conversation_id=conversation_id,
             user_message=user_text,
-            limit=8,
+            limit=rag_limit, 
             cfg=query_cfg,
         )
 
@@ -1525,13 +1542,12 @@ def build_context(
 
         retrieved_block, retrieved_meta, retrieved_cites = _format_retrieved_chunks(
             retrieved_rows,
-            max_chunks=8,
-            max_chars=2200, #1200
+            max_chunks=rag_limit,
+            max_chars=max_chars,
             excerpt_query=user_text,
         )
-
-    # We're skipping all searches - say why
-    if not (do_fts_rag or do_vector_rag):
+    else: # if not (do_fts_rag or do_vector_rag):
+        # We're skipping all searches - say why
         retrieval_debug = {
             "skipped": True,
             "reason": f"query_include={effective_query_include} user_text_present={bool(user_text.strip())}",
@@ -1627,6 +1643,11 @@ def build_context(
         )
         token_stats = estimate_context_tokens(conversation_id, ctx_cfg, user_text, model=ctx_cfg.estimate_model)
 
+    retrieval_debug["embedding_provider"] = emb_cfg.provider
+    retrieval_debug["embedding_model"] = emb_cfg.model
+    retrieval_debug["vector_backend"] = vec_cfg.backend
+    retrieval_debug["vector_collection"] = vec_cfg.collection_name
+
     return {
         "conversation_id": conversation_id,
         "project_id": sources.get("project_id"),
@@ -1684,7 +1705,7 @@ def build_model_input(
         conversation_id: str, 
         user_text: str, 
         ctx_cfg: ContextConfig | None = None,
-        query_cfg: QueryConfig | None = None,
+        query_cfg: RetrievalConfig | None = None,
         ctx: dict | None = None
     ) -> list[dict]:
     """
@@ -1693,7 +1714,7 @@ def build_model_input(
     Keep file/image messages as typed parts ONLY when needed.
     """
     ctx_cfg = ctx_cfg or load_context_config()
-    query_cfg = query_cfg or load_query_config()
+    query_cfg = query_cfg or load_retrieval_config()
     
     ctx = ctx or build_context(conversation_id, user_text, ctx_cfg, query_cfg, include_preview=False)
 
@@ -1714,7 +1735,7 @@ if (False):
             conversation_id: str, 
             user_text: str, 
             ctx_cfg: ContextConfig | None = None,
-            query_cfg: QueryConfig | None = None,
+            query_cfg: RetrievalConfig | None = None,
             ctx: dict | None = None
         ) -> list[dict]:
         """
@@ -1723,7 +1744,7 @@ if (False):
         Keep file/image messages as typed parts ONLY when needed.
         """
         ctx_cfg = ctx_cfg or load_context_config()
-        query_cfg = query_cfg or load_query_config()
+        query_cfg = query_cfg or load_retrieval_config()
         
         ctx = ctx or build_context(conversation_id, user_text, ctx_cfg, query_cfg, include_preview=False)
 
@@ -1744,14 +1765,14 @@ def build_context_panel_payload(
     conversation_id: str,
     user_text: str,
     ctx_cfg: ContextConfig | None = None,
-    query_cfg: QueryConfig | None = None,
+    query_cfg: RetrievalConfig | None = None,
 ) -> dict:
     """
     Side-panel-only diagnostic payload.
     This is NOT the function used to assemble model input for a live chat turn.
     """
     ctx_cfg = ctx_cfg or load_context_config()
-    query_cfg = query_cfg or load_query_config()
+    query_cfg = query_cfg or load_retrieval_config()
 
     # Build raw context state first
     ctx = build_context(

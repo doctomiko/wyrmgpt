@@ -12,7 +12,7 @@ from pydantic.dataclasses import dataclass
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from contextlib import contextmanager
-from typing import Any, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 
 from .logging_helper import log_debug
 from .config import (
@@ -22,8 +22,8 @@ from .config import (
     load_ui_config,
     CoreConfig, 
     load_core_config, 
-    QueryConfig, 
-    load_query_config, 
+    RetrievalConfig, 
+    load_retrieval_config, 
 )
 from .markdown_helper import autolink_text, apply_house_markdown_normalization
 from .chunking import chunk_text_with_hints
@@ -36,7 +36,7 @@ DB_PATH = DATA_DIR / "callie_mvp.sqlite3"
 _VALID_TABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 SIDECAR_THRESHOLD_BYTES = 500 * 1024 # 500KB default threshold for when to use sidecar files for artifact content
 
@@ -817,8 +817,6 @@ def _migrate_schema_v15(conn) -> None:
                 created_at,
             ))
 
-# endregion
-
 def _migrate_schema_v16(conn) -> None:
     if _table_exists(conn, "memory_pins"):
         _add_column_if_missing(conn, "memory_pins", "pin_kind", "TEXT NOT NULL DEFAULT 'instruction'")
@@ -869,11 +867,112 @@ def _migrate_schema_v17(conn) -> None:
         SET scope_id = NULL
         WHERE COALESCE(scope_type, 'global') = 'global'
     """)
+
+# endregion
+
+def _migrate_schema_v18(conn) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chunk_embedding_state (
+            chunk_id INTEGER PRIMARY KEY,
+            text_hash TEXT NOT NULL,
+            embedding_provider TEXT NOT NULL,
+            embedding_model TEXT NOT NULL,
+            vector_dim INTEGER,
+            last_embedded_at TEXT,
+            status TEXT NOT NULL DEFAULT 'ready',
+            FOREIGN KEY (chunk_id) REFERENCES corpus_chunks(id) ON DELETE CASCADE
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chunk_embedding_state_status ON chunk_embedding_state(status)"
+    )
+
+MIGRATIONS: list[tuple[int, Callable]] = [
+    (8, _migrate_schema_v8),
+    (9, _migrate_schema_v9),
+    (10, _migrate_schema_v10),
+    (11, _migrate_schema_v11),
+    (12, _migrate_schema_v12),
+    (13, _migrate_schema_v13),
+    (14, _migrate_schema_v14),
+    (15, _migrate_schema_v15),
+    (16, _migrate_schema_v16),
+    (17, _migrate_schema_v17),
+    (18, _migrate_schema_v18),
+]
+
 # endregion
 
 # region Clean builds for new databases
 
 # endregion
+
+def _force_schema_regression_if_table_missing(
+    target_version: int,
+    required_table: str,
+) -> None:
+    target = int(target_version)
+    table = (required_table or "").strip()
+    if target < 0:
+        raise ValueError("target_version must be >= 0")
+    if not table:
+        raise ValueError("required_table is required")
+
+    with db_session() as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        row = conn.execute(
+            "SELECT value FROM schema_meta WHERE key='schema_version'"
+        ).fetchone()
+        current = int(row["value"]) if row and str(row["value"]).isdigit() else 0
+
+        table_row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone()
+
+        if table_row:
+            print(f"Regression skipped: table {table!r} already exists; schema_version={current}")
+            return
+
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema_version', ?)",
+            (str(target),),
+        )
+        print(f"Forced schema regression because {table!r} is missing: {current} -> {target}")
+
+def _force_schema_regression(target_version: int) -> None:
+    """
+    TEMPORARY REPAIR TOOL.
+
+    Force schema_meta.schema_version backward so init_schema() will re-run
+    later migrations. This does NOT drop tables. It only rewinds the version
+    marker.
+
+    Comment out/remove call sites when done.
+    """
+    target = int(target_version)
+    if target < 0:
+        raise ValueError("target_version must be >= 0")
+
+    with db_session() as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        row = conn.execute(
+            "SELECT value FROM schema_meta WHERE key='schema_version'"
+        ).fetchone()
+        current = int(row["value"]) if row and str(row["value"]).isdigit() else 0
+
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema_version', ?)",
+            (str(target),),
+        )
+
+        print(f"Forced schema regression: {current} -> {target}")
 
 def _start_schema_init(conn: sqlite3.Connection) -> int:
     """
@@ -889,39 +988,36 @@ def _start_schema_init(conn: sqlite3.Connection) -> int:
     current = int(row["value"]) if row and str(row["value"]).isdigit() else 0
     return current
 
-def _end_schema_init(conn: sqlite3.Connection, current: int) -> None:
+def _end_schema_init(conn: sqlite3.Connection, original: int, current: int = SCHEMA_VERSION) -> None:
     conn.execute(
         "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema_version', ?)",
-        (str(SCHEMA_VERSION),),
+        (str(current),),
     )
 
     conn.execute("PRAGMA foreign_keys = ON;")
-    print(f"DB initialized with schema version {SCHEMA_VERSION} (was {current})")
+    print(f"DB initialized with schema version {current} (was {original})")
     # TODO implement seperate log file and log there as well.
     #log.logger.info(f"DB initialized with schema version {SCHEMA_VERSION} (was {current})")
 
 def init_schema() -> None:
     with db_session() as conn:
         # Get the current schema version, or 0 if not set. This also ensures the schema_meta table exists.
-        current = _start_schema_init(conn);
+        original = _start_schema_init(conn)
+        current = original
         # Comment the next line after cached artifacts are cleared
         # You should not need to do this very often. We'll work on a button later.
         # reset_all_artifacts()
         if current == 0:
             # Clean slate - create all tables
             _apply_schema_v8(conn)
-            _migrate_schema_v9(conn)
-            _migrate_schema_v10(conn)
-            _migrate_schema_v11(conn)
-            _migrate_schema_v12(conn)
-            _migrate_schema_v13(conn)
-            _migrate_schema_v14(conn)
-            _migrate_schema_v15(conn)
-            _migrate_schema_v16(conn)
-            _migrate_schema_v17(conn)
-            _end_schema_init(conn, current)
+            current = 8
+            for version, migrate_fn in MIGRATIONS:
+                if version > current:
+                    migrate_fn(conn)
+            _end_schema_init(conn, 0)
             return
 
+        # Legacy pre-v7 path stays special because it is destructive / interactive.
         if current < 7:
             # Destructive changes - commented unless needed
             if (False):
@@ -946,27 +1042,14 @@ def init_schema() -> None:
             if resp != "MIGRATE":
                 raise RuntimeError("Aborted legacy migration. Delete DB and restart.")
             _migrate_schema_legacy(conn)
-        if current < 8:
-            _migrate_schema_v8(conn)
-        if current < 9:
-            _migrate_schema_v9(conn)
-        if current < 10:
-            _migrate_schema_v10(conn)
-        if current < 11:
-            _migrate_schema_v11(conn)
-        if current < 12:
-            _migrate_schema_v12(conn)
-        if current < 13:
-            _migrate_schema_v13(conn)
-        if current < 14:
-            _migrate_schema_v14(conn)
-        if current < 15:
-            _migrate_schema_v15(conn)
-        if current < 16:
-            _migrate_schema_v16(conn)
-        if current < 17:
-            _migrate_schema_v17(conn)
-        _end_schema_init(conn, current)
+
+        # After we're up to at least version 8, we try the sequence
+        # This should fall through on all migrations that do not apply
+        for version, migrate_fn in MIGRATIONS:
+            if current < version:
+                migrate_fn(conn)
+                current = version
+        _end_schema_init(conn, original, current)        
 
 # endregion
 
@@ -3569,13 +3652,13 @@ def reindex_artifact_by_id(artifact_id: str) -> dict:
         return {"ok": True, "artifact_id": artifact_id, "chunks_written": n}
 
 # endregion
-# region Corpus FTS Query
+# region Corpus Vector Query
 
 def _visible_transcript_conversation_ids_for_conversation(
     conn: sqlite3.Connection,
     conversation_id: str,
     *,
-    cfg: QueryConfig,
+    cfg: RetrievalConfig,
 ) -> list[str]:
     cid = (conversation_id or "").strip()
     ids: list[str] = []
@@ -3655,19 +3738,124 @@ def _visible_transcript_conversation_ids_for_conversation(
 
     return ids
 
+def get_vector_search_scope(
+    *,
+    conversation_id: str,
+    cfg: RetrievalConfig | None = None,
+) -> dict:
+    cid = (conversation_id or "").strip()
+    if not cid:
+        return {"scope_keys": [], "transcript_cids": []}
+
+    cfg = cfg or load_retrieval_config()
+    app_cfg = load_app_config()
+
+    with db_session() as conn:
+        scope_keys = _scope_keys_for_conversation(
+            conn,
+            cid,
+            include_global=cfg.query_global_artifacts,
+        )
+        transcript_cids: list[str] = []
+        if app_cfg.search_chat_history:
+            transcript_cids = _visible_transcript_conversation_ids_for_conversation(
+                conn,
+                cid,
+                cfg=cfg,
+            )
+        return {
+            "scope_keys": scope_keys,
+            "transcript_cids": transcript_cids,
+        }
+
+def upsert_chunk_embedding_state(
+    *,
+    chunk_id: int,
+    text_hash: str,
+    embedding_provider: str,
+    embedding_model: str,
+    vector_dim: int,
+    status: str = "ready",
+) -> None:
+    with db_session() as conn:
+        conn.execute(
+            """
+            INSERT INTO chunk_embedding_state(
+                chunk_id, text_hash, embedding_provider, embedding_model,
+                vector_dim, last_embedded_at, status
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(chunk_id) DO UPDATE SET
+                text_hash = excluded.text_hash,
+                embedding_provider = excluded.embedding_provider,
+                embedding_model = excluded.embedding_model,
+                vector_dim = excluded.vector_dim,
+                last_embedded_at = excluded.last_embedded_at,
+                status = excluded.status
+            """,
+            (
+                int(chunk_id),
+                text_hash,
+                embedding_provider,
+                embedding_model,
+                int(vector_dim),
+                _utc_now_iso(),
+                status,
+            ),
+        )
+
+
+# endregion
+# region Corpus FTS Query
+
+def get_corpus_chunks_by_ids(chunk_ids: list[int]) -> list[dict]:
+    ids = [int(x) for x in chunk_ids if int(x) > 0]
+    if not ids:
+        return []
+
+    placeholders = ",".join("?" * len(ids))
+    with db_session() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT
+              c.id AS chunk_id,
+              c.scope_key,
+              c.artifact_id,
+              c.chunk_index,
+              c.source_kind,
+              c.source_id,
+              c.file_id,
+              c.filename,
+              c.mime_type,
+              c.text,
+              a.title AS artifact_title,
+              a.updated_at AS artifact_updated_at,
+              COALESCE(mem.importance, 0) AS memory_importance
+            FROM corpus_chunks c
+            LEFT JOIN artifacts a ON a.id = c.artifact_id
+            LEFT JOIN memories mem
+              ON c.source_kind = 'memory'
+             AND c.source_id = mem.id
+            WHERE c.id IN ({placeholders})
+            """
+            ,
+            tuple(ids),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
 def search_corpus_for_conversation(
     *,
     conversation_id: str,
     query: str,
     limit: int = 10,
-    cfg: QueryConfig | None = None,
+    cfg: RetrievalConfig | None = None,
 ) -> list[dict]:
     cid = (conversation_id or "").strip()
     q = (query or "").strip()
     if not cid or not q:
         return []
 
-    cfg = cfg or load_query_config()
+    cfg = cfg or load_retrieval_config()
     app_cfg = load_app_config()
 
     with db_session() as conn:

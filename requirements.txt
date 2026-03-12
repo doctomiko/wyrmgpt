@@ -1,11 +1,12 @@
-chardet
 fastapi
+chardet
 openai
 pydantic
 pypdf
 python-docx
 python-dotenv
 python-multipart
-uvicorn[standard]
+qdrant-client
 tiktoken
-
+tomli
+uvicorn[standard]
