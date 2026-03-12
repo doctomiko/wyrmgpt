@@ -3768,6 +3768,7 @@ def get_vector_search_scope(
             "transcript_cids": transcript_cids,
         }
 
+
 def upsert_chunk_embedding_state(
     *,
     chunk_id: int,
@@ -3804,6 +3805,70 @@ def upsert_chunk_embedding_state(
             ),
         )
 
+
+def list_corpus_chunks_requiring_embeddings(
+    *,
+    embedding_provider: str,
+    embedding_model: str,
+    vector_dim: int = 0,
+    limit: int = 0,
+) -> list[dict]:
+    desired_provider = (embedding_provider or "").strip()
+    desired_model = (embedding_model or "").strip()
+    desired_dim = max(0, int(vector_dim or 0))
+
+    with db_session() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+              c.id AS chunk_id,
+              c.artifact_id,
+              c.scope_key,
+              c.source_kind,
+              c.source_id,
+              c.file_id,
+              c.filename,
+              c.chunk_index,
+              c.text,
+              ces.text_hash AS embedded_text_hash,
+              ces.embedding_provider AS embedded_provider,
+              ces.embedding_model AS embedded_model,
+              ces.vector_dim AS embedded_vector_dim,
+              ces.status AS embedding_status
+            FROM corpus_chunks c
+            LEFT JOIN chunk_embedding_state ces
+              ON ces.chunk_id = c.id
+            ORDER BY c.id
+            """
+        ).fetchall()
+
+    out: list[dict] = []
+    for row in rows:
+        item = dict(row)
+        text_hash = _sha256_hex((item.get("text") or "").strip())
+        item["text_hash"] = text_hash
+
+        embedded_text_hash = (item.get("embedded_text_hash") or "").strip()
+        embedded_provider = (item.get("embedded_provider") or "").strip()
+        embedded_model = (item.get("embedded_model") or "").strip()
+        embedded_dim = int(item.get("embedded_vector_dim") or 0)
+        embedding_status = (item.get("embedding_status") or "").strip().lower()
+
+        needs_embedding = (
+            not embedded_text_hash
+            or embedded_text_hash != text_hash
+            or embedded_provider != desired_provider
+            or embedded_model != desired_model
+            or (desired_dim > 0 and embedded_dim != desired_dim)
+            or embedding_status not in ("ready", "empty")
+        )
+
+        if needs_embedding:
+            out.append(item)
+            if limit and len(out) >= int(limit):
+                break
+
+    return out
 
 # endregion
 # region Corpus FTS Query

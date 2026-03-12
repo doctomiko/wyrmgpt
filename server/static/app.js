@@ -1778,6 +1778,12 @@ function summarizeLlmMessage(content) {
   return oneLine.length > 120 ? `${oneLine.slice(0, 117)}...` : oneLine;
 }
 
+function fmtScore(v, digits = 4) {
+  if (v === null || v === undefined || v === "") return "-";
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toFixed(digits) : String(v);
+}
+
 function createCtxMessageSection(idx, msg) {
   const key = String(idx);
   const isOpen = !!contextPayloadMessageState[key];
@@ -1871,11 +1877,33 @@ function renderContext(ctx) {
 
   const rawRows = ctx.retrieved_chunks_raw || [];
   const finalRows = ctx.retrieved_chunks_final || ctx.retrieved_chunk_meta || [];
-  const suppressedIncluded = (ctx.retrieval_debug?.suppressed_included_artifact_rows || []).length;
-  const suppressedExpanded = (ctx.retrieval_debug?.suppressed_expanded_artifact_rows || []).length;
+  const retrievalDebug = ctx.retrieval_debug || {};
+  const retrievalMode =
+    retrievalDebug.retrieval_mode ||
+    (ftsActive && vectorActive ? "hybrid" : vectorActive ? "vector" : ftsActive ? "fts" : "none");
+  const embeddingProvider = retrievalDebug.embedding_provider || "(unknown)";
+  const embeddingModel = retrievalDebug.embedding_model || "(unknown)";
+  const vectorBackend = retrievalDebug.vector_backend || "(unknown)";
+  const vectorCollection = retrievalDebug.vector_collection || "(unknown)";
+
+  const rawCount = retrievalDebug.raw_result_count ?? rawRows.length;
+  const ftsCount = retrievalDebug.fts_result_count ?? 0;
+  const vectorCount = retrievalDebug.vector_result_count ?? 0;
+  const beforeDiversify = retrievalDebug.result_count_before_diversify ?? "?";
+  const afterDiversify = retrievalDebug.result_count_after_diversify ?? finalRows.length;
+  const cacheHit = !!retrievalDebug.cache_hit;
+  /*
+  const rawCount = retrievalDebug.raw_result_count ?? rawRows.length;
+  const ftsCount = retrievalDebug.fts_result_count ?? 0;
+  const vectorCount = retrievalDebug.vector_result_count ?? 0;
+  const beforeDiversify = retrievalDebug.result_count_before_diversify ?? "?";
+  const afterDiversify = retrievalDebug.result_count_after_diversify ?? finalRows.length;
+  */
+
+  const suppressedIncluded = (retrievalDebug.suppressed_included_artifact_rows || []).length;
+  const suppressedExpanded = (retrievalDebug.suppressed_expanded_artifact_rows || []).length;
   const expandedCount = (ctx.expanded_artifact_ids || []).length;
-  const llmInputMessages = ctx.llm_input_messages || [];
-  const nextPayloadState = {};
+  const llmInputMessages = ctx.llm_input_messages || [];  const nextPayloadState = {};
   for (let i = 0; i < llmInputMessages.length; i++) {
     nextPayloadState[String(i)] = !!contextPayloadMessageState[String(i)];
   }
@@ -1906,6 +1934,11 @@ function renderContext(ctx) {
       `Caps: files=${ctx.query_max_full_files ?? "?"}, memories=${ctx.query_max_full_memories ?? "?"}, chats=${ctx.query_max_full_chats ?? "?"}`
     );
     lines.push(`Expand threshold: min artifact hits=${ctx.query_expand_min_artifact_hits ?? "?"}`);
+    lines.push(`Retrieval mode: ${retrievalMode}`);
+    lines.push(`Embedding provider: ${embeddingProvider}`);
+    lines.push(`Embedding model: ${embeddingModel}`);
+    lines.push(`Vector backend: ${vectorBackend}`);
+    lines.push(`Vector collection: ${vectorCollection}`);
 
     const activeParts = [];
     if (fileIncludeActive) activeParts.push("full-file inclusion");
@@ -1995,14 +2028,63 @@ function renderContext(ctx) {
     );
   }
 
+  // Retrieval Diagnostics
+  {
+    const lines = [];
+    lines.push(`Mode: ${retrievalMode}`);
+    lines.push(`Cache hit: ${cacheHit ? "yes" : "no"}`);
+    lines.push(`Raw hits: ${rawCount}`);
+    lines.push(`FTS hits: ${ftsCount}`);
+    lines.push(`Vector hits: ${vectorCount}`);
+    lines.push(`Before diversify: ${beforeDiversify}`);
+    lines.push(`After diversify: ${afterDiversify}`);
+    lines.push(`Embedding provider: ${embeddingProvider}`);
+    lines.push(`Embedding model: ${embeddingModel}`);
+    lines.push(`Vector backend: ${vectorBackend}`);
+    lines.push(`Vector collection: ${vectorCollection}`);
+
+    const dominance = retrievalDebug.dominance || {};
+    const topFiles = dominance.top_files_by_raw_hits || [];
+    const topArtifacts = dominance.top_artifacts_by_raw_hits || [];
+    const topChunks = dominance.top_chunks_by_raw_hits || [];
+
+    if (topFiles.length) {
+      lines.push("");
+      lines.push("Top files by raw hits:");
+      for (const [k, v] of topFiles) lines.push(`  ${k}: ${v}`);
+    }
+
+    if (topArtifacts.length) {
+      lines.push("");
+      lines.push("Top artifacts by raw hits:");
+      for (const [k, v] of topArtifacts) lines.push(`  ${k}: ${v}`);
+    }
+
+    if (topChunks.length) {
+      lines.push("");
+      lines.push("Top chunks by raw hits:");
+      for (const [k, v] of topChunks) lines.push(`  ${k}: ${v}`);
+    }
+
+    accordion.appendChild(
+      createCtxSection(
+        "retrievalDiag",
+        "Retrieval Diagnostics",
+        createCtxPre(lines.join("\n")),
+        `${retrievalMode} · raw=${rawCount} · fts=${ftsCount} \n vector=${vectorCount} · final=${afterDiversify}`
+      )
+    );
+  }
+
   // RAG Raw Hits
   {
     const lines = [];
     if (rawRows.length) {
       for (const r of rawRows.slice(0, 50)) {
         const src = r.filename || r.scope_key || r.source_kind || "source";
+        const channels = (r.retrieval_channels || []).join("+") || "?";
         lines.push(
-          `- ${src}#${r.chunk_index} chunk_id=${r.chunk_id} artifact_id=${r.artifact_id} file_id=${r.file_id || ""} score=${r.score}`
+          `- ${src}#${r.chunk_index} chunk_id=${r.chunk_id} artifact_id=${r.artifact_id} file_id=${r.file_id || ""} channels=${channels} score=${fmtScore(r.score)} fts=${fmtScore(r.fts_score)} vec=${fmtScore(r.vector_score)}`
         );
         if (r.conversation_title || r.conversation_summary_excerpt || r.conversation_started_at || r.conversation_ended_at) {
           const range =
@@ -2044,7 +2126,10 @@ function renderContext(ctx) {
           ? `${snippetRaw.slice(0, 900)}\n[...truncated for preview...]`
           : snippetRaw;
 
-        lines.push(`- ${src}#${r.chunk_index} chunk_id=${r.chunk_id} score=${r.score} ts=${ts}`);
+        const channels = (r.retrieval_channels || []).join("+") || "?";
+        lines.push(
+          `- ${src}#${r.chunk_index} chunk_id=${r.chunk_id} channels=${channels} final=${fmtScore(r.final_score ?? r.score)} fts=${fmtScore(r.fts_score)} vec=${fmtScore(r.vector_score)} rrf=${fmtScore(r.rrf_score)} ts=${ts}`
+        );
         if (r.conversation_title || r.conversation_summary_excerpt || r.conversation_started_at || r.conversation_ended_at) {
           const range =
             (r.conversation_started_at || r.conversation_ended_at)

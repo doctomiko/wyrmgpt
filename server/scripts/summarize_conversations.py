@@ -91,8 +91,9 @@ def main():
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--include-archived", action="store_true")
-    ap.add_argument("--force", action="store_true")
-    ap.add_argument("--model", default=os.getenv("SUMMARY_MODEL") or os.getenv("MODEL") or ctx_cfg.estimate_model or "gpt-5-mini")
+    ap.add_argument("--force", action="store_true")    
+    ap.add_argument("--model", default=oai_cfg.summary_model or ctx_cfg.estimate_model or "gpt-5-mini")
+    #ap.add_argument("--model", default=os.getenv("SUMMARY_MODEL") or os.getenv("MODEL") or ctx_cfg.estimate_model or "gpt-5-mini")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--sleep", type=float, default=0.0)
     args = ap.parse_args()

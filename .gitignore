@@ -10,6 +10,10 @@
 !.template.env
 !.redacted.env
 
+# TOML versions of secure configuration
+config.secrets.toml
+!config.secrets.toml.example
+
 # Local backups / Archives - these are backups of previous versions
 *.zip
 _bak/

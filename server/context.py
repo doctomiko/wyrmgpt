@@ -33,7 +33,7 @@ from .db import (
 from .config import (
     CoreConfig, load_core_config, 
     ContextConfig, load_context_config,
-    RetrievalConfig, load_retrieval_config, 
+    RetrievalConfig, load_openai_config, load_retrieval_config, 
     QUERY_INCLUDE_ALLOWED, QUERY_EXPAND_ALLOWED,
     _normalize_csv_set,
     load_embedding_config, load_vector_config
@@ -55,6 +55,10 @@ from .query_shaper import WORD_RE, load_filler_words_cached
 
 _QUERY_WORD_RE = WORD_RE
 _QUERY_STOP = load_filler_words_cached()
+
+oai_cfg=load_openai_config()
+CHEAP_MODEL=oai_cfg.summary_model
+FULL_MODEL=oai_cfg.open_ai_model
 
 def _get_prompt(default_prompt: str, filepath: str = "", cfg_default="(cfg default)", cfg_filepath="(cfg filepath name)") -> str:
     """
@@ -388,7 +392,7 @@ def zeitgeber_prefix(created_at: str, raw_content: str) -> str:
     text = f"⟂t={stamp} ⟂age={age}\n{raw_content}"
     return text
 
-def estimate_tokens_for_messages(messages: list[dict], model: str = "gpt-4.1-mini") -> dict:
+def estimate_tokens_for_messages(messages: list[dict], model: str = CHEAP_MODEL) -> dict:
     """
     Rough token estimate for a list of messages.
 
@@ -442,7 +446,7 @@ def estimate_context_tokens(
     conversation_id: str,
     ctx_cfg: ContextConfig, #history_limit: int = 200,
     addtl_user_text: str = "",
-    model: str = "gpt-5.2",
+    model: str = FULL_MODEL,
     drop_last_user_message: bool = False,
 ) -> dict:
     """

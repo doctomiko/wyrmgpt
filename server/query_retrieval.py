@@ -24,8 +24,9 @@ from .vector.qdrant_local import QdrantLocalVectorStore
 
 # region Cache Helpers
 
-# Simple TTL LRU cache: key -> (expires_at, results)
-_CACHE: "OrderedDict[Tuple[str,str], Tuple[float, List[dict]]]" = OrderedDict()
+# Simple TTL LRU cache: key -> (expires_at, payload)
+_CACHE: "OrderedDict[tuple, tuple[float, dict]]" = OrderedDict()
+#_CACHE: "OrderedDict[Tuple[str,str], Tuple[float, List[dict]]]" = OrderedDict()
 
 def _cache_get(key):
     now = time.time()
@@ -144,8 +145,11 @@ def _retrieve_vector_rows_for_query(
         row = by_id.get(int(h.chunk_id))
         if not row:
             continue
+        row["score"] = float(h.score)
         row["vector_score"] = float(h.score)
         row["fts_score"] = None
+        row["rrf_score"] = None
+        row["final_score"] = None
         row["retrieval_channels"] = ["vector"]
         out.append(row)
 
@@ -186,6 +190,11 @@ def _rrf_merge(
             _retrieval_rank_key(r),
         )
     )
+
+    for row in out:
+        row["final_score"] = float(row.get("rrf_score") or 0.0)
+        row["score"] = row["final_score"]
+
     return diversify_results(out, limit)
 
 def retrieve_chunks_for_message(
@@ -201,12 +210,23 @@ def retrieve_chunks_for_message(
     include_flags = {x.strip().upper() for x in (cfg.query_include or "").split(",") if x.strip()}
     do_fts = "FTS" in include_flags
     do_vector = "EMBEDDING" in include_flags
+    if do_fts and do_vector:
+        retrieval_mode = "hybrid"
+    elif do_vector:
+        retrieval_mode = "vector"
+    elif do_fts:
+        retrieval_mode = "fts"
+    else:
+        retrieval_mode = "none"
 
     debug: Dict = {
         #"query_mode": cfg.query_mode,
         "query_include": cfg.query_include,
         "include_globals": cfg.query_global_artifacts,
         "original_user_message": user_message,
+        "retrieval_mode": retrieval_mode,
+        "fts_enabled": do_fts,
+        "vector_enabled": do_vector,
         "slices": [],
         "shapes": [],
         "search_queries": [],
@@ -215,47 +235,86 @@ def retrieve_chunks_for_message(
         "llm_expand_terms": [],
         "cache_hit": False,
     }
+
+    emb_cfg = load_embedding_config()
+    vec_cfg = load_vector_config()
+
     # cache_key = (conversation_id, user_message.strip())
     cache_key = (
         conversation_id,
         user_message.strip(),
+        cfg.query_include,
+        cfg.query_expand_results,
         cfg.query_global_artifacts,
         cfg.query_include_project_conversation_transcripts,
         cfg.query_include_global_conversation_transcripts,
         cfg.query_include_recent_conversation_transcripts,
         cfg.recent_conversation_transcript_limit,
         app_cfg.search_chat_history,
+        emb_cfg.provider,
+        emb_cfg.model,
+        vec_cfg.backend,
+        vec_cfg.collection_name,
     )
+    if (False):
+        cache_key = (
+            conversation_id,
+            user_message.strip(),
+            cfg.query_global_artifacts,
+            cfg.query_include_project_conversation_transcripts,
+            cfg.query_include_global_conversation_transcripts,
+            cfg.query_include_recent_conversation_transcripts,
+            cfg.recent_conversation_transcript_limit,
+            app_cfg.search_chat_history,
+        )
+
     cached = _cache_get(cache_key)
     if cached is not None:
+        cached_results = cached.get("results") or []
+        cached_raw_results = cached.get("raw_results") or []
+        cached_debug = dict(cached.get("debug") or {})
+        cached_debug["cache_hit"] = True
+
         return {
             "ok": True,
             "mode": cfg.query_include,
-            #"mode": cfg.query_mode,
             "cached": True,
-            "results": cached,
-            "debug": {
-                "query_include": cfg.query_include,
-                "fts_enabled": do_fts,
-                "vector_enabled": do_vector,
-                "include_globals": cfg.query_global_artifacts,
-                "original_user_message": user_message,
-                "cache_hit": True,
-                "slices": [],
-                "shapes": [],
-                "search_queries": [],
-                "llm_expand_enabled": cfg.llm_expand_enabled,
-                "llm_expand_recommended": False,
-                "llm_expand_terms": [],
-            },
+            "raw_results": cached_raw_results,
+            "results": cached_results,
+            "debug": cached_debug,
         }
+    
+    if (False):
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return {
+                "ok": True,
+                "mode": cfg.query_include,
+                #"mode": cfg.query_mode,
+                "cached": True,
+                "results": cached,
+                "debug": {
+                    "query_include": cfg.query_include,
+                    "retrieval_mode": retrieval_mode,
+                    "fts_enabled": do_fts,
+                    "vector_enabled": do_vector,
+                    "include_globals": cfg.query_global_artifacts,
+                    "original_user_message": user_message,
+                    "cache_hit": True,
+                    "slices": [],
+                    "shapes": [],
+                    "search_queries": [],
+                    "llm_expand_enabled": cfg.llm_expand_enabled,
+                    "llm_expand_recommended": False,
+                    "llm_expand_terms": [],            },
+            }
 
     slices = slice_user_query(user_message, cfg=cfg)
     log_debug("RAG retrieve start: cid=%s include=%s slices=%d limit=%d msg_len=%d",
         conversation_id, cfg.query_include, len(slices), limit, len(user_message or ""))
 
     # First pass: FTS over each slice
-    merged: Dict[int, dict] = {}  # chunk_id -> best row
+    # merged: Dict[int, dict] = {}  # chunk_id -> best row
     
     fts_rows_all: List[dict] = []
     vector_rows_all: List[dict] = []
@@ -304,22 +363,29 @@ def retrieve_chunks_for_message(
 
             log_debug("RAG search: query=%r returned=%d", q, len(rows))
             for r in rows:
-                raw_rows.append(r)
+                row = dict(r)
+                row["fts_score"] = float(row.get("score") or 0.0)
+                row["vector_score"] = None
+                row["rrf_score"] = None
+                row["final_score"] = None
+                row["retrieval_channels"] = ["fts"]
 
-                cid = int(r["chunk_id"])
+                raw_rows.append(row)
+                fts_rows_all.append(row)
+
+                cid = int(row["chunk_id"])
                 raw_counts_by_chunk[cid] = raw_counts_by_chunk.get(cid, 0) + 1
 
-                aid = (r.get("artifact_id") or "").strip()
+                aid = (row.get("artifact_id") or "").strip()
                 if aid:
                     raw_counts_by_artifact[aid] = raw_counts_by_artifact.get(aid, 0) + 1
 
-                fid = (r.get("file_id") or "").strip()
+                fid = (row.get("file_id") or "").strip()
                 if fid:
                     raw_counts_by_file[fid] = raw_counts_by_file.get(fid, 0) + 1
 
-                #if cid not in merged or r.get("score", 1e9) < merged[cid].get("score", 1e9):
-                if cid not in merged or _retrieval_rank_key(r) < _retrieval_rank_key(merged[cid]):
-                    merged[cid] = r
+                #if cid not in merged or _retrieval_rank_key(row) < _retrieval_rank_key(merged[cid]):
+                #    merged[cid] = row
         if do_vector:
             try:
                 vrows = _retrieve_vector_rows_for_query(
@@ -341,17 +407,14 @@ def retrieve_chunks_for_message(
     # Results list
     fts_rows = []
     if do_fts:
-        # keep your existing merged FTS logic if you want:
         fts_merged: Dict[int, dict] = {}
-        for r in raw_rows:
-            if "vector" in (r.get("retrieval_channels") or []):
-                continue
+        for r in fts_rows_all:
             cid = int(r["chunk_id"])
             if cid not in fts_merged or _retrieval_rank_key(r) < _retrieval_rank_key(fts_merged[cid]):
                 fts_merged[cid] = r
         fts_rows = list(fts_merged.values())
         fts_rows.sort(key=_retrieval_rank_key)
-
+        
     vector_rows = []
     if do_vector:
         vector_best: Dict[int, dict] = {}
@@ -413,7 +476,18 @@ def retrieve_chunks_for_message(
 
     log_debug("RAG final: results=%d cache=%s",
         len(results), False)
-    _cache_put(cache_key, results, cfg.retrieval_cache_ttl_sec, cfg.retrieval_cache_max_entries)
+    #_cache_put(cache_key, results, cfg.retrieval_cache_ttl_sec, cfg.retrieval_cache_max_entries)
+    _cache_put(
+        cache_key,
+        {
+            "raw_results": raw_rows,
+            "results": results,
+            "debug": debug,
+        },
+        cfg.retrieval_cache_ttl_sec,
+        cfg.retrieval_cache_max_entries,
+    )
+
     return {
         "ok": True,
         "mode": cfg.query_include,

@@ -18,7 +18,6 @@ from openai import OpenAI, APIStatusError
 from openai.types.responses import ResponseInputParam
 # From openai/types/responses/response_create_params.py
 from contextlib import asynccontextmanager
-from pathlib import Path
 from pydantic import BaseModel
 
 from .logging_helper import log_warn
@@ -102,10 +101,13 @@ from .db import (
     delete_memory as db_delete_memory,    
 )
 
-# TODO move me into config.py
-DEBUG_ERRORS = os.getenv("DEBUG_ERRORS", "1") == "1"
+core_cfg = load_core_config()
+oai_cfg = load_openai_config()
 
-load_dotenv()
+if (False):
+    DEBUG_ERRORS = os.getenv("DEBUG_ERRORS", "1") == "1"
+    load_dotenv()
+DEBUG_ERRORS = core_cfg.debug_errors
 
 # Replaces the old @app.on_event("startup") and @app.on_event("shutdown") handlers with a single async context manager that can do both setup and teardown.
 #@app.on_event("startup")
@@ -128,7 +130,8 @@ async def lifespan(app: FastAPI):
     # Cleanup if you ever need it
 
 app = FastAPI(lifespan=lifespan)
-client = OpenAI()
+client = OpenAI(api_key=oai_cfg.open_ai_apikey)
+# client = OpenAI()
 
 # -------------------------
 # Global Vars
@@ -142,8 +145,6 @@ SOURCES_ROOT = DATA_DIR / "sources"
 # This is where APIs for supported toools (retrievers, file parsers, etc.) would live; you can add subdirs as needed
 TOOLS_DIR = HERE / "tools"
 
-# load from OpenAIConfig
-oai_cfg = load_openai_config()
 MODEL = oai_cfg.open_ai_model
 # TODO decide if TITLE_MODEL should have its own setting
 TITLE_MODEL = oai_cfg.summary_model

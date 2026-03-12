@@ -1,12 +1,20 @@
 from pathlib import Path
 import json
+import sys
+
 from openai import OpenAI
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from server.config import load_openai_config
 
 ALLOWED_PREFIXES = ("gpt-", "o1", "o3", "o4")
 
-client = OpenAI()
+oai_cfg = load_openai_config()
+client = OpenAI(api_key=oai_cfg.open_ai_apikey)
 
-ROOT = Path(__file__).resolve().parents[1]
 catalog_path = ROOT / "server" / "model_catalog.json"
 
 if catalog_path.exists():
@@ -29,7 +37,7 @@ for mid in models:
             "input_cost_per_million": None,
             "output_cost_per_million": None,
             "context_window": None,
-            "tags": ["auto-stub"]
+            "tags": ["auto-stub"],
         }
 
 catalog_path.write_text(json.dumps(catalog, indent=2), encoding="utf-8")

@@ -1,3 +1,27 @@
+# WyrmGPT TOML refactor steps
+_Last updated: Thursday, March 12, 2026_
+
+## Goal
+
+Add `config.toml` support **now**, while keeping `.env` as fallback during the migration window.
+
+This pass updates:
+
+- `server/config.py`
+- `server/main.py`
+- `server/scripts/summarize_conversations.py`
+
+and adds:
+
+- `config.toml.example`
+
+## Files to change
+
+### 1. `server/config.py`
+
+#### 1A. Replace lines 1–8 with:
+
+```python
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,66 +34,19 @@ try:
 except ModuleNotFoundError:
     import tomli as tomllib
 
+# from server.db import get_app_setting_bool
+
 load_dotenv()
+```
 
+#### 1B. Insert this block right after `_env_bool(...)` (after current line 37)
 
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(os.getenv(name, str(default)).strip())
-    except Exception:
-        return default
-
-
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.getenv(name, str(default)).strip())
-    except Exception:
-        return default
-
-
-def _env_str(name: str, default: str) -> str:
-    v = os.getenv(name)
-    return default if v is None else v.strip()
-
-
-def _bool_to_str(val: bool) -> str:
-    return str(val)
-
-
-def _str_to_bool(val: str) -> bool:
-    return str(val).strip().lower() in ("1", "true", "yes", "on")
-
-
-def _env_bool(name: str, default: bool) -> bool:
-    v = os.getenv(name)
-    if v is None:
-        return default
-    return _str_to_bool(v)
-
-
-def _normalize_csv_set(value: str, allowed: set[str]) -> str:
-    raw = str(value or "").replace(" ", ",")
-    parts = [p.strip().upper() for p in raw.split(",") if p.strip()]
-    kept: list[str] = []
-    seen: set[str] = set()
-    for p in parts:
-        if p in allowed and p not in seen:
-            kept.append(p)
-            seen.add(p)
-    return ",".join(kept)
-
-
-def _parse_csv_set(value: str, allowed: set[str]) -> set[str]:
-    norm = _normalize_csv_set(value, allowed)
-    return set(norm.split(",")) if norm else set()
-
-
+```python
 _MISSING = object()
 _TOML_CACHE: dict[str, Any] | None = None
 _HERE = Path(__file__).resolve().parent
 _ROOT = _HERE.parent
 _DEFAULT_TOML_PATH = _ROOT / "config.toml"
-_DEFAULT_SECRETS_TOML_PATH = _ROOT / "config.secrets.toml"
 
 
 def _config_toml_path() -> Path:
@@ -77,44 +54,20 @@ def _config_toml_path() -> Path:
     return Path(raw).expanduser() if raw else _DEFAULT_TOML_PATH
 
 
-def _secrets_toml_path() -> Path:
-    raw = os.getenv("WYRMGPT_SECRETS_TOML", "").strip()
-    return Path(raw).expanduser() if raw else _DEFAULT_SECRETS_TOML_PATH
-
-
-def _deep_merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    merged: dict[str, Any] = dict(base)
-    for key, value in override.items():
-        existing = merged.get(key)
-        if isinstance(existing, dict) and isinstance(value, dict):
-            merged[key] = _deep_merge_dicts(existing, value)
-        else:
-            merged[key] = value
-    return merged
-
-
-def _load_single_toml(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    with path.open("rb") as fh:
-        data = tomllib.load(fh) or {}
-    return data if isinstance(data, dict) else {}
-
-
 def _load_toml_config() -> dict[str, Any]:
     global _TOML_CACHE
     if _TOML_CACHE is not None:
         return _TOML_CACHE
 
-    base_cfg = _load_single_toml(_config_toml_path())
-    secrets_cfg = _load_single_toml(_secrets_toml_path())
-    _TOML_CACHE = _deep_merge_dicts(base_cfg, secrets_cfg)
+    path = _config_toml_path()
+    if path.exists():
+        with path.open("rb") as fh:
+            data = tomllib.load(fh) or {}
+            _TOML_CACHE = data if isinstance(data, dict) else {}
+    else:
+        _TOML_CACHE = {}
+
     return _TOML_CACHE
-
-
-def reset_config_cache() -> None:
-    global _TOML_CACHE
-    _TOML_CACHE = None
 
 
 def _toml_get(path: tuple[str, ...], default: Any = _MISSING) -> Any:
@@ -185,219 +138,19 @@ def _cfg_csv_set(*paths: tuple[str, ...], env_name: str, default: str, allowed: 
             raw = str(value)
         return _normalize_csv_set(raw, allowed)
     return _normalize_csv_set(_env_str(env_name, default), allowed)
+```
 
+#### 1C. In `CoreConfig`, add a new field after `debug_mode`
 
-@dataclass(frozen=True)
-class CoreConfig:
-    system_prompt_file: str = ".\\prompts\\_default_system_prompt.txt"
-    default_system_prompt: str = (
-        "You are a helpful assistant operating in a locally hosted scaffolding called "
-        "WyrmGPT. Be concise, candid, and technically accurate."
-    )
-    debug_mode: bool = False
-    debug_errors: bool = True
+```python
+debug_errors: bool = True
+```
 
+#### 1D. Replace `ensure_default_app_settings()` with:
 
-CORE_DEFAULTS: CoreConfig = CoreConfig()
-
-
-@dataclass(frozen=True)
-class OpenAIConfig:
-    open_ai_apikey: str = ""
-    open_ai_model: str = "gpt-5.4"
-    summary_model: str = "gpt-5-mini"
-
-
-OPENAI_DEFAULTS: OpenAIConfig = OpenAIConfig()
-
-
-@dataclass(frozen=True)
-class UIConfig:
-    local_timezone: str = "America/Los_Angeles"
-    context_preview_limit_min: int = 20
-    context_preview_limit_max: int = 200
-    min_rag_query_text_len: int = 5
-    context_idle_ms: int = 5000
-    transcript_idle_ms: int = 120000
-    debug_boot: bool = True
-
-
-UI_DEFAULTS: UIConfig = UIConfig()
-
-
-@dataclass(frozen=True)
-class SummaryConfig:
-    summary_max_tokens: int = 800
-    summary_conversation_prompt_file: str = ".\\prompts\\_summary_convo_prompt.txt"
-    summary_conversation_prompt: str = """
-        You are generating a memory summary for internal storage and later retrieval.
-
-        This is not a chat reply.
-        Do not ask questions.
-        Do not address the user.
-        Do not add greetings, closings, advice, commentary, or invitations to continue.
-
-        Read the entire transcript before writing.
-        Summarize the conversation as a whole, not just the last exchange.
-        Prefer chronological order: early important events first, later developments after.
-        If the conversation changes topics, mention the main topic shifts in order.
-
-        Include:
-        - the main topics discussed
-        - important facts learned
-        - decisions made
-        - unresolved questions or next steps
-
-        Omit:
-        - filler chatter
-        - repeated phrasing
-        - ornamental wording
-        - markdown
-        - headings
-        - bullets
-        - titles
-        - labels such as "Summary", "Summary:", or "Summary -"
-
-        Output only the summary text itself.
-        Write 2 to 5 short paragraphs in plain text.
-        Target roughly 180 to 450 words.
-    """
-    summary_reduce_threshold_chars: int = 18000
-    summary_chunk_target_chars: int = 7000
-    summary_chunk_hard_max_chars: int = 10000
-    summary_chunk_max_tokens: int = 350
-
-
-SUMMARY_DEFAULTS: SummaryConfig = SummaryConfig()
-
-
-@dataclass(frozen=True)
-class ContextConfig:
-    max_tokens: int = 6000
-    memory_pin_limit: int = 250
-    history_limit: int = 200
-    preview_limit: int = 20
-    estimate_model: str = "gpt-5-mini"
-
-
-CONTEXT_DEFAULTS: ContextConfig = ContextConfig()
-
-
-@dataclass(frozen=True)
-class RetrievalConfig:
-    query_include: str = "CHAT_SUMMARY,FTS,EMBEDDING"
-    query_expand_results: str = "FILE,MEMORY,CHAT"
-    query_max_full_files: int = 50
-    query_max_full_memories: int = 500
-    query_max_full_chats: int = 5
-    query_expand_min_artifact_hits: int = 2
-    query_expand_chat_window_before: int = 1
-    query_expand_chat_window_after: int = 1
-
-    query_global_artifacts: bool = True
-    max_terms: int = 14
-    max_phrase_words: int = 8
-    max_phrase_chars: int = 64
-    filler_words_file: str = ".\\FTS filler+stop words.txt"
-    filler_words: str = """
-        a, an, the, and, or, but, so, if, then, than, because, while, though,
-        to, of, in, on, at, by, for, with, from, as, into, about, over, under,
-        is, are, was, were, be, been, being, do, does, did, have, has, had,
-        i, me, my, mine, we, us, our, you, your, yours, he, him, his, she, her, hers, they, them, their, theirs,
-        it, its, this, that, these, those, there, here,
-        not, no, yes, ok, okay, like, just, really, very, maybe, basically, actually,
-        what, which, who, whom, when, where, why, how,
-        tell, know, about, please, show, explain, give, want, need
-        """
-
-    long_query_chars: int = 400
-    max_query_slices: int = 6
-
-    llm_expand_enabled: bool = True
-    llm_expand_prompt_file: str = ".\\prompts\\_expand_query_prompt.txt"
-    llm_expand_min_terms: int = 4
-    llm_expand_min_results: int = 3
-    llm_expand_max_keywords: int = 10
-    llm_expand_model: str = "gpt-5-mini"
-    llm_expand_max_tokens: int = 800
-
-    retrieval_cache_ttl_sec: float = 180.0
-    retrieval_cache_max_entries: int = 64
-
-    query_include_project_conversation_transcripts: bool = True
-    query_include_global_conversation_transcripts: bool = True
-    query_include_recent_conversation_transcripts: bool = True
-    recent_conversation_transcript_limit: int = 40
-
-
-RETRIEVAL_DEFAULTS: RetrievalConfig = RetrievalConfig()
-
-# Compatibility alias for older callers. Remove after imports/UI labels are fully renamed.
-QueryConfig = RetrievalConfig
-QUERY_DEFAULTS: RetrievalConfig = RETRIEVAL_DEFAULTS
-
-QUERY_INCLUDE_ALLOWED = {"FILE", "MEMORY", "CHAT", "CHAT_SUMMARY", "FTS", "EMBEDDING"}
-QUERY_EXPAND_ALLOWED = {"FILE", "MEMORY", "CHAT"}
-
-
-def _legacy_query_mode_to_include(mode: str) -> str:
-    mode = str(mode or "").strip().upper()
-    if mode == "FILES":
-        return "FILE"
-    if mode == "FTS":
-        return "FTS"
-    if mode == "VECTOR":
-        return "EMBEDDING"
-    if mode == "HYBRID":
-        return "FTS,EMBEDDING"
-    if mode == "ALL":
-        return "FILE,FTS,EMBEDDING"
-    return RETRIEVAL_DEFAULTS.query_include
-
-
-@dataclass(frozen=True)
-class EmbeddingConfig:
-    provider: str = "openai"
-    model: str = "text-embedding-3-large"
-    dimensions: int = 0
-    batch_size: int = 64
-    cache_enabled: bool = True
-    cache_dir: str = ".\\data\\embedding_cache"
-
-
-EMBEDDING_DEFAULTS: EmbeddingConfig = EmbeddingConfig()
-
-
-@dataclass(frozen=True)
-class VectorConfig:
-    backend: str = "qdrant_local"
-    collection_name: str = "wyrmgpt_chunks"
-    local_path: str = ".\\data\\qdrant"
-    server_url: str = ""
-    api_key: str = ""
-    distance_metric: str = "cosine"
-    search_limit: int = 24
-
-
-VECTOR_DEFAULTS: VectorConfig = VectorConfig()
-
-
-@dataclass
-class AppConfig:
-    search_chat_history: bool = True
-
-
-APP_DEFAULTS: AppConfig = AppConfig()
-
-
-class AppConfigKeys:
-    search_chat_history: str = "search_chat_history"
-
-
-APP_KEYS: AppConfigKeys = AppConfigKeys()
-
-
+```python
 def ensure_default_app_settings() -> None:
+    # keep it local to avoid circular imports
     from .db import ensure_default_app_setting
 
     scope_type = "global"
@@ -413,18 +166,11 @@ def ensure_default_app_settings() -> None:
         scope_type,
         scope_id,
     )
+```
 
+#### 1E. Replace `load_core_config()` with:
 
-def load_app_config() -> AppConfig:
-    from .db import get_app_setting_bool, init_schema
-
-    init_schema()
-    ensure_default_app_settings()
-    return AppConfig(
-        search_chat_history=get_app_setting_bool(APP_KEYS.search_chat_history)
-    )
-
-
+```python
 def load_core_config() -> CoreConfig:
     return CoreConfig(
         system_prompt_file=_cfg_str(
@@ -448,8 +194,11 @@ def load_core_config() -> CoreConfig:
             default=CORE_DEFAULTS.debug_errors,
         ),
     )
+```
 
+#### 1F. Replace `load_ui_config()` with:
 
+```python
 def load_ui_config() -> UIConfig:
     return UIConfig(
         local_timezone=_cfg_str(
@@ -488,8 +237,11 @@ def load_ui_config() -> UIConfig:
             default=UI_DEFAULTS.debug_boot,
         ),
     )
+```
 
+#### 1G. Replace `load_openai_config()` with:
 
+```python
 def load_openai_config() -> OpenAIConfig:
     return OpenAIConfig(
         open_ai_apikey=_cfg_str(
@@ -511,8 +263,11 @@ def load_openai_config() -> OpenAIConfig:
             default=OPENAI_DEFAULTS.summary_model,
         ),
     )
+```
 
+#### 1H. Replace `load_summary_config()` with:
 
+```python
 def load_summary_config() -> SummaryConfig:
     return SummaryConfig(
         summary_max_tokens=_cfg_int(
@@ -551,8 +306,11 @@ def load_summary_config() -> SummaryConfig:
             default=SUMMARY_DEFAULTS.summary_chunk_max_tokens,
         ),
     )
+```
 
+#### 1I. Replace `load_context_config()` with:
 
+```python
 def load_context_config() -> ContextConfig:
     return ContextConfig(
         max_tokens=_cfg_int(
@@ -581,12 +339,11 @@ def load_context_config() -> ContextConfig:
             default=CONTEXT_DEFAULTS.estimate_model,
         ),
     )
+```
 
+#### 1J. Replace `load_retrieval_config()` with:
 
-def load_query_config() -> RetrievalConfig:
-    return load_retrieval_config()
-
-
+```python
 def load_retrieval_config() -> RetrievalConfig:
     raw_include = _cfg_csv_set(
         ("retrieval", "query_include"),
@@ -595,18 +352,12 @@ def load_retrieval_config() -> RetrievalConfig:
         allowed=QUERY_INCLUDE_ALLOWED,
     )
 
-    if not raw_include:
-        raw_include = RETRIEVAL_DEFAULTS.query_include
-
     raw_expand = _cfg_csv_set(
         ("retrieval", "query_expand_results"),
         env_name="QUERY_EXPAND_RESULTS",
         default=RETRIEVAL_DEFAULTS.query_expand_results,
         allowed=QUERY_EXPAND_ALLOWED,
     )
-
-    if not raw_expand:
-        raw_expand = RETRIEVAL_DEFAULTS.query_expand_results
 
     return RetrievalConfig(
         query_include=raw_include,
@@ -639,8 +390,11 @@ def load_retrieval_config() -> RetrievalConfig:
         query_include_recent_conversation_transcripts=_cfg_bool(("retrieval", "query_include_recent_conversation_transcripts"), env_name="QUERY_INCLUDE_RECENT_CONVERSATION_TRANSCRIPTS", default=RETRIEVAL_DEFAULTS.query_include_recent_conversation_transcripts),
         recent_conversation_transcript_limit=max(1, _cfg_int(("retrieval", "recent_conversation_transcript_limit"), env_name="QUERY_RECENT_CONVERSATION_TRANSCRIPT_LIMIT", default=RETRIEVAL_DEFAULTS.recent_conversation_transcript_limit)),
     )
+```
 
+#### 1K. Replace `load_embedding_config()` with:
 
+```python
 def load_embedding_config() -> EmbeddingConfig:
     return EmbeddingConfig(
         provider=_cfg_str(("embeddings", "provider"), env_name="EMBEDDING_PROVIDER", default=EMBEDDING_DEFAULTS.provider),
@@ -650,8 +404,11 @@ def load_embedding_config() -> EmbeddingConfig:
         cache_enabled=_cfg_bool(("embeddings", "cache_enabled"), env_name="EMBEDDING_CACHE_ENABLED", default=EMBEDDING_DEFAULTS.cache_enabled),
         cache_dir=_cfg_str(("embeddings", "cache_dir"), env_name="EMBEDDING_CACHE_DIR", default=EMBEDDING_DEFAULTS.cache_dir),
     )
+```
 
+#### 1L. Replace `load_vector_config()` with:
 
+```python
 def load_vector_config() -> VectorConfig:
     return VectorConfig(
         backend=_cfg_str(("vector", "backend"), env_name="VECTOR_BACKEND", default=VECTOR_DEFAULTS.backend),
@@ -662,3 +419,66 @@ def load_vector_config() -> VectorConfig:
         distance_metric=_cfg_str(("vector", "distance_metric"), env_name="VECTOR_DISTANCE_METRIC", default=VECTOR_DEFAULTS.distance_metric),
         search_limit=max(1, _cfg_int(("vector", "search_limit"), env_name="VECTOR_SEARCH_LIMIT", default=VECTOR_DEFAULTS.search_limit)),
     )
+```
+
+### 2. `server/main.py`
+
+#### 2A. Remove these imports / lines
+
+Delete:
+
+```python
+import os
+from dotenv import load_dotenv
+```
+
+Delete:
+
+```python
+DEBUG_ERRORS = os.getenv("DEBUG_ERRORS", "1") == "1"
+load_dotenv()
+```
+
+#### 2B. Replace them with:
+
+```python
+DEBUG_ERRORS = load_core_config().debug_errors
+```
+
+Keep it near the top where `DEBUG_ERRORS` already lived.
+
+### 3. `server/scripts/summarize_conversations.py`
+
+#### 3A. Replace line 95
+
+Replace:
+
+```python
+ap.add_argument("--model", default=os.getenv("SUMMARY_MODEL") or os.getenv("MODEL") or ctx_cfg.estimate_model or "gpt-5-mini")
+```
+
+with:
+
+```python
+ap.add_argument("--model", default=oai_cfg.summary_model or ctx_cfg.estimate_model or "gpt-5-mini")
+```
+
+That makes the script obey TOML through `load_openai_config()`.
+
+### 4. Add `config.toml`
+
+Use the attached example and place it at repo root as `config.toml`.
+
+### 5. Test sequence
+
+1. Leave `.env` in place.
+2. Add `config.toml` with one obvious change, like timezone.
+3. Start the app.
+4. Verify `/api/ui_config` reflects TOML values.
+5. Verify OpenAI calls still work.
+6. Once stable, begin moving settings from `.env` into `config.toml`.
+
+## Attached file
+
+See:
+- `config.toml.example`
