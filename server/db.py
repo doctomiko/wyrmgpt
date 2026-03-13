@@ -16,15 +16,11 @@ from typing import Any, Callable, Iterable, Iterator
 
 from .logging_helper import log_debug
 from .config import (
-    AppConfig,
-    load_app_config,
-    UIConfig,
-    load_ui_config,
-    CoreConfig, 
-    load_core_config, 
-    RetrievalConfig, 
-    load_retrieval_config, 
+    load_app_config, load_ui_config,
+    RetrievalConfig, load_retrieval_config, 
+    load_import_config,
 )
+
 from .markdown_helper import autolink_text, apply_house_markdown_normalization
 from .chunking import chunk_text_with_hints
 # Support legacy migrations from v1-v7. You can remove this after a few releases once most users have migrated or started fresh.
@@ -38,7 +34,8 @@ _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 SCHEMA_VERSION = 18
 
-SIDECAR_THRESHOLD_BYTES = 500 * 1024 # 500KB default threshold for when to use sidecar files for artifact content
+IMPORT_CFG = load_import_config()
+SIDECAR_THRESHOLD_BYTES = IMPORT_CFG.artifact_sidecar_threshold_bytes # 500 * 1024 # 500KB default threshold for when to use sidecar files for artifact content
 
 # near the top of db.py, alongside other imports or type helpers:
 @dataclass
@@ -3542,16 +3539,12 @@ def reindex_corpus_for_conversation(
         conn.commit()  # sqlite + DDL: be explicit
         """
         # do self-heal / queries / chunk writes
+        # Ensure missing file artifacts are created (cheap now that it’s capped)
         ensure_files_artifacted_for_conversation(
             conversation_id=cid,
-            limit_per_scope=10,
+            limit_per_scope=IMPORT_CFG.ensure_files_limit_per_scope,
             include_global=include_global,
         )
-
-        # Ensure missing file artifacts are created (cheap now that it’s capped)
-        ensure_files_artifacted_for_conversation(conversation_id=cid, limit_per_scope=10, include_global=include_global)
-
-        #migrate_schema_v9(conn)  # safe to call repeatedly
 
         scope_keys = _scope_keys_for_conversation(conn, cid, include_global=include_global)
         artifact_rows = iter_artifacts_with_file_hints_for_scope_keys(conn, scope_keys)
@@ -5214,7 +5207,11 @@ def reset_all_artifacts() -> None:
         conn.commit()
         print("[db] reset_all_artifacts: done")
 
-def rebuild_file_artifacts_batch(conn, *, data_dir="data", sidecar_threshold_bytes=200_000) -> int:
+#def rebuild_file_artifacts_batch(conn, *, data_dir="data", sidecar_threshold_bytes=200_000) -> int:
+def rebuild_file_artifacts_batch(conn, *, data_dir="data", sidecar_threshold_bytes: int | None = None) -> int:
+    if sidecar_threshold_bytes is None:
+        sidecar_threshold_bytes = IMPORT_CFG.artifact_sidecar_threshold_bytes
+
     # IMPORTANT: import locally to avoid circular import at module load
     from .artifactor import extract_text_from_file
 

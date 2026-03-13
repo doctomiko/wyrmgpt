@@ -1,10 +1,13 @@
 # server/query_slicer.py
 import re
 from typing import List
-from .config import RetrievalConfig, load_retrieval_config
 
-def slice_user_query(text: str, cfg: RetrievalConfig | None = None) -> List[str]:
-    cfg = cfg or load_retrieval_config()
+from .config import QueryConfig, load_query_config
+
+#def slice_user_query(text: str, cfg: RetrievalConfig | None = None) -> List[str]:
+def slice_user_query(text: str, cfg: QueryConfig | None = None) -> List[str]:
+    cfg = cfg or load_query_config()
+    #cfg = cfg or load_retrieval_config()
     # max_slices: int = 6, long_query_chars: int = 400
     t = (text or "").strip()
     if not t:

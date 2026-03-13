@@ -4,7 +4,9 @@ from functools import lru_cache
 from typing import Dict, List, Tuple
 
 from .config import (
+    QueryConfig,
     RetrievalConfig,
+    load_query_config,
     load_retrieval_config,
     load_app_config,
     load_embedding_config,
@@ -203,8 +205,10 @@ def retrieve_chunks_for_message(
     user_message: str,
     limit: int = 8,
     cfg: RetrievalConfig | None = None,
+    qcfg: QueryConfig | None = None,
 ) -> dict:
     cfg = cfg or load_retrieval_config()
+    qcfg = qcfg or load_query_config()
     app_cfg = load_app_config()
 
     include_flags = {x.strip().upper() for x in (cfg.query_include or "").split(",") if x.strip()}
@@ -230,7 +234,7 @@ def retrieve_chunks_for_message(
         "slices": [],
         "shapes": [],
         "search_queries": [],
-        "llm_expand_enabled": cfg.llm_expand_enabled,
+        "llm_expand_enabled": qcfg.llm_expand_enabled, # cfg.llm_expand_enabled
         "llm_expand_recommended": False,
         "llm_expand_terms": [],
         "cache_hit": False,
@@ -250,12 +254,41 @@ def retrieve_chunks_for_message(
         cfg.query_include_global_conversation_transcripts,
         cfg.query_include_recent_conversation_transcripts,
         cfg.recent_conversation_transcript_limit,
+        cfg.retrieval_cache_ttl_sec,
+        cfg.retrieval_cache_max_entries,
+        qcfg.max_terms,
+        qcfg.max_phrase_words,
+        qcfg.max_phrase_chars,
+        qcfg.long_query_chars,
+        qcfg.max_query_slices,
+        qcfg.llm_expand_enabled,
+        qcfg.llm_expand_min_terms,
+        qcfg.llm_expand_min_results,
+        qcfg.llm_expand_max_keywords,
+        qcfg.llm_expand_model,
         app_cfg.search_chat_history,
         emb_cfg.provider,
         emb_cfg.model,
         vec_cfg.backend,
         vec_cfg.collection_name,
-    )
+    )    
+    if (False):
+        cache_key = (
+            conversation_id,
+            user_message.strip(),
+            cfg.query_include,
+            cfg.query_expand_results,
+            cfg.query_global_artifacts,
+            cfg.query_include_project_conversation_transcripts,
+            cfg.query_include_global_conversation_transcripts,
+            cfg.query_include_recent_conversation_transcripts,
+            cfg.recent_conversation_transcript_limit,
+            app_cfg.search_chat_history,
+            emb_cfg.provider,
+            emb_cfg.model,
+            vec_cfg.backend,
+            vec_cfg.collection_name,
+        )
     if (False):
         cache_key = (
             conversation_id,
@@ -309,7 +342,8 @@ def retrieve_chunks_for_message(
                     "llm_expand_terms": [],            },
             }
 
-    slices = slice_user_query(user_message, cfg=cfg)
+    #slices = slice_user_query(user_message, cfg=cfg)
+    slices = slice_user_query(user_message, cfg=qcfg)
     log_debug("RAG retrieve start: cid=%s include=%s slices=%d limit=%d msg_len=%d",
         conversation_id, cfg.query_include, len(slices), limit, len(user_message or ""))
 
@@ -327,7 +361,8 @@ def retrieve_chunks_for_message(
     for s in slices:
         if do_fts:
             # existing FTS code stays here
-            qs = shape_fts_query(s, cfg)
+            #qs = shape_fts_query(s, cfg)
+            qs = shape_fts_query(s, qcfg)
             log_debug("RAG slice: text=%r fts=%r terms=%r phrases=%r",
             s[:160], qs.fts_query, qs.kept_terms, qs.kept_phrases)
             q = qs.fts_query or s
@@ -461,17 +496,23 @@ def retrieve_chunks_for_message(
 
     # Heuristic LLM expansion hook (placeholder): only if enabled and low signal/low results.
     # We’ll wire the LLM call next, once you decide where it lives (main.py vs a helper module).
-    if cfg.llm_expand_enabled:
-        # count “signal terms” from the first slice’s shaper as a proxy
-        first_shape = shape_fts_query(slices[0], cfg) if slices else None
+    if qcfg.llm_expand_enabled:
+        first_shape = shape_fts_query(slices[0], qcfg) if slices else None
         term_count = len(first_shape.kept_terms) + len(first_shape.kept_phrases) if first_shape else 0
-        llm_expand_recommended = (term_count < cfg.llm_expand_min_terms or len(results) < cfg.llm_expand_min_results)
+        llm_expand_recommended = (term_count < qcfg.llm_expand_min_terms or len(results) < qcfg.llm_expand_min_results)
+        if (False): # cfg.llm_expand_enabled:
+            # count “signal terms” from the first slice’s shaper as a proxy
+            first_shape = shape_fts_query(slices[0], cfg) if slices else None
+            term_count = len(first_shape.kept_terms) + len(first_shape.kept_phrases) if first_shape else 0
+            llm_expand_recommended = (term_count < cfg.llm_expand_min_terms or len(results) < cfg.llm_expand_min_results)
+
         log_debug("RAG LLM assist: term_count=%s llm_expand_recommended=%s",
             term_count, llm_expand_recommended)
         debug["llm_expand_recommended"] = llm_expand_recommended
         debug["llm_expand_reason"] = (
             f"term_count={term_count}, results={len(results)}, "
-            f"min_terms={cfg.llm_expand_min_terms}, min_results={cfg.llm_expand_min_results}"
+            #f"min_terms={cfg.llm_expand_min_terms}, min_results={cfg.llm_expand_min_results}"
+            f"min_terms={qcfg.llm_expand_min_terms}, min_results={qcfg.llm_expand_min_results}"
         )
 
     log_debug("RAG final: results=%d cache=%s",

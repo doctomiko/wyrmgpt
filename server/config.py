@@ -6,9 +6,15 @@ from typing import Any
 from dotenv import load_dotenv
 
 try:
-    import tomllib
+    import tomllib  # Python 3.11+
 except ModuleNotFoundError:
-    import tomli as tomllib
+    try:
+        import tomli as tomllib  # Python <3.11, requires 'tomli'
+    except ModuleNotFoundError:
+        raise ImportError(
+            "Neither 'tomllib' nor 'tomli' could be imported. "
+            "Install 'tomli' for Python versions earlier than 3.11: pip install tomli"
+        )
 
 load_dotenv()
 
@@ -284,17 +290,7 @@ CONTEXT_DEFAULTS: ContextConfig = ContextConfig()
 
 
 @dataclass(frozen=True)
-class RetrievalConfig:
-    query_include: str = "CHAT_SUMMARY,FTS,EMBEDDING"
-    query_expand_results: str = "FILE,MEMORY,CHAT"
-    query_max_full_files: int = 50
-    query_max_full_memories: int = 500
-    query_max_full_chats: int = 5
-    query_expand_min_artifact_hits: int = 2
-    query_expand_chat_window_before: int = 1
-    query_expand_chat_window_after: int = 1
-
-    query_global_artifacts: bool = True
+class QueryConfig:
     max_terms: int = 14
     max_phrase_words: int = 8
     max_phrase_chars: int = 64
@@ -320,6 +316,21 @@ class RetrievalConfig:
     llm_expand_max_keywords: int = 10
     llm_expand_model: str = "gpt-5-mini"
     llm_expand_max_tokens: int = 800
+QUERY_DEFAULTS: QueryConfig = QueryConfig()
+
+
+@dataclass(frozen=True)
+class RetrievalConfig:
+    query_include: str = "CHAT_SUMMARY,FTS,EMBEDDING"
+    query_expand_results: str = "FILE,MEMORY,CHAT"
+    query_max_full_files: int = 50
+    query_max_full_memories: int = 500
+    query_max_full_chats: int = 5
+    query_expand_min_artifact_hits: int = 2
+    query_expand_chat_window_before: int = 1
+    query_expand_chat_window_after: int = 1
+
+    query_global_artifacts: bool = True
 
     retrieval_cache_ttl_sec: float = 180.0
     retrieval_cache_max_entries: int = 64
@@ -328,31 +339,25 @@ class RetrievalConfig:
     query_include_global_conversation_transcripts: bool = True
     query_include_recent_conversation_transcripts: bool = True
     recent_conversation_transcript_limit: int = 40
-
-
 RETRIEVAL_DEFAULTS: RetrievalConfig = RetrievalConfig()
-
-# Compatibility alias for older callers. Remove after imports/UI labels are fully renamed.
-QueryConfig = RetrievalConfig
-QUERY_DEFAULTS: RetrievalConfig = RETRIEVAL_DEFAULTS
 
 QUERY_INCLUDE_ALLOWED = {"FILE", "MEMORY", "CHAT", "CHAT_SUMMARY", "FTS", "EMBEDDING"}
 QUERY_EXPAND_ALLOWED = {"FILE", "MEMORY", "CHAT"}
 
-
-def _legacy_query_mode_to_include(mode: str) -> str:
-    mode = str(mode or "").strip().upper()
-    if mode == "FILES":
-        return "FILE"
-    if mode == "FTS":
-        return "FTS"
-    if mode == "VECTOR":
-        return "EMBEDDING"
-    if mode == "HYBRID":
-        return "FTS,EMBEDDING"
-    if mode == "ALL":
-        return "FILE,FTS,EMBEDDING"
-    return RETRIEVAL_DEFAULTS.query_include
+if (False):
+    def _legacy_query_mode_to_include(mode: str) -> str:
+        mode = str(mode or "").strip().upper()
+        if mode == "FILES":
+            return "FILE"
+        if mode == "FTS":
+            return "FTS"
+        if mode == "VECTOR":
+            return "EMBEDDING"
+        if mode == "HYBRID":
+            return "FTS,EMBEDDING"
+        if mode == "ALL":
+            return "FILE,FTS,EMBEDDING"
+        return RETRIEVAL_DEFAULTS.query_include
 
 
 @dataclass(frozen=True)
@@ -377,9 +382,22 @@ class VectorConfig:
     api_key: str = ""
     distance_metric: str = "cosine"
     search_limit: int = 24
-
-
 VECTOR_DEFAULTS: VectorConfig = VectorConfig()
+
+
+@dataclass(frozen=True)
+class ImportConfig:
+    prose_chunk_target_chars: int = 6000
+    prose_chunk_hard_max_chars: int = 9000
+    code_chunk_target_chars: int = 5200
+    code_chunk_hard_max_chars: int = 7800
+    transcript_chunk_target_chars: int = 2200
+    transcript_chunk_hard_max_chars: int = 3200
+    trailing_merge_min_chars: int = 800
+
+    ensure_files_limit_per_scope: int = 10
+    artifact_sidecar_threshold_bytes: int = 500 * 1024
+IMPORT_DEFAULTS: ImportConfig = ImportConfig()
 
 
 @dataclass
@@ -583,8 +601,23 @@ def load_context_config() -> ContextConfig:
     )
 
 
-def load_query_config() -> RetrievalConfig:
-    return load_retrieval_config()
+def load_query_config() -> QueryConfig:
+    return QueryConfig(
+        max_terms=max(1, _cfg_int(("query", "max_terms"), env_name="QUERY_MAX_TERMS", default=QUERY_DEFAULTS.max_terms)),
+        max_phrase_words=max(1, _cfg_int(("query", "max_phrase_words"), env_name="QUERY_MAX_PHRASE_WORDS", default=QUERY_DEFAULTS.max_phrase_words)),
+        max_phrase_chars=max(1, _cfg_int(("query", "max_phrase_chars"), env_name="QUERY_MAX_PHRASE_CHARS", default=QUERY_DEFAULTS.max_phrase_chars)),
+        filler_words_file=_cfg_str(("query", "filler_words_file"), env_name="QUERY_FILLER_WORDS_FILE", default=QUERY_DEFAULTS.filler_words_file),
+        filler_words=_cfg_str(("query", "filler_words"), env_name="QUERY_FILLER_WORDS", default=QUERY_DEFAULTS.filler_words),
+        long_query_chars=max(1, _cfg_int(("query", "long_query_chars"), env_name="QUERY_LONG_CHARS", default=QUERY_DEFAULTS.long_query_chars)),
+        max_query_slices=max(1, _cfg_int(("query", "max_query_slices"), env_name="QUERY_MAX_SLICES", default=QUERY_DEFAULTS.max_query_slices)),
+        llm_expand_enabled=_cfg_bool(("query", "llm_expand_enabled"), env_name="QUERY_LLM_EXPAND", default=QUERY_DEFAULTS.llm_expand_enabled),
+        llm_expand_prompt_file=_cfg_str(("query", "llm_expand_prompt_file"), env_name="EXPAND_QUERY_PROMPT_FILE", default=QUERY_DEFAULTS.llm_expand_prompt_file),
+        llm_expand_min_terms=max(1, _cfg_int(("query", "llm_expand_min_terms"), env_name="QUERY_LLM_MIN_TERMS", default=QUERY_DEFAULTS.llm_expand_min_terms)),
+        llm_expand_min_results=max(1, _cfg_int(("query", "llm_expand_min_results"), env_name="QUERY_LLM_MIN_RESULTS", default=QUERY_DEFAULTS.llm_expand_min_results)),
+        llm_expand_max_keywords=max(1, _cfg_int(("query", "llm_expand_max_keywords"), env_name="QUERY_LLM_MAX_KEYWORDS", default=QUERY_DEFAULTS.llm_expand_max_keywords)),
+        llm_expand_model=_cfg_str(("query", "llm_expand_model"), env_name="QUERY_LLM_EXPAND_MODEL", default=QUERY_DEFAULTS.llm_expand_model),
+        llm_expand_max_tokens=max(1, _cfg_int(("query", "llm_expand_max_tokens"), env_name="QUERY_LLM_EXPAND_MAX_TOKENS", default=QUERY_DEFAULTS.llm_expand_max_tokens)),
+    )
 
 
 def load_retrieval_config() -> RetrievalConfig:
@@ -594,7 +627,6 @@ def load_retrieval_config() -> RetrievalConfig:
         default=RETRIEVAL_DEFAULTS.query_include,
         allowed=QUERY_INCLUDE_ALLOWED,
     )
-
     if not raw_include:
         raw_include = RETRIEVAL_DEFAULTS.query_include
 
@@ -604,7 +636,6 @@ def load_retrieval_config() -> RetrievalConfig:
         default=RETRIEVAL_DEFAULTS.query_expand_results,
         allowed=QUERY_EXPAND_ALLOWED,
     )
-
     if not raw_expand:
         raw_expand = RETRIEVAL_DEFAULTS.query_expand_results
 
@@ -618,20 +649,6 @@ def load_retrieval_config() -> RetrievalConfig:
         query_expand_chat_window_before=max(0, _cfg_int(("retrieval", "query_expand_chat_window_before"), env_name="QUERY_EXPAND_CHAT_WINDOW_BEFORE", default=RETRIEVAL_DEFAULTS.query_expand_chat_window_before)),
         query_expand_chat_window_after=max(0, _cfg_int(("retrieval", "query_expand_chat_window_after"), env_name="QUERY_EXPAND_CHAT_WINDOW_AFTER", default=RETRIEVAL_DEFAULTS.query_expand_chat_window_after)),
         query_global_artifacts=_cfg_bool(("retrieval", "query_global_artifacts"), env_name="QUERY_GLOBAL_ARTIFACTS", default=RETRIEVAL_DEFAULTS.query_global_artifacts),
-        max_terms=max(1, _cfg_int(("retrieval", "max_terms"), env_name="QUERY_MAX_TERMS", default=RETRIEVAL_DEFAULTS.max_terms)),
-        max_phrase_words=max(1, _cfg_int(("retrieval", "max_phrase_words"), env_name="QUERY_MAX_PHRASE_WORDS", default=RETRIEVAL_DEFAULTS.max_phrase_words)),
-        max_phrase_chars=max(1, _cfg_int(("retrieval", "max_phrase_chars"), env_name="QUERY_MAX_PHRASE_CHARS", default=RETRIEVAL_DEFAULTS.max_phrase_chars)),
-        filler_words_file=_cfg_str(("retrieval", "filler_words_file"), env_name="QUERY_FILLER_WORDS_FILE", default=RETRIEVAL_DEFAULTS.filler_words_file),
-        filler_words=_cfg_str(("retrieval", "filler_words"), env_name="QUERY_FILLER_WORDS", default=RETRIEVAL_DEFAULTS.filler_words),
-        long_query_chars=max(1, _cfg_int(("retrieval", "long_query_chars"), env_name="QUERY_LONG_CHARS", default=RETRIEVAL_DEFAULTS.long_query_chars)),
-        max_query_slices=max(1, _cfg_int(("retrieval", "max_query_slices"), env_name="QUERY_MAX_SLICES", default=RETRIEVAL_DEFAULTS.max_query_slices)),
-        llm_expand_enabled=_cfg_bool(("retrieval", "llm_expand_enabled"), env_name="QUERY_LLM_EXPAND", default=RETRIEVAL_DEFAULTS.llm_expand_enabled),
-        llm_expand_prompt_file=_cfg_str(("retrieval", "llm_expand_prompt_file"), env_name="EXPAND_QUERY_PROMPT_FILE", default=RETRIEVAL_DEFAULTS.llm_expand_prompt_file),
-        llm_expand_min_terms=max(1, _cfg_int(("retrieval", "llm_expand_min_terms"), env_name="QUERY_LLM_MIN_TERMS", default=RETRIEVAL_DEFAULTS.llm_expand_min_terms)),
-        llm_expand_min_results=max(1, _cfg_int(("retrieval", "llm_expand_min_results"), env_name="QUERY_LLM_MIN_RESULTS", default=RETRIEVAL_DEFAULTS.llm_expand_min_results)),
-        llm_expand_max_keywords=max(1, _cfg_int(("retrieval", "llm_expand_max_keywords"), env_name="QUERY_LLM_MAX_KEYWORDS", default=RETRIEVAL_DEFAULTS.llm_expand_max_keywords)),
-        llm_expand_model=_cfg_str(("retrieval", "llm_expand_model"), env_name="QUERY_LLM_EXPAND_MODEL", default=RETRIEVAL_DEFAULTS.llm_expand_model),
-        llm_expand_max_tokens=max(1, _cfg_int(("retrieval", "llm_expand_max_tokens"), env_name="QUERY_LLM_EXPAND_MAX_TOKENS", default=RETRIEVAL_DEFAULTS.llm_expand_max_tokens)),
         retrieval_cache_ttl_sec=_cfg_float(("retrieval", "retrieval_cache_ttl_sec"), env_name="QUERY_CACHE_TTL_SEC", default=RETRIEVAL_DEFAULTS.retrieval_cache_ttl_sec),
         retrieval_cache_max_entries=max(1, _cfg_int(("retrieval", "retrieval_cache_max_entries"), env_name="QUERY_CACHE_MAX", default=RETRIEVAL_DEFAULTS.retrieval_cache_max_entries)),
         query_include_project_conversation_transcripts=_cfg_bool(("retrieval", "query_include_project_conversation_transcripts"), env_name="QUERY_INCLUDE_PROJECT_CONVERSATION_TRANSCRIPTS", default=RETRIEVAL_DEFAULTS.query_include_project_conversation_transcripts),
@@ -661,4 +678,18 @@ def load_vector_config() -> VectorConfig:
         api_key=_cfg_str(("vector", "api_key"), env_name="VECTOR_API_KEY", default=VECTOR_DEFAULTS.api_key),
         distance_metric=_cfg_str(("vector", "distance_metric"), env_name="VECTOR_DISTANCE_METRIC", default=VECTOR_DEFAULTS.distance_metric),
         search_limit=max(1, _cfg_int(("vector", "search_limit"), env_name="VECTOR_SEARCH_LIMIT", default=VECTOR_DEFAULTS.search_limit)),
+    )
+
+
+def load_import_config() -> ImportConfig:
+    return ImportConfig(
+        prose_chunk_target_chars=max(1, _cfg_int(("import", "prose_chunk_target_chars"), env_name="IMPORT_PROSE_CHUNK_TARGET_CHARS", default=IMPORT_DEFAULTS.prose_chunk_target_chars)),
+        prose_chunk_hard_max_chars=max(1, _cfg_int(("import", "prose_chunk_hard_max_chars"), env_name="IMPORT_PROSE_CHUNK_HARD_MAX_CHARS", default=IMPORT_DEFAULTS.prose_chunk_hard_max_chars)),
+        code_chunk_target_chars=max(1, _cfg_int(("import", "code_chunk_target_chars"), env_name="IMPORT_CODE_CHUNK_TARGET_CHARS", default=IMPORT_DEFAULTS.code_chunk_target_chars)),
+        code_chunk_hard_max_chars=max(1, _cfg_int(("import", "code_chunk_hard_max_chars"), env_name="IMPORT_CODE_CHUNK_HARD_MAX_CHARS", default=IMPORT_DEFAULTS.code_chunk_hard_max_chars)),
+        transcript_chunk_target_chars=max(1, _cfg_int(("import", "transcript_chunk_target_chars"), env_name="IMPORT_TRANSCRIPT_CHUNK_TARGET_CHARS", default=IMPORT_DEFAULTS.transcript_chunk_target_chars)),
+        transcript_chunk_hard_max_chars=max(1, _cfg_int(("import", "transcript_chunk_hard_max_chars"), env_name="IMPORT_TRANSCRIPT_CHUNK_HARD_MAX_CHARS", default=IMPORT_DEFAULTS.transcript_chunk_hard_max_chars)),
+        trailing_merge_min_chars=max(1, _cfg_int(("import", "trailing_merge_min_chars"), env_name="IMPORT_TRAILING_MERGE_MIN_CHARS", default=IMPORT_DEFAULTS.trailing_merge_min_chars)),
+        ensure_files_limit_per_scope=max(1, _cfg_int(("import", "ensure_files_limit_per_scope"), env_name="IMPORT_ENSURE_FILES_LIMIT_PER_SCOPE", default=IMPORT_DEFAULTS.ensure_files_limit_per_scope)),
+        artifact_sidecar_threshold_bytes=max(1, _cfg_int(("import", "artifact_sidecar_threshold_bytes"), env_name="IMPORT_ARTIFACT_SIDECAR_THRESHOLD_BYTES", default=IMPORT_DEFAULTS.artifact_sidecar_threshold_bytes)),
     )

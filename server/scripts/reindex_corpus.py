@@ -8,6 +8,7 @@ import time
 # Adds repo root (two levels up) to sys.path so "import server.*" works.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
+from server.config import load_import_config
 from server.db import db_session, reindex_corpus_for_conversation, ensure_files_artifacted_for_conversation, _migrate_schema_v9
 
 def list_all_conversation_ids(include_archived: bool = False) -> list[str]:
@@ -54,6 +55,8 @@ def main():
     ap.add_argument("--yes", action="store_true", help="Skip confirmation prompt when reindexing ALL conversations")
     ap.add_argument("--json", action="store_true", help="Emit machine-readable JSON summary at end")
     args = ap.parse_args()
+
+    import_cfg = load_import_config()
 
     if args.conversation_id:
         cid = args.conversation_id.strip()
@@ -105,9 +108,14 @@ def main():
     for i, cid in enumerate(convo_ids, start=1):
         ensure_files_artifacted_for_conversation(
             conversation_id=cid,
-            limit_per_scope=25,
+            limit_per_scope=import_cfg.ensure_files_limit_per_scope,
             include_global=True,
         )
+        #ensure_files_artifacted_for_conversation(
+        #    conversation_id=cid,
+        #    limit_per_scope=25,
+        #    include_global=True,
+        #)
 
         prefix = f"[{i}/{n_total}]"
         print(f"{prefix} Reindexing conversation {cid} ...", end="", flush=True)

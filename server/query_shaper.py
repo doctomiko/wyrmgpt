@@ -5,7 +5,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import List, Set
 
-from .config import RetrievalConfig, load_retrieval_config
+#from .config import RetrievalConfig, load_retrieval_config
+from .config import QueryConfig, load_query_config
 
 DEFAULT_FILLER_WORDS: Set[str] = {
     "a","an","the","and","or","but","so","if","then","than","because","while","though",
@@ -64,8 +65,10 @@ def _parse_filler_words(text: str) -> Set[str]:
 
 
 @lru_cache(maxsize=16)
-def load_filler_words_cached(filepath: str | None = None, fallback_text: str | None = None, cfg: RetrievalConfig | None = None) -> frozenset[str]:
-    cfg = cfg or load_retrieval_config()
+#def load_filler_words_cached(filepath: str | None = None, fallback_text: str | None = None, cfg: RetrievalConfig | None = None) -> frozenset[str]:
+#    cfg = cfg or load_retrieval_config()
+def load_filler_words_cached(filepath: str | None = None, fallback_text: str | None = None, cfg: QueryConfig | None = None) -> frozenset[str]:
+    cfg = cfg or load_query_config()
     filepath = filepath or cfg.filler_words_file
     fallback_text = fallback_text or cfg.filler_words
     # 1) file wins if present and readable
@@ -87,8 +90,8 @@ def load_filler_words_cached(filepath: str | None = None, fallback_text: str | N
     # 3) hardcoded backup
     return frozenset(DEFAULT_FILLER_WORDS)
 
-
-def _get_filler_words(cfg: RetrievalConfig) -> Set[str]:
+#def _get_filler_words(cfg: RetrievalConfig) -> Set[str]:
+def _get_filler_words(cfg: QueryConfig) -> Set[str]:
     return set(load_filler_words_cached(cfg.filler_words_file or "", cfg.filler_words or ""))
 
 
@@ -119,7 +122,8 @@ def _phrase_is_usable(phrase: str, *, max_words: int, max_chars: int, filler_wor
     # phrase must contain at least one interesting token
     return any(_is_interesting_token(w, filler_words) for w in words)
 
-def shape_fts_query(user_text: str, cfg: RetrievalConfig | None = None) -> QueryShape:
+#def shape_fts_query(user_text: str, cfg: RetrievalConfig | None = None) -> QueryShape:
+def shape_fts_query(user_text: str, cfg: QueryConfig | None = None) -> QueryShape:
     """
     Build an FTS MATCH query from user input.
 
@@ -128,7 +132,8 @@ def shape_fts_query(user_text: str, cfg: RetrievalConfig | None = None) -> Query
     - Stopwords/glue words removed
     - Keeps 'belongs' terms: identifiers, filenames, long-ish words, numbers
     """
-    cfg = cfg or load_retrieval_config()
+    #cfg = cfg or load_retrieval_config()
+    cfg = cfg or load_query_config()
     # use cfg.max_terms, cfg.max_phrase_words, cfg.max_phrase_chars
     filler_words = _get_filler_words(cfg)
 

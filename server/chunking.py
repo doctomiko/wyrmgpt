@@ -6,22 +6,27 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from .config import load_import_config
+
 # -----------------------------
 # Tunables (adjust later)
 # -----------------------------
 
+_IMPORT_CFG = load_import_config()
+
 # Bigger chunks (hybrid soon). Characters are a fine proxy for now.
-PROSE_CHUNK_TARGET_CHARS = 6000
-PROSE_CHUNK_HARD_MAX_CHARS = 9000
+PROSE_CHUNK_TARGET_CHARS = _IMPORT_CFG.prose_chunk_target_chars
+PROSE_CHUNK_HARD_MAX_CHARS = _IMPORT_CFG.prose_chunk_hard_max_chars
 
-CODE_CHUNK_TARGET_CHARS = 5200
-CODE_CHUNK_HARD_MAX_CHARS = 7800
+CODE_CHUNK_TARGET_CHARS = _IMPORT_CFG.code_chunk_target_chars
+CODE_CHUNK_HARD_MAX_CHARS = _IMPORT_CFG.code_chunk_hard_max_chars
 
-TRANSCRIPT_CHUNK_TARGET_CHARS = 2200
-TRANSCRIPT_CHUNK_HARD_MAX_CHARS = 3200
+TRANSCRIPT_CHUNK_TARGET_CHARS = _IMPORT_CFG.transcript_chunk_target_chars
+TRANSCRIPT_CHUNK_HARD_MAX_CHARS = _IMPORT_CFG.transcript_chunk_hard_max_chars
 
 # When a trailing chunk is tiny, merge it into the previous chunk if it fits.
-TRAILING_MERGE_MIN_CHARS = 800
+TRAILING_MERGE_MIN_CHARS = _IMPORT_CFG.trailing_merge_min_chars
+
 
 # File extensions that we treat as code.
 CODE_EXTENSIONS = {

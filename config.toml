@@ -47,6 +47,14 @@ query_expand_min_artifact_hits = 2
 query_expand_chat_window_before = 1
 query_expand_chat_window_after = 1
 query_global_artifacts = true
+retrieval_cache_ttl_sec = 180.0
+retrieval_cache_max_entries = 64
+query_include_project_conversation_transcripts = true
+query_include_global_conversation_transcripts = true
+query_include_recent_conversation_transcripts = true
+recent_conversation_transcript_limit = 40
+
+[query]
 max_terms = 14
 max_phrase_words = 8
 max_phrase_chars = 64
@@ -61,12 +69,17 @@ llm_expand_min_results = 3
 llm_expand_max_keywords = 10
 llm_expand_model = "gpt-5-mini"
 llm_expand_max_tokens = 800
-retrieval_cache_ttl_sec = 180.0
-retrieval_cache_max_entries = 64
-query_include_project_conversation_transcripts = true
-query_include_global_conversation_transcripts = true
-query_include_recent_conversation_transcripts = true
-recent_conversation_transcript_limit = 40
+
+[import]
+prose_chunk_target_chars = 6000
+prose_chunk_hard_max_chars = 9000
+code_chunk_target_chars = 5200
+code_chunk_hard_max_chars = 7800
+transcript_chunk_target_chars = 2200
+transcript_chunk_hard_max_chars = 3200
+trailing_merge_min_chars = 800
+ensure_files_limit_per_scope = 10
+artifact_sidecar_threshold_bytes = 512000
 
 [embeddings]
 provider = "openai"
