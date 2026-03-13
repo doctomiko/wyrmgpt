@@ -28,11 +28,13 @@ from .db_migrate import _migrate_schema_legacy
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
-DB_PATH = DATA_DIR / "callie_mvp.sqlite3"
+SQL_DIR = DATA_DIR / "sql"
+DB_PATH = SQL_DIR / "wyrmgpt.sqlite3"
+
 _VALID_TABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 IMPORT_CFG = load_import_config()
 SIDECAR_THRESHOLD_BYTES = IMPORT_CFG.artifact_sidecar_threshold_bytes # 500 * 1024 # 500KB default threshold for when to use sidecar files for artifact content
@@ -886,6 +888,30 @@ def _migrate_schema_v18(conn) -> None:
         "CREATE INDEX IF NOT EXISTS idx_chunk_embedding_state_status ON chunk_embedding_state(status)"
     )
 
+def _migrate_schema_v19(conn) -> None:
+    conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS import_identities (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        import_source TEXT NOT NULL,          -- e.g. 'openai-export-zip'
+        asset_type TEXT NOT NULL,             -- project | conversation | message | file | artifact
+        local_id TEXT NOT NULL,               -- store everything as text, even int IDs
+        import_id TEXT NOT NULL,              -- stable external ID
+        imported_name TEXT,                   -- the name/title/path we saw in the source
+        imported_parent_id TEXT,              -- optional: parent external ID
+        raw_json TEXT,                        -- optional extra metadata blob
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(import_source, asset_type, import_id)
+    );
+    """)
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_import_identities_local
+        ON import_identities(asset_type, local_id);
+    """
+    )
+
 MIGRATIONS: list[tuple[int, Callable]] = [
     (8, _migrate_schema_v8),
     (9, _migrate_schema_v9),
@@ -898,6 +924,7 @@ MIGRATIONS: list[tuple[int, Callable]] = [
     (16, _migrate_schema_v16),
     (17, _migrate_schema_v17),
     (18, _migrate_schema_v18),
+    (19, _migrate_schema_v19),
 ]
 
 # endregion
@@ -1048,6 +1075,79 @@ def init_schema() -> None:
                 current = version
         _end_schema_init(conn, original, current)        
 
+# endregion
+
+# region Data Import Helpers
+
+def upsert_import_identity(
+    *,
+    import_source: str,
+    asset_type: str,
+    local_id: str | int,
+    import_id: str,
+    imported_name: str | None = None,
+    imported_parent_id: str | None = None,
+    raw_json: dict | list | str | None = None,
+) -> None:
+    now = _utc_now_iso()
+    local_id = str(local_id)
+    import_id = (import_id or "").strip()
+    if not import_source or not asset_type or not local_id or not import_id:
+        raise ValueError("import_source, asset_type, local_id, and import_id are required")
+
+    raw_json_text = None
+    if raw_json is not None:
+        raw_json_text = json.dumps(raw_json, ensure_ascii=False)
+
+    with db_session() as conn:
+        conn.execute(
+            """
+            INSERT INTO import_identities(
+                import_source, asset_type, local_id, import_id,
+                imported_name, imported_parent_id, raw_json,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(import_source, asset_type, import_id) DO UPDATE SET
+                local_id = excluded.local_id,
+                imported_name = COALESCE(excluded.imported_name, import_identities.imported_name),
+                imported_parent_id = COALESCE(excluded.imported_parent_id, import_identities.imported_parent_id),
+                raw_json = COALESCE(excluded.raw_json, import_identities.raw_json),
+                updated_at = excluded.updated_at
+            """,
+            (
+                import_source,
+                asset_type,
+                local_id,
+                import_id,
+                imported_name,
+                imported_parent_id,
+                raw_json_text,
+                now,
+                now,
+            ),
+        )
+
+def find_local_id_by_import_identity(
+    *,
+    import_source: str,
+    asset_type: str,
+    import_id: str,
+) -> str | None:
+    with db_session() as conn:
+        row = conn.execute(
+            """
+            SELECT local_id
+            FROM import_identities
+            WHERE import_source = ?
+              AND asset_type = ?
+              AND import_id = ?
+            LIMIT 1
+            """,
+            (import_source, asset_type, import_id),
+        ).fetchone()
+        return row["local_id"] if row else None
+    
 # endregion
 
 # region App Configuration

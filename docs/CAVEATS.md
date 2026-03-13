@@ -62,7 +62,7 @@ In short, this app gives you maximum control. But it also makes you responsible 
 
 - Model catalog & scripts: `server/scripts/sync_model_catalog.py` requires an OpenAI API key and will write to `server/model_catalog.json`. Back up the catalog before running the script; review its output and expectations.
 
-- Backups & WAL files: the DB lives at `data/callie_mvp.sqlite3` and the app uses WAL journaling. When backing up the DB, copy the entire `data/` folder and include `-wal` and `-shm` files for a consistent snapshot.
+- Backups & WAL files: the DB lives at `data/sql/wyrmgpt.sqlite3` and the app uses WAL journaling. When backing up the DB, copy the entire `data/` folder and include `-wal` and `-shm` files for a consistent snapshot.
 
 - Migration / reset scripts: `server/scripts/migrate_reset_v2.py` and other helpers may assume an empty DB or perform destructive changes if run recklessly. Warn users in docs before running migration or reset scripts.
 
