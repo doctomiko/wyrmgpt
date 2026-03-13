@@ -1,7 +1,6 @@
 import hashlib
 import anyio
 import asyncio
-import os
 import re
 import uuid
 import json
@@ -9,7 +8,6 @@ import time
 import traceback
 from pathlib import Path
 from typing import Optional, cast, Any, Callable
-from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, Response, status, UploadFile, File
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -27,12 +25,10 @@ from .summary_helper import summarize_conversation_text
 from .query_retrieval import retrieve_chunks_for_message
 # Big Include Blocks for config and db
 from .config import (
-    CoreConfig, load_core_config,
+    load_core_config, load_openai_config, load_ui_config,
     ContextConfig, load_context_config,
-    OpenAIConfig, load_openai_config,
     RetrievalConfig, load_retrieval_config,
     SummaryConfig, load_summary_config,
-    UIConfig, load_ui_config,
     # app_settings access
     APP_KEYS, load_app_config,
     # Other helpers and vars
