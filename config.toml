@@ -3,7 +3,7 @@
 # TOML values take precedence; .env remains as fallback during migration.
 
 [core]
-system_prompt_file = ".\\prompts\\callie3rd_prompt.txt"
+system_prompt_file = "./prompts/callie3rd_prompt.txt"
 # default_system_prompt = "You are a helpful assistant..."
 debug_mode = true
 debug_errors = true
@@ -23,7 +23,7 @@ debug_boot = true
 
 [summary]
 summary_max_tokens = 800
-summary_conversation_prompt_file = ".\\prompts\\_summary_convo_prompt.txt"
+summary_conversation_prompt_file = "./prompts/_summary_convo_prompt.txt"
 # summary_conversation_prompt = """..."""
 summary_reduce_threshold_chars = 18000
 summary_chunk_target_chars = 7000
@@ -58,12 +58,12 @@ recent_conversation_transcript_limit = 40
 max_terms = 14
 max_phrase_words = 8
 max_phrase_chars = 64
-filler_words_file = ".\\FTS filler+stop words.txt"
+filler_words_file = "./FTS filler+stop words.txt"
 # filler_words = "a, an, the, ..."
 long_query_chars = 400
 max_query_slices = 6
 llm_expand_enabled = true
-llm_expand_prompt_file = ".\\prompts\\_expand_query_prompt.txt"
+llm_expand_prompt_file = "./prompts/_expand_query_prompt.txt"
 llm_expand_min_terms = 4
 llm_expand_min_results = 3
 llm_expand_max_keywords = 10
@@ -87,12 +87,12 @@ model = "text-embedding-3-large"
 dimensions = 0
 batch_size = 64
 cache_enabled = true
-cache_dir = ".\\data\\embedding_cache"
+cache_dir = "./data/embedding_cache"
 
 [vector]
 backend = "qdrant_local"
 collection_name = "wyrmgpt_chunks"
-local_path = ".\\data\\qdrant"
+local_path = "./data/qdrant"
 server_url = ""
 distance_metric = "cosine"
 search_limit = 24
