@@ -51,75 +51,7 @@ Transparency:
 
 ## Quick start
 
-Prereqs:
-- Python 3.10+ recommended
-- An OpenAI API key
-
-1) Create a virtualenv and install deps.
-
-In PowerShell from the project root folder:
-
-```powershell
-python -m venv .venv
-. .venv\Scripts\Activate.ps1
-
-# Update PIP
-pip install -U pip
-#.\.venv\Scripts\pip.exe install -U pip
-
-# Use the included PowerShell to and requirements.txt to install requirements to the venv:
-. Install-Requirements.ps1
-```
-
-Or in Linux style container:
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-
-# Update PIP
-pip install -U pip
-pip install `<insert requires.txt here separated by spaces`>
-```
-
-Create your .env file in the repo root (see .env.example for the latest known-good settings):
-
-```bash
-# Required setting:
-OPENAI_API_KEY=your_key_here
-
-# Optional settings: 
-# Model defaults
-OPENAI_MODEL=gpt-5.4
-OPENAI_TITLE_MODEL=gpt-5-mini
-SUMMARY_MODEL=gpt-5-mini
-
-# Load a system prompt from a file (the repo includes system_prompt.txt)
-SYSTEM_PROMPT_FILE=.\\prompts\\system_prompt.txt
-
-# Show server exception details (dev only)
-DEBUG_MODE=true
-```
-
-Use the included PowerShell to start the server:
-
-```powershell
-. ./Start-Service.ps1
-```
-
-This activates the venv and runs the server like below in one step.
-
-The relevant comment in Linux is:
-
-```bash
-uvicorn server.main:app --reload --port 8000
-```
-
-Open the UI:
-
-In a browser on the same machine, go to the website.
-
-[http://127.0.0.1:8000](http://127.0.0.1:8000)
+Initial setup and optional steps have been updated and moved to the `_First_Time_Setup_All_Platforms.md` file in `./docs/` folder.
 
 ## How it works (high level)
 

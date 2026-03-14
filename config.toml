@@ -1,5 +1,9 @@
 # WyrmGPT TOML config example
 # Place as config.toml in the repo root.
+
+# Values here are non-secret defaults and normal app settings.
+# Secrets live in config.secrets.toml.
+
 # TOML values take precedence; .env remains as fallback during migration.
 
 [core]
