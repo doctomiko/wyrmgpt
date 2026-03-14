@@ -16,7 +16,7 @@ from typing import Any, Callable, Iterable, Iterator
 
 from .logging_helper import log_debug
 from .config import (
-    load_app_config, load_ui_config,
+    load_core_config, load_app_config, load_ui_config,
     RetrievalConfig, load_retrieval_config, 
     load_import_config,
 )
@@ -38,6 +38,8 @@ SCHEMA_VERSION = 19
 
 IMPORT_CFG = load_import_config()
 SIDECAR_THRESHOLD_BYTES = IMPORT_CFG.artifact_sidecar_threshold_bytes # 500 * 1024 # 500KB default threshold for when to use sidecar files for artifact content
+
+core_cfg = load_core_config()
 
 # near the top of db.py, alongside other imports or type helpers:
 @dataclass
@@ -1552,7 +1554,10 @@ def _summary_excerpt(text: str, max_chars: int = 220) -> str:
         out = out[:max_chars].rstrip() + "…"
     return out
 
-def list_conversations(limit: int = 200, include_archived: bool = False) -> list[dict]:
+def list_conversations(
+    limit: int = core_cfg.limit_api_conversations, 
+    include_archived: bool = False
+) -> list[dict]:
     with db_session() as conn:
         if include_archived:
             where = ""

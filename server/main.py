@@ -922,13 +922,18 @@ def api_ab_canonical(req: ABCanonicalRequest):
 # region Conversation Endpoints
 
 @app.get("/api/conversations")
-def api_conversations(include_archived: bool = False):
-    return JSONResponse(list_conversations(limit=200, include_archived=include_archived))
+def api_conversations(
+    include_archived: bool = False,
+    limit: int = core_cfg.limit_api_conversations
+):
+    return JSONResponse(list_conversations(
+        limit=limit, 
+        include_archived=include_archived))
 
 @app.get("/api/conversation/{conversation_id}/messages")
 def api_conversation_messages(
     conversation_id: str,
-    limit: int = 500,
+    limit: int = core_cfg.limit_api_conversation_messages,
     mode: str = "raw",   # "raw" (default, what app.js wants) or "canonical"
 ):
     """

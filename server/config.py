@@ -6,7 +6,7 @@ from typing import Any
 from dotenv import load_dotenv
 
 try:
-    import tomllib  # Python 3.11+
+    import tomllib  # type: ignore # Python 3.11+
 except ModuleNotFoundError:
     try:
         import tomli as tomllib  # Python <3.11, requires 'tomli'
@@ -202,7 +202,8 @@ class CoreConfig:
     )
     debug_mode: bool = False
     debug_errors: bool = True
-
+    limit_api_conversations: int = 2000
+    limit_api_conversation_messages: int = 5000
 
 CORE_DEFAULTS: CoreConfig = CoreConfig()
 
