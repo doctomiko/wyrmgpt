@@ -30,9 +30,11 @@ const sideBarConvListEl = document.getElementById("convList");
 
 // #region Top of Page/Chat Bar and Menu
 const topBarChatTitleEl = document.getElementById("chatTitle");
-// Model Selectors
+// Model Selectors and Info Panels
 const topBarModelSelectA = document.getElementById("modelSelectA");
 const topBarModelSelectB = document.getElementById("modelSelectB");
+const topBarModelInfoA = document.getElementById("modelInfoA");
+const topBarModelInfoB = document.getElementById("modelInfoB");
 // #endregion
 // #region Inside the Chat Window
 const chatWindow = document.getElementById("chat");
