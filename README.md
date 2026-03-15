@@ -63,8 +63,8 @@ Initial setup and optional steps have been updated and moved to the `_First_Time
 - `server/db.py` is the SQLite data layer and schema.
 
 - `server/context.py` builds the “context pack”:
-  - base system prompt (env `SYSTEM_PROMPT_FILE` or `SYSTEM_PROMPT`)
-  - pinned memories
+  - base system prompt (config.toml points to `system_prompt_file` or `default_system_prompt`)
+  - pinned instructions and saved memories
   - conversation summary (if you generated one)
   - conversation history (with non-canonical A/B answers filtered out)
 
@@ -102,7 +102,7 @@ Initial setup and optional steps have been updated and moved to the `_First_Time
 
 Your database is stored at:
 
-- `./data/callie_mvp.sqlite3`
+- `./data/sql/wyrmgpt.sqlite3`
 
 If you care about your chat history, back up the `data/` folder periodically. (SQLite WAL mode is enabled for better concurrency, so you may see `-wal` / `-shm` side files during runtime.)
 
