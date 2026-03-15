@@ -144,6 +144,24 @@ function Test-ArchiveRuleMatch {
     return ($name -eq $pattern)
 }
 
+function Get-ShouldExclude {
+    param(
+        [string]$Path,
+        $patterns
+    )
+
+    $path = Convert-ToArchivePath $Path
+    $exclude = $false
+
+    foreach ($rule in $patterns) {
+        if (Test-ArchiveRuleMatch -Path $path -Rule $rule) {
+            $exclude = -not $rule.Negate
+        }
+    }
+
+    return $exclude
+}
+
 <#
 function Get-ShouldExclude {
     param(
