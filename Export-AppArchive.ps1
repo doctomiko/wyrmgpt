@@ -50,6 +50,52 @@ function Get-NextArchiveRev {
     return (IntToRev ($max + 1))
 }
 
+function Convert-ToArchivePath {
+    param([string]$Path)
+
+    $p = $Path -replace '\\', '/'
+    $p = $p.TrimStart('/')
+    return $p
+}
+
+function Get-GitIgnorePatterns {
+    $gitignore = Join-Path $root ".gitignore"
+
+    if (!(Test-Path $gitignore)) {
+        return @()
+    }
+
+    $patterns = @()
+
+    Get-Content $gitignore | ForEach-Object {
+        $line = $_.Trim()
+
+        if (-not $line -or $line.StartsWith("#")) {
+            return
+        }
+
+        $negate = $false
+        if ($line.StartsWith("!")) {
+            $negate = $true
+            $line = $line.Substring(1).Trim()
+        }
+
+        $directoryOnly = $line.EndsWith("/")
+        if ($directoryOnly) {
+            $line = $line.TrimEnd("/")
+        }
+
+        $patterns += [pscustomobject]@{
+            Pattern       = (Convert-ToArchivePath $line)
+            Negate        = $negate
+            DirectoryOnly = $directoryOnly
+        }
+    }
+
+    return $patterns
+}
+
+<#
 function Get-GitIgnorePatterns {
     $gitignore = Join-Path $root ".gitignore"
 
@@ -69,7 +115,36 @@ function Get-GitIgnorePatterns {
 
     return $patterns
 }
+#>
 
+function Test-ArchiveRuleMatch {
+    param(
+        [string]$Path,
+        $Rule
+    )
+
+    $path = Convert-ToArchivePath $Path
+    $name = Split-Path $path -Leaf
+    $parts = $path -split '/'
+
+    $pattern = $Rule.Pattern
+
+    if ($Rule.DirectoryOnly) {
+        return ($parts -contains $pattern)
+    }
+
+    if ($pattern.Contains("/")) {
+        return ($path -eq $pattern) -or ($path -like "$pattern/*")
+    }
+
+    if ($pattern.Contains("*") -or $pattern.Contains("?")) {
+        return ($name -like $pattern) -or ($path -like $pattern)
+    }
+
+    return ($name -eq $pattern)
+}
+
+<#
 function Get-ShouldExclude {
     param(
         $path,
@@ -85,7 +160,39 @@ function Get-ShouldExclude {
 
     return $false
 }
+#>
 
+function Get-ExcludePatterns {
+    $patterns = Get-GitIgnorePatterns
+
+    if (!$IncludeEnv) {
+        $patterns += [pscustomobject]@{
+            Pattern       = ".env"
+            Negate        = $false
+            DirectoryOnly = $false
+        }
+    }
+
+    if (!$IncludeData) {
+        $patterns += [pscustomobject]@{
+            Pattern       = "data"
+            Negate        = $false
+            DirectoryOnly = $true
+        }
+    }
+
+    if (!$IncludeVenv) {
+        $patterns += [pscustomobject]@{
+            Pattern       = ".venv"
+            Negate        = $false
+            DirectoryOnly = $true
+        }
+    }
+
+    return $patterns
+}
+
+<#
 function Get-ExcludePatterns {
 
     $patterns = Get-GitIgnorePatterns
@@ -104,6 +211,7 @@ function Get-ExcludePatterns {
 
     return $patterns
 }
+#>
 
 $rev = Get-NextArchiveRev -Root $root -Date $date
 $zipName = "WyrmGPT.$date.$rev.zip"
@@ -130,7 +238,8 @@ $filtered = @()
 
 foreach ($file in $files) {
 
-    $relative = $file.FullName.Substring($root.Path.Length)
+    $relative = Convert-ToArchivePath ($file.FullName.Substring($root.Path.Length))
+    #$relative = $file.FullName.Substring($root.Path.Length)
 
     if (-not (Get-ShouldExclude $relative $excludePatterns)) {
         $filtered += $file
@@ -163,7 +272,8 @@ foreach ($file in $filtered) {
         -Status "$i of $total files" `
         -PercentComplete $percent
 
-    $relativePath = $file.FullName.Substring($root.Path.Length + 1)
+    $relativePath = Convert-ToArchivePath ($file.FullName.Substring($root.Path.Length + 1))        
+    #$relativePath = $file.FullName.Substring($root.Path.Length + 1)
 
     if ($VerbosePreference -eq "Continue") {
         Write-Verbose "Adding $relativePath"
