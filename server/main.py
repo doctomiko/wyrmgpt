@@ -143,6 +143,7 @@ SOURCES_ROOT = DATA_DIR / "sources"
 # This is where APIs for supported toools (retrievers, file parsers, etc.) would live; you can add subdirs as needed
 TOOLS_DIR = HERE / "tools"
 
+# TODO phase this out in favor of provider configs
 MODEL = oai_cfg.open_ai_model
 # TODO decide if TITLE_MODEL should have its own setting
 TITLE_MODEL = oai_cfg.summary_model
@@ -313,16 +314,20 @@ def strip_zeitgeber_prefix(text: str) -> str:
 
 # endregion
 
-# region Model Catalog and Caching
+# region Model / Deployment Catalog and Caching
 
-# TODO refactor to include many providers
-# Support checking for models
+# Legacy support checking for models
 _MODELS_CACHE: dict[str, Any] | None = None
 MODEL_CATALOG: ModelCatalog = {}
 
-# TODO make these part of config.py
+
+# TODO make these part of provider registry settings
 _MODELS_CACHE_TS: float = 0.0
 _MODELS_TTL_SECONDS = 300  # 5 minutes
+# Newer deployment cache settings
+_DEPLOYMENTS_CACHE: dict[str, Any] | None = None
+_DEPLOYMENTS_CACHE_TS: float = 0.0
+
 # TODO make this part of OpenAIConfig
 _ALLOWED_MODEL_PREFIXES = ("gpt-", "o1", "o3", "o4")
 
@@ -895,16 +900,31 @@ async def chat_ab(req: ABChatRequest):
     store("A", target_a, model_a, a_res)
     store("B", target_b, model_b, b_res)
 
-    return JSONResponse(
-        {
-            "conversation_id": cid,
-            "model_a": model_a,
-            "model_b": model_b,
-            "ab_group": ab_group,
-            "a": a_res,
-            "b": b_res,
-        }
-    )
+    return JSONResponse({
+        "conversation_id": cid,
+        "ab_group": ab_group,
+        "model_a": target_a.model,
+        "model_b": target_b.model,
+        "deployment_a": target_a.id,
+        "deployment_b": target_b.id,
+        "provider_a": target_a.provider_id,
+        "provider_b": target_b.provider_id,
+        "requested_model_a": model_a,
+        "requested_model_b": model_b,
+        "a": a_res,
+        "b": b_res,
+    })
+    if (False):
+        return JSONResponse(
+            {
+                "conversation_id": cid,
+                "model_a": model_a,
+                "model_b": model_b,
+                "ab_group": ab_group,
+                "a": a_res,
+                "b": b_res,
+            }
+        )
 
 
 @app.post("/api/ab/canonical")
@@ -1838,6 +1858,44 @@ def api_delete_file(file_id: str):
 # endregion
 
 # region Model Selection Endpoints
+
+@app.get("/api/deployments")
+def api_deployments():
+    global _DEPLOYMENTS_CACHE, _DEPLOYMENTS_CACHE_TS
+    now = time.time()
+
+    if _DEPLOYMENTS_CACHE and (now - _DEPLOYMENTS_CACHE_TS) < _MODELS_TTL_SECONDS:
+        return _DEPLOYMENTS_CACHE
+
+    if PROVIDER_REGISTRY is None:
+        raise HTTPException(status_code=500, detail="Provider registry is not initialized.")
+
+    try:
+        items: list[dict[str, Any]] = []
+
+        for d in PROVIDER_REGISTRY.list_chat_deployments():
+            items.append(
+                {
+                    "id": d.id,
+                    "display_name": d.display_name,
+                    "provider_id": d.provider_id,
+                    "provider_type": d.provider_type,
+                    "model": d.model,
+                    "capabilities": list(d.capabilities),
+                    "tags": list(d.tags),
+                    "enabled": d.enabled,
+                    "base_url": d.base_url,
+                    "is_legacy": d.id.startswith("legacy:"),
+                }
+            )
+
+        items.sort(key=lambda x: (x["provider_id"], x["display_name"].lower()))
+        payload = {"deployments": items, "cached": True, "fetched_at": int(now)}
+        _DEPLOYMENTS_CACHE = payload
+        _DEPLOYMENTS_CACHE_TS = now
+        return payload
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to list deployments: {e}")
 
 @app.get("/api/models")
 def api_models():

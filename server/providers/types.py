@@ -34,8 +34,9 @@ class ResolvedDeployment:
     model: str
     display_name: str
     capabilities: tuple[str, ...]
+    tags: tuple[str, ...] = ()
+    enabled: bool = True
     base_url: str = ""
-
 
 @dataclass
 class ProviderErrorInfo:

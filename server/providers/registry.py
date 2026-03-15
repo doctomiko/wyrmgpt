@@ -20,12 +20,65 @@ class ProviderRegistry:
                 return deployment_id
         raise ValueError("No enabled chat deployment is configured.")
 
+    def list_enabled_deployments(self) -> list[ResolvedDeployment]:
+        out: list[ResolvedDeployment] = []
+
+        for dep in self.deployments.values():
+            if not dep.enabled:
+                continue
+            provider = self.providers.get(dep.provider)
+            if not provider or not provider.enabled:
+                continue
+
+            out.append(
+                ResolvedDeployment(
+                    id=dep.id,
+                    provider_id=provider.id,
+                    provider_type=provider.type,
+                    model=dep.model,
+                    display_name=dep.display_name or dep.model,
+                    capabilities=dep.capabilities,
+                    tags=dep.tags,
+                    enabled=dep.enabled,
+                    base_url=provider.base_url,
+                )
+            )
+
+        return out
+
+    def list_chat_deployments(self) -> list[ResolvedDeployment]:
+        return [
+            d for d in self.list_enabled_deployments()
+            if "chat" in d.capabilities
+        ]
+
+    def get_deployment(self, deployment_id: str) -> ResolvedDeployment:
+        dep = self.deployments.get(deployment_id)
+        if not dep:
+            raise ValueError(f"Deployment '{deployment_id}' is not configured.")
+        if not dep.enabled:
+            raise ValueError(f"Deployment '{deployment_id}' is disabled.")
+
+        provider = self.providers.get(dep.provider)
+        if not provider:
+            raise ValueError(f"Provider '{dep.provider}' for deployment '{deployment_id}' is not configured.")
+        if not provider.enabled:
+            raise ValueError(f"Provider '{provider.id}' is disabled.")
+
+        return ResolvedDeployment(
+            id=dep.id,
+            provider_id=provider.id,
+            provider_type=provider.type,
+            model=dep.model,
+            display_name=dep.display_name or dep.model,
+            capabilities=dep.capabilities,
+            tags=dep.tags,
+            enabled=dep.enabled,
+            base_url=provider.base_url,
+        )
+
     def resolve_chat_target(self, requested: str | None) -> ResolvedDeployment:
-        requested = (requested or "").strip()
-
-        if not requested:
-            requested = self.get_default_chat_deployment_id()
-
+        requested = (requested or str(self.get_default_chat_deployment_id())).strip()
         if requested in self.deployments:
             dep = self.deployments[requested]
             if not dep.enabled:
@@ -44,7 +97,6 @@ class ProviderRegistry:
                 capabilities=dep.capabilities,
                 base_url=provider.base_url,
             )
-
         # Backward-compatibility path:
         # treat unknown requested value as a raw model string on the default provider.
         default_id = self.get_default_chat_deployment_id()
@@ -60,6 +112,8 @@ class ProviderRegistry:
             model=requested,
             display_name=requested,
             capabilities=("chat", "stream"),
+            tags=("legacy-model",),
+            enabled=True,
             base_url=provider.base_url,
         )
 

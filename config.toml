@@ -103,10 +103,12 @@ search_chat_history = true
 
 [providers.openai]
 type = "openai"
-model = "gpt-5.4"
-summary_model = "gpt-5-mini"
 base_url = "https://api.openai.com/v1"
-api_key = ""
+api_key = "" # stored in config.secrets.toml
+# Moving to [deployments.chat_default]
+model = "gpt-5.4"
+# Moving to [deployments.summary_default]
+summary_model = "gpt-5-mini"
 
 [deployments.chat_default]
 provider = "openai"
@@ -115,6 +117,14 @@ display_name = "OpenAI Chat Default"
 capabilities = ["chat", "stream", "catalog"]
 enabled = true
 tags = ["default"]
+
+[deployments.chat_fast]
+provider = "openai"
+model = "gpt-5-mini"
+display_name = "OpenAI Chat Fast"
+capabilities = ["chat", "stream"]
+enabled = true
+tags = ["fast", "remote"]
 
 [deployments.summary_default]
 provider = "openai"

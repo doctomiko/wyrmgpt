@@ -2323,6 +2323,33 @@ async function send() {
     if (v) modelB = v;
   }
 
+  const choiceA = describeSelection(modelA || "");
+  const choiceB = describeSelection(modelB || "");
+
+  const metaA = {
+    ab_group: "A",
+    canonical: true,
+    model: choiceA.display_name || choiceA.id,
+    deployment_id: choiceA.kind === "deployment" ? choiceA.id : null,
+    provider: choiceA.provider_id || null,
+  };
+
+  const metaB = {
+    ab_group: "B",
+    canonical: false,
+    model: choiceB.display_name || choiceB.id,
+    deployment_id: choiceB.kind === "deployment" ? choiceB.id : null,
+    provider: choiceB.provider_id || null,
+  };
+
+  /*
+  const modelA = topBarModelSelectA?.value || null;
+  let modelB = modelA;
+  if (topBarModelSelectB && topBarModelSelectB.style.display !== "none") {
+    const v = (topBarModelSelectB.value || "").trim();
+    if (v) modelB = v;
+  }
+
   const mA = findModelById(topBarModelSelectA.value);
   const metaA = {
     ab_group: "A",
@@ -2335,6 +2362,7 @@ async function send() {
     canonical: false,
     model: mB ? mB.display_name : topBarModelSelectB.value
   };
+  */
 
   const useAB =
     typeof advancedMode !== "undefined" &&
@@ -2355,7 +2383,9 @@ async function sendSingle(text, model) {
   const now = nowIso();
   addUserMsgWithTime(text, now); //addMsg("user", text);
   // build an assistant message shell with model label
-  const assistantBody = addAssistantMsgWithModel(model, "Thinking…", now);
+  const choice = describeSelection(model || "");
+  //const assistantBody = addAssistantMsgWithModel(model, "Thinking…", now);
+  const assistantBody = addAssistantMsgWithModel(choice.display_name || model, "Thinking…", now);
 
   const request_body = JSON.stringify({
     conversation_id: conversationId,
@@ -2399,13 +2429,41 @@ async function sendAB(text, modelA, modelB) {
   const now = nowIso();
   addUserMsgWithTime(text, now);
 
+  const choiceA = describeSelection(modelA || "");
+  const choiceB = describeSelection(modelB || "");
+  const { rowEl, msgAEl, msgBEl, labelAEl, labelBEl, infoAEl, infoBEl } = addABRow(
+    choiceA.display_name || modelA,
+    choiceB.display_name || modelB,
+    now,
+    now
+  );
+  /*
   const { rowEl, msgAEl, msgBEl, labelAEl, labelBEl, infoAEl, infoBEl } = addABRow(
     modelA, modelB, now, now
   );
+  */
 
   // These will be updated after the server returns.
+  let detailsA = {
+    pending: true,
+    slot: "A",
+    model: choiceA.model,
+    deployment_id: choiceA.kind === "deployment" ? choiceA.id : null,
+    provider: choiceA.provider_id || null,
+    selected_label: choiceA.display_name || modelA,
+  };
+  let detailsB = {
+    pending: true,
+    slot: "B",
+    model: choiceB.model,
+    deployment_id: choiceB.kind === "deployment" ? choiceB.id : null,
+    provider: choiceB.provider_id || null,
+    selected_label: choiceB.display_name || modelB,
+  };
+  /*
   let detailsA = { pending: true, slot: "A", model: modelA };
   let detailsB = { pending: true, slot: "B", model: modelB };
+  */
 
   infoAEl.onclick = () => openMetaInfo(labelAEl.textContent || "A", detailsA);
   infoBEl.onclick = () => openMetaInfo(labelBEl.textContent || "B", detailsB);
@@ -2468,8 +2526,20 @@ async function sendAB(text, modelA, modelB) {
 
     rowEl.dataset.abGroup = data.ab_group || "";
 
+    const labelA = data.deployment_a
+      ? `${data.deployment_a} · ${data.model_a || choiceA.model || modelA}`
+      : (data.model_a || choiceA.display_name || modelA);
+
+    const labelB = data.deployment_b
+      ? `${data.deployment_b} · ${data.model_b || choiceB.model || modelB}`
+      : (data.model_b || choiceB.display_name || modelB);
+
+    renderSlot(msgAEl, labelAEl, "A", labelA, data.a);
+    renderSlot(msgBEl, labelBEl, "B", labelB, data.b);
+    /*
     renderSlot(msgAEl, labelAEl, "A", data.model_a || modelA, data.a);
     renderSlot(msgBEl, labelBEl, "B", data.model_b || modelB, data.b);
+    */
 
     // Update the info payloads AFTER we have data
     detailsA = { slot: "A", model: data.model_a || modelA, ab_group: data.ab_group || null, result: data.a };
@@ -2642,14 +2712,94 @@ async function sendAB(text, modelA, modelB) {
 
 // #endregion
 
-// #region Model select helpers
+// #region Model / Deployment Settings helpers
 
+let deployments = [];
 let models = [];
+
+function findDeploymentById(id) {
+  return deployments.find((d) => d.id === id) || null;
+}
 
 function findModelById(id) {
   return models.find((m) => m.id === id) || null;
 }
 
+function describeSelection(id) {
+  const dep = findDeploymentById(id);
+  if (dep) {
+    return {
+      kind: "deployment",
+      id: dep.id,
+      display_name: dep.display_name || dep.id,
+      provider_id: dep.provider_id || "",
+      provider_type: dep.provider_type || "",
+      model: dep.model || dep.id,
+      tags: dep.tags || [],
+    };
+  }
+
+  const model = findModelById(id);
+  if (model) {
+    return {
+      kind: "model",
+      id: model.id,
+      display_name: model.display_name || model.id,
+      provider_id: model.vendor || "",
+      provider_type: "",
+      model: model.id,
+      tags: model.tags || [],
+    };
+  }
+
+  return {
+    kind: "raw",
+    id: id,
+    display_name: id,
+    provider_id: "",
+    provider_type: "",
+    model: id,
+    tags: [],
+  };
+}
+
+function updateModelInfo(which) {
+  const sel = which === "A" ? topBarModelSelectA : topBarModelSelectB;
+  const infoEl = which === "A" ? topBarModelInfoA : topBarModelInfoB;
+  if (!sel || !infoEl) return;
+
+  const choice = describeSelection(sel.value);
+  const modelMeta = choice.model ? findModelById(choice.model) : null;
+
+  const parts = [];
+
+  parts.push(`<span class="modelName">${escapeHtml(choice.display_name || choice.id)}</span>`);
+
+  if (choice.provider_id) {
+    parts.push(`<span class="modelVendor">${escapeHtml(choice.provider_id)}</span>`);
+  }
+
+  if (choice.kind === "deployment" && choice.model && choice.model !== choice.display_name) {
+    parts.push(`<span class="modelId">${escapeHtml(choice.model)}</span>`);
+  }
+
+  if (modelMeta?.input_cost_per_million != null)
+    parts.push(`<span class="modelPrice">in: $${modelMeta.input_cost_per_million}/M</span>`);
+  if (modelMeta?.output_cost_per_million != null)
+    parts.push(`<span class="modelPrice">out: $${modelMeta.output_cost_per_million}/M</span>`);
+
+  if (modelMeta?.context_window) {
+    parts.push(`<span class="modelContext">ctx: ${modelMeta.context_window.toLocaleString()} tokens</span>`);
+  }
+
+  if (modelMeta?.description) {
+    parts.push(`<div class="modelDesc">${escapeHtml(modelMeta.description)}</div>`);
+  }
+
+  infoEl.innerHTML = parts.join(" · ");
+}
+
+/*
 function updateModelInfo(which) {
   const sel =
     which === "A"
@@ -2697,7 +2847,27 @@ function updateModelInfo(which) {
 
   infoEl.innerHTML = parts.join(" · ");
 }
+*/
 
+async function refreshDeployments() {
+  const data = await fetchJsonDebug("/api/deployments");
+  deployments = data.deployments || [];
+}
+
+async function refreshModels() {
+  const [modelData, deploymentData] = await Promise.all([
+    fetchJsonDebug("/api/models"),
+    fetchJsonDebug("/api/deployments"),
+  ]);
+
+  models = modelData.models || [];
+  deployments = deploymentData.deployments || [];
+
+  renderModelDropdowns();
+  updateModelInfo("A");
+  updateModelInfo("B");
+}
+/*
 async function refreshModels() {
   const data = await fetchJsonDebug("/api/models");
   models = data.models || [];
@@ -2706,7 +2876,70 @@ async function refreshModels() {
   updateModelInfo("A");
   updateModelInfo("B");
 }
+*/
 
+function renderModelDropdowns() {
+  const selA = document.getElementById("modelSelectA");
+  const selB = document.getElementById("modelSelectB");
+  if (!selA || !selB) return;
+
+  const savedA = localStorage.getItem("chatoss.modelA") || "";
+  const savedB = localStorage.getItem("chatoss.modelB") || "";
+
+  selA.innerHTML = "";
+  selB.innerHTML = "";
+
+  for (const d of deployments) {
+    const labelParts = [d.display_name || d.id];
+
+    if (d.provider_id) labelParts.push(d.provider_id);
+    if (d.model && d.model !== d.display_name) labelParts.push(d.model);
+
+    if (Array.isArray(d.tags) && d.tags.length) {
+      labelParts.push(d.tags.join(", "));
+    }
+
+    const label = labelParts.join(" · ");
+
+    const optA = document.createElement("option");
+    optA.value = d.id;
+    optA.textContent = label;
+
+    const optB = document.createElement("option");
+    optB.value = d.id;
+    optB.textContent = label;
+
+    selA.appendChild(optA);
+    selB.appendChild(optB);
+  }
+
+  function maybeAppendLegacyOption(sel, value) {
+    if (!value) return;
+    if ([...sel.options].some((o) => o.value === value)) return;
+
+    const model = findModelById(value);
+    const label = model
+      ? `${model.display_name || model.id} · legacy model`
+      : `${value} · legacy value`;
+
+    const opt = document.createElement("option");
+    opt.value = value;
+    opt.textContent = label;
+    sel.appendChild(opt);
+  }
+
+  maybeAppendLegacyOption(selA, savedA);
+  maybeAppendLegacyOption(selB, savedB);
+
+  if (savedA && [...selA.options].some((o) => o.value === savedA)) {
+    selA.value = savedA;
+  }
+  if (savedB && [...selB.options].some((o) => o.value === savedB)) {
+    selB.value = savedB;
+  }
+}
+
+/*
 function renderModelDropdowns() {
   const selA = document.getElementById("modelSelectA");
   const selB = document.getElementById("modelSelectB");
@@ -2751,6 +2984,7 @@ function renderModelDropdowns() {
 
   // If we didn't have anything saved, leave the defaults (first options)
 }
+*/
 
 function initABUI() {
   renderModelDropdowns();
