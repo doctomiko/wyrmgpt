@@ -52,6 +52,7 @@ except ImportError:
 # from openai.types.responses import ResponseInputParam
 
 from .query_shaper import WORD_RE, load_filler_words_cached
+from .providers.types import ModelInput
 
 _QUERY_WORD_RE = WORD_RE
 _QUERY_STOP = load_filler_words_cached()
@@ -1711,7 +1712,7 @@ def build_model_input(
         ctx_cfg: ContextConfig | None = None,
         query_cfg: RetrievalConfig | None = None,
         ctx: dict | None = None
-    ) -> list[dict]:
+    ) -> ModelInput:
     """
     Build a Responses-API compatible input.
     Use string `content` for all text messages (max compatibility).

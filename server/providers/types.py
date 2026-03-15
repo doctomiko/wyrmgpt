@@ -1,13 +1,19 @@
 from dataclasses import dataclass, field
-from typing import Any, Iterator, Protocol
+from typing import Any
+
+
+ModelCatalog = dict[str, dict[str, Any]]
+ModelInput = list[dict[str, Any]]
+
 
 @dataclass(frozen=True)
 class ProviderDef:
     id: str
     type: str
-    base_url: str = ""
     api_key: str = ""
+    base_url: str = ""
     enabled: bool = True
+
 
 @dataclass(frozen=True)
 class DeploymentDef:
@@ -19,6 +25,7 @@ class DeploymentDef:
     enabled: bool = True
     tags: tuple[str, ...] = ()
 
+
 @dataclass(frozen=True)
 class ResolvedDeployment:
     id: str
@@ -29,6 +36,7 @@ class ResolvedDeployment:
     capabilities: tuple[str, ...]
     base_url: str = ""
 
+
 @dataclass
 class ProviderErrorInfo:
     provider_id: str
@@ -37,9 +45,10 @@ class ProviderErrorInfo:
     message: str
     status_code: int | None = None
     request_id: str | None = None
-    raw: Any = None
     provider_error_type: str | None = None
     recovery_step: str | None = None
+    raw: Any = None
+
 
 @dataclass
 class ChatResult:
@@ -49,6 +58,7 @@ class ChatResult:
     model: str
     raw: Any = None
     warnings: list[str] = field(default_factory=list)
+
 
 @dataclass(frozen=True)
 class ModelInfo:

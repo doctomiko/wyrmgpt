@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
+from .providers.types import ProviderDef, DeploymentDef
 
 try:
     import tomllib  # type: ignore # Python 3.11+
@@ -16,7 +16,16 @@ except ModuleNotFoundError:
             "Install 'tomli' for Python versions earlier than 3.11: pip install tomli"
         )
 
+# region Support for legacy .env
+
+from dotenv import load_dotenv
 load_dotenv()
+
+# TODO Comment out MOST .env support - it is going away now
+# We're keeping just enough to override default paths to TOML files.
+def _env_str(name: str, default: str) -> str:
+    v = os.getenv(name)
+    return default if v is None else v.strip()
 
 
 def _env_int(name: str, default: int) -> int:
@@ -33,11 +42,6 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
-def _env_str(name: str, default: str) -> str:
-    v = os.getenv(name)
-    return default if v is None else v.strip()
-
-
 def _bool_to_str(val: bool) -> str:
     return str(val)
 
@@ -51,6 +55,8 @@ def _env_bool(name: str, default: bool) -> bool:
     if v is None:
         return default
     return _str_to_bool(v)
+
+# endregion
 
 
 def _normalize_csv_set(value: str, allowed: set[str]) -> str:
@@ -147,6 +153,97 @@ def _coerce_bool(value: Any, default: bool) -> bool:
         return value
     return _str_to_bool(str(value))
 
+
+def _coerce_str_tuple(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, (list, tuple, set)):
+        return tuple(str(x).strip() for x in value if str(x).strip())
+    raw = str(value).strip()
+    if not raw:
+        return ()
+    return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
+def load_provider_defs() -> dict[str, ProviderDef]:
+    providers_raw = _toml_get(("providers",), default={})
+    out: dict[str, ProviderDef] = {}
+
+    if isinstance(providers_raw, dict):
+        for provider_id, node in providers_raw.items():
+            if not isinstance(node, dict):
+                continue
+            ptype = str(node.get("type", "")).strip()
+            if not ptype:
+                continue
+
+            out[provider_id] = ProviderDef(
+                id=provider_id,
+                type=ptype,
+                api_key=str(node.get("api_key", "")).strip(),
+                base_url=str(node.get("base_url", "")).strip(),
+                enabled=_coerce_bool(node.get("enabled", True), True),
+            )
+
+    if not out:
+        oai = load_openai_config()
+        out["openai"] = ProviderDef(
+            id="openai",
+            type="openai",
+            api_key=oai.open_ai_apikey,
+            base_url="https://api.openai.com/v1",
+            enabled=True,
+        )
+
+    return out
+
+
+def load_deployment_defs() -> dict[str, DeploymentDef]:
+    deployments_raw = _toml_get(("deployments",), default={})
+    out: dict[str, DeploymentDef] = {}
+
+    if isinstance(deployments_raw, dict):
+        for deployment_id, node in deployments_raw.items():
+            if not isinstance(node, dict):
+                continue
+
+            provider = str(node.get("provider", "")).strip()
+            model = str(node.get("model", "")).strip()
+            if not provider or not model:
+                continue
+
+            out[deployment_id] = DeploymentDef(
+                id=deployment_id,
+                provider=provider,
+                model=model,
+                display_name=str(node.get("display_name", "")).strip(),
+                capabilities=_coerce_str_tuple(node.get("capabilities")),
+                enabled=_coerce_bool(node.get("enabled", True), True),
+                tags=_coerce_str_tuple(node.get("tags")),
+            )
+
+    if not out:
+        oai = load_openai_config()
+        out["chat_default"] = DeploymentDef(
+            id="chat_default",
+            provider="openai",
+            model=oai.open_ai_model,
+            display_name="OpenAI Chat Default",
+            capabilities=("chat", "stream", "catalog"),
+            enabled=True,
+            tags=("default",),
+        )
+        out["summary_default"] = DeploymentDef(
+            id="summary_default",
+            provider="openai",
+            model=oai.summary_model,
+            display_name="OpenAI Summary Default",
+            capabilities=("chat",),
+            enabled=True,
+            tags=("summary",),
+        )
+
+    return out
 
 def _cfg_str(*paths: tuple[str, ...], env_name: str, default: str) -> str:
     value = _first_toml(*paths, default=_MISSING)

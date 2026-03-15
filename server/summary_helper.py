@@ -1,7 +1,15 @@
 from __future__ import annotations
+#from http import client
+from openai import OpenAI, APIStatusError
+
+
 import re
 from typing import List, Any
-from .config import SummaryConfig
+from .config import SummaryConfig, load_openai_config
+
+oai_cfg = load_openai_config()
+
+#from openai import OpenAI, APIStatusError
 
 def extract_response_text(resp) -> str:
     """
@@ -193,14 +201,15 @@ def _one_pass_conversation_summary(*, client, model: str, title: str, transcript
     return summary
 
 def summarize_conversation_text(
-    *,
-    client,
     model: str,
     title: str,
     transcript: str,
     cfg: SummaryConfig,
-    system_prompt: str,
+    system_prompt: str
 ) -> str:
+    # temporary stub to facilitate disconnection in main.py
+    client = OpenAI(api_key=oai_cfg.open_ai_apikey)
+
     """
     One-pass for short transcripts, map-reduce for long transcripts.
     """
