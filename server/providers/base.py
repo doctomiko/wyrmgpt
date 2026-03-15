@@ -1,4 +1,12 @@
-from typing import Protocol
+from typing import Any, Iterator, Protocol
+from .types import ResolvedDeployment, ChatResult, ModelInfo, ProviderDef, ProviderErrorInfo
+
+class ChatProvider(Protocol):
+    def complete(self, deployment: ResolvedDeployment, model_input: list[dict[str, Any]]) -> ChatResult: ...
+    def stream_text(self, deployment: ResolvedDeployment, model_input: list[dict[str, Any]]) -> Iterator[str]: ...
+
+class ModelCatalogProvider(Protocol):
+    def list_models(self, provider: ProviderDef) -> list[ModelInfo]: ...
 
 class EmbeddingProvider(Protocol):
     def embed_documents(self, texts: list[str]) -> list[list[float]]: ...
