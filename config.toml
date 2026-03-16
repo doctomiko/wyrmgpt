@@ -144,6 +144,14 @@ capabilities = ["chat", "stream", "catalog"]
 enabled = true
 tags = ["remote", "fast", "cheap"]
 
+[deployments.chat_4o_nov24]
+provider = "openai"
+model = "gpt-4o-2024-11-20"
+display_name = "OpenAI GPT-4o 2024-Nov-20"
+capabilities = ["chat", "stream", "catalog"]
+enabled = true
+tags = ["remote", "warm", "legacy-favorite"]
+
 [deployments.lmstudio_chat]
 provider = "lmstudio_local"
 # REPLACE_WITH_EXACT_LMSTUDIO_MODEL_ID

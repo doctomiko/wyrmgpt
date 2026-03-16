@@ -2291,6 +2291,63 @@ function describeSelection(id) {
       model: dep.model || dep.id,
       tags: dep.tags || [],
       capabilities: dep.capabilities || [],
+      vendor: dep.vendor || dep.provider_id || "",
+      description: dep.description || "",
+      input_cost_per_million: dep.input_cost_per_million,
+      output_cost_per_million: dep.output_cost_per_million,
+      context_window: dep.context_window,
+    };
+  }
+
+  const model = findModelById(id);
+  if (model) {
+    return {
+      kind: "model",
+      id: model.id,
+      display_name: model.display_name || model.id,
+      provider_id: model.provider_id || "",
+      provider_type: model.provider_type || "",
+      model: model.id,
+      tags: model.tags || [],
+      capabilities: [],
+      vendor: model.vendor || model.provider_id || "",
+      description: model.description || "",
+      input_cost_per_million: model.input_cost_per_million,
+      output_cost_per_million: model.output_cost_per_million,
+      context_window: model.context_window,
+    };
+  }
+
+  return {
+    kind: "raw",
+    id: id,
+    display_name: id,
+    provider_id: "",
+    provider_type: "",
+    model: id,
+    tags: [],
+    capabilities: [],
+    vendor: "",
+    description: "",
+    input_cost_per_million: null,
+    output_cost_per_million: null,
+    context_window: null,
+  };
+}
+
+/*
+function describeSelection(id) {
+  const dep = findDeploymentById(id);
+  if (dep) {
+    return {
+      kind: "deployment",
+      id: dep.id,
+      display_name: dep.display_name || dep.id,
+      provider_id: dep.provider_id || "",
+      provider_type: dep.provider_type || "",
+      model: dep.model || dep.id,
+      tags: dep.tags || [],
+      capabilities: dep.capabilities || [],
     };
   }
 
@@ -2319,6 +2376,7 @@ function describeSelection(id) {
     capabilities: [],
   };
 }
+*/
 
 /*
 function describeSelection(id) {
@@ -2370,6 +2428,54 @@ function updateModelInfo(which) {
     ? findModelMeta(choice.provider_id, choice.model)
     : null;
 
+  // Prefer live model metadata, but fall back to deployment metadata from /api/deployments.
+  const meta = modelMeta || choice;
+
+  const parts = [];
+
+  parts.push(`<span class="modelName">${escapeHtml(choice.display_name || choice.id)}</span>`);
+
+  if (choice.provider_id) {
+    parts.push(`<span class="modelVendor">${escapeHtml(choice.provider_id)}</span>`);
+  }
+
+  if (choice.kind === "deployment" && choice.model && choice.model !== choice.display_name) {
+    parts.push(`<span class="modelId">${escapeHtml(choice.model)}</span>`);
+  }
+
+  if (Array.isArray(choice.capabilities) && choice.capabilities.length) {
+    parts.push(`<span class="modelCaps">${escapeHtml(choice.capabilities.join(", "))}</span>`);
+  }
+
+  if (meta?.input_cost_per_million != null) {
+    parts.push(`<span class="modelPrice">in: $${meta.input_cost_per_million}/M</span>`);
+  }
+  if (meta?.output_cost_per_million != null) {
+    parts.push(`<span class="modelPrice">out: $${meta.output_cost_per_million}/M</span>`);
+  }
+  if (meta?.context_window) {
+    parts.push(`<span class="modelContext">ctx: ${Number(meta.context_window).toLocaleString()} tokens</span>`);
+  }
+
+  let html = parts.join(" · ");
+  if (meta?.description) {
+    html += `<div class="modelDesc">${escapeHtml(meta.description)}</div>`;
+  }
+
+  infoEl.innerHTML = html;
+}
+
+/*
+function updateModelInfo(which) {
+  const sel = which === "A" ? topBarModelSelectA : topBarModelSelectB;
+  const infoEl = which === "A" ? topBarModelInfoA : topBarModelInfoB;
+  if (!sel || !infoEl) return;
+
+  const choice = describeSelection(sel.value || "");
+  const modelMeta = choice.model
+    ? findModelMeta(choice.provider_id, choice.model)
+    : null;
+
   const parts = [];
 
   parts.push(`<span class="modelName">${escapeHtml(choice.display_name || choice.id)}</span>`);
@@ -2403,6 +2509,7 @@ function updateModelInfo(which) {
 
   infoEl.innerHTML = html;
 }
+*/
 
 /*
 function updateModelInfo(which) {

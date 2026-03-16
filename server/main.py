@@ -2113,6 +2113,8 @@ def api_deployments(capability: str = "chat"):
 
         items: list[dict[str, Any]] = []
         for d in deployments:
+            meta = MODEL_CATALOG.get(d.model, {})
+
             items.append(
                 {
                     "id": d.id,
@@ -2125,6 +2127,11 @@ def api_deployments(capability: str = "chat"):
                     "enabled": d.enabled,
                     "base_url": d.base_url,
                     "is_legacy": d.id.startswith("legacy:"),
+                    "vendor": meta.get("vendor", d.provider_id),
+                    "description": meta.get("description", ""),
+                    "input_cost_per_million": meta.get("input_cost_per_million"),
+                    "output_cost_per_million": meta.get("output_cost_per_million"),
+                    "context_window": meta.get("context_window"),
                 }
             )
 
@@ -2138,6 +2145,46 @@ def api_deployments(capability: str = "chat"):
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to list deployments: {e}")
 
+if (False):
+    @app.get("/api/deployments")
+    def api_deployments(capability: str = "chat"):
+        if PROVIDER_REGISTRY is None:
+            raise HTTPException(status_code=500, detail="Provider registry is not initialized.")
+
+        try:
+            cap = (capability or "").strip()
+            deployments = (
+                PROVIDER_REGISTRY.list_deployments(cap)
+                if cap and cap.lower() != "all"
+                else PROVIDER_REGISTRY.list_deployments(None)
+            )
+
+            items: list[dict[str, Any]] = []
+            for d in deployments:
+                items.append(
+                    {
+                        "id": d.id,
+                        "display_name": d.display_name,
+                        "provider_id": d.provider_id,
+                        "provider_type": d.provider_type,
+                        "model": d.model,
+                        "capabilities": list(d.capabilities),
+                        "tags": list(d.tags),
+                        "enabled": d.enabled,
+                        "base_url": d.base_url,
+                        "is_legacy": d.id.startswith("legacy:"),
+                    }
+                )
+
+            items.sort(key=lambda x: (x["provider_id"], x["display_name"].lower()))
+            return {
+                "deployments": items,
+                "capability": cap or "all",
+                "cached": False,
+                "fetched_at": int(time.time()),
+            }
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Failed to list deployments: {e}")
 if (False):
     @app.get("/api/deployments")
     def api_deployments():
