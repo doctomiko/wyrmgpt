@@ -102,7 +102,6 @@ from .db import (
 )
 
 core_cfg = load_core_config()
-oai_cfg = load_openai_config()
 
 DEBUG_ERRORS = core_cfg.debug_errors
 
@@ -144,10 +143,12 @@ SOURCES_ROOT = DATA_DIR / "sources"
 # This is where APIs for supported toools (retrievers, file parsers, etc.) would live; you can add subdirs as needed
 TOOLS_DIR = HERE / "tools"
 
-# TODO phase this out in favor of provider configs
-MODEL = oai_cfg.open_ai_model
-# TODO decide if TITLE_MODEL should have its own setting
-TITLE_MODEL = oai_cfg.summary_model
+if (False):
+    oai_cfg = load_openai_config()
+    # TODO phase this out in favor of provider configs
+    MODEL = oai_cfg.open_ai_model
+    # TODO decide if TITLE_MODEL should have its own setting
+    TITLE_MODEL = oai_cfg.summary_model
 
 # -------------------------
 # API Contracts
@@ -381,11 +382,23 @@ def postprocess_text(text: str) -> str:
     return text
 
 
-def _resolve_utility_target(
-    *preferred_deployment_ids: str,
-    fallback_model: str | None = None,
-    required_capability: str = "chat",
-):
+def _get_default_chat_target():
+    registry = PROVIDER_REGISTRY
+    if registry is None:
+        raise RuntimeError("Provider registry is not initialized.")
+    return registry.resolve_chat_target(None)
+
+
+def _get_default_chat_selector() -> str:
+    """
+    Returns the default deployment id if available.
+    Falls back to the resolved target id.
+    """
+    target = _get_default_chat_target()
+    return target.id
+
+
+def _resolve_utility_target(*preferred_deployment_ids: str, fallback_model: str | None = None):
     registry = PROVIDER_REGISTRY
     if registry is None:
         raise RuntimeError("Provider registry is not initialized.")
@@ -395,22 +408,44 @@ def _resolve_utility_target(
         if not did:
             continue
         if did in registry.deployments:
-            target = registry.get_deployment(did)
-            if required_capability and not registry.has_capability(target, required_capability):
+            return registry.get_deployment(did)
+
+    requested = (fallback_model or "").strip()
+    if requested:
+        return registry.resolve_chat_target(requested)
+
+    return registry.resolve_chat_target(None)
+
+if (False):
+    def _resolve_utility_target(
+        *preferred_deployment_ids: str,
+        fallback_model: str | None = None,
+        required_capability: str = "chat",
+    ):
+        registry = PROVIDER_REGISTRY
+        if registry is None:
+            raise RuntimeError("Provider registry is not initialized.")
+
+        for deployment_id in preferred_deployment_ids:
+            did = (deployment_id or "").strip()
+            if not did:
                 continue
-            return target
+            if did in registry.deployments:
+                target = registry.get_deployment(did)
+                if required_capability and not registry.has_capability(target, required_capability):
+                    continue
+                return target
 
-    requested = (fallback_model or MODEL).strip()
+        requested = (fallback_model or MODEL).strip()
 
-    if required_capability:
-        return registry.resolve_deployment_for_capability(
-            required_capability,
-            requested if requested in registry.deployments else None,
-            fallback_to_default_chat=True,
-        )
+        if required_capability:
+            return registry.resolve_deployment_for_capability(
+                required_capability,
+                requested if requested in registry.deployments else None,
+                fallback_to_default_chat=True,
+            )
 
-    return registry.resolve_chat_target(requested)
-
+        return registry.resolve_chat_target(requested)
 if (False):
     def _resolve_utility_target(*preferred_deployment_ids: str, fallback_model: str | None = None):
         registry = PROVIDER_REGISTRY
@@ -524,7 +559,15 @@ def api_debug_db():
 
 @app.get("/api/health")
 def health():
-    return JSONResponse({"ok": True, "model": MODEL})
+    target = _get_default_chat_target()
+    return JSONResponse(
+        {
+            "ok": True,
+            "default_chat_deployment": target.id,
+            "provider": target.provider_id,
+            "model": target.model,
+        }
+    )
 
 #endregion
 
@@ -766,13 +809,11 @@ def chat(req: ChatRequest, model: str | None = None):
     # End to "Call" above.
     raw_input = build_model_input(cid, full)
 
-
-    requested_model = (req.model or model or MODEL).strip()
-
+    requested_model = (req.model or model or "").strip()
     if PROVIDER_REGISTRY is None:
         raise HTTPException(status_code=500, detail="Provider registry is not initialized.")
 
-    target = PROVIDER_REGISTRY.resolve_chat_target(requested_model)
+    target = PROVIDER_REGISTRY.resolve_chat_target(requested_model or None)
     provider = PROVIDER_REGISTRY.get_chat_provider(target)
 
     def gen():
@@ -911,14 +952,14 @@ async def chat_ab(req: ABChatRequest):
         add_message(cid, "user", full)
 
     model_input = build_model_input(cid, req.message)
-    model_a = (req.model_a or MODEL).strip()
+    model_a = (req.model_a or "").strip()
     model_b = (req.model_b or model_a).strip()
 
     if PROVIDER_REGISTRY is None:
         raise HTTPException(status_code=500, detail="Provider registry is not initialized.")
 
-    target_a = PROVIDER_REGISTRY.resolve_chat_target(model_a)
-    target_b = PROVIDER_REGISTRY.resolve_chat_target(model_b)
+    target_a = PROVIDER_REGISTRY.resolve_chat_target(model_a or None)
+    target_b = PROVIDER_REGISTRY.resolve_chat_target(model_b or None)
 
     ab_group = str(uuid.uuid4())
 
@@ -1105,7 +1146,6 @@ def api_summarize_conversation(conversation_id: str, sum_cfg: SummaryConfig | No
     try:
         complete_fn, target = _make_utility_completion(
             "summary_default",
-            fallback_model=TITLE_MODEL or MODEL,
         )
 
         summary_text = summarize_conversation_text(
@@ -1215,7 +1255,6 @@ def api_suggest_title(conversation_id: str):
         complete_fn, target = _make_utility_completion(
             "title_default",
             "summary_default",
-            fallback_model=TITLE_MODEL or MODEL,
         )
 
         suggested = suggest_conversation_title_from_transcript(
@@ -1986,21 +2025,22 @@ def api_delete_file(file_id: str):
 
 # region Model Selection Endpoints
 
+
 @app.get("/api/deployments")
-def api_deployments():
-    global _DEPLOYMENTS_CACHE, _DEPLOYMENTS_CACHE_TS
-    now = time.time()
-
-    if _DEPLOYMENTS_CACHE and (now - _DEPLOYMENTS_CACHE_TS) < _MODELS_TTL_SECONDS:
-        return _DEPLOYMENTS_CACHE
-
+def api_deployments(capability: str = "chat"):
     if PROVIDER_REGISTRY is None:
         raise HTTPException(status_code=500, detail="Provider registry is not initialized.")
 
     try:
-        items: list[dict[str, Any]] = []
+        cap = (capability or "").strip()
+        deployments = (
+            PROVIDER_REGISTRY.list_deployments(cap)
+            if cap and cap.lower() != "all"
+            else PROVIDER_REGISTRY.list_deployments(None)
+        )
 
-        for d in PROVIDER_REGISTRY.list_chat_deployments():
+        items: list[dict[str, Any]] = []
+        for d in deployments:
             items.append(
                 {
                     "id": d.id,
@@ -2017,12 +2057,53 @@ def api_deployments():
             )
 
         items.sort(key=lambda x: (x["provider_id"], x["display_name"].lower()))
-        payload = {"deployments": items, "cached": True, "fetched_at": int(now)}
-        _DEPLOYMENTS_CACHE = payload
-        _DEPLOYMENTS_CACHE_TS = now
-        return payload
+        return {
+            "deployments": items,
+            "capability": cap or "all",
+            "cached": False,
+            "fetched_at": int(time.time()),
+        }
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to list deployments: {e}")
+
+if (False):
+    @app.get("/api/deployments")
+    def api_deployments():
+        global _DEPLOYMENTS_CACHE, _DEPLOYMENTS_CACHE_TS
+        now = time.time()
+
+        if _DEPLOYMENTS_CACHE and (now - _DEPLOYMENTS_CACHE_TS) < _MODELS_TTL_SECONDS:
+            return _DEPLOYMENTS_CACHE
+
+        if PROVIDER_REGISTRY is None:
+            raise HTTPException(status_code=500, detail="Provider registry is not initialized.")
+
+        try:
+            items: list[dict[str, Any]] = []
+
+            for d in PROVIDER_REGISTRY.list_chat_deployments():
+                items.append(
+                    {
+                        "id": d.id,
+                        "display_name": d.display_name,
+                        "provider_id": d.provider_id,
+                        "provider_type": d.provider_type,
+                        "model": d.model,
+                        "capabilities": list(d.capabilities),
+                        "tags": list(d.tags),
+                        "enabled": d.enabled,
+                        "base_url": d.base_url,
+                        "is_legacy": d.id.startswith("legacy:"),
+                    }
+                )
+
+            items.sort(key=lambda x: (x["provider_id"], x["display_name"].lower()))
+            payload = {"deployments": items, "cached": True, "fetched_at": int(now)}
+            _DEPLOYMENTS_CACHE = payload
+            _DEPLOYMENTS_CACHE_TS = now
+            return payload
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Failed to list deployments: {e}")
 
 
 @app.get("/api/models")
