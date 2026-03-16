@@ -2465,93 +2465,6 @@ function updateModelInfo(which) {
   infoEl.innerHTML = html;
 }
 
-/*
-function updateModelInfo(which) {
-  const sel = which === "A" ? topBarModelSelectA : topBarModelSelectB;
-  const infoEl = which === "A" ? topBarModelInfoA : topBarModelInfoB;
-  if (!sel || !infoEl) return;
-
-  const choice = describeSelection(sel.value || "");
-  const modelMeta = choice.model
-    ? findModelMeta(choice.provider_id, choice.model)
-    : null;
-
-  const parts = [];
-
-  parts.push(`<span class="modelName">${escapeHtml(choice.display_name || choice.id)}</span>`);
-
-  if (choice.provider_id) {
-    parts.push(`<span class="modelVendor">${escapeHtml(choice.provider_id)}</span>`);
-  }
-
-  if (choice.kind === "deployment" && choice.model && choice.model !== choice.display_name) {
-    parts.push(`<span class="modelId">${escapeHtml(choice.model)}</span>`);
-  }
-
-  if (Array.isArray(choice.capabilities) && choice.capabilities.length) {
-    parts.push(`<span class="modelCaps">${escapeHtml(choice.capabilities.join(", "))}</span>`);
-  }
-
-  if (modelMeta?.input_cost_per_million != null) {
-    parts.push(`<span class="modelPrice">in: $${modelMeta.input_cost_per_million}/M</span>`);
-  }
-  if (modelMeta?.output_cost_per_million != null) {
-    parts.push(`<span class="modelPrice">out: $${modelMeta.output_cost_per_million}/M</span>`);
-  }
-  if (modelMeta?.context_window) {
-    parts.push(`<span class="modelContext">ctx: ${Number(modelMeta.context_window).toLocaleString()} tokens</span>`);
-  }
-
-  let html = parts.join(" · ");
-  if (modelMeta?.description) {
-    html += `<div class="modelDesc">${escapeHtml(modelMeta.description)}</div>`;
-  }
-
-  infoEl.innerHTML = html;
-}
-*/
-
-/*
-function updateModelInfo(which) {
-  const sel = which === "A" ? topBarModelSelectA : topBarModelSelectB;
-  const infoEl = which === "A" ? topBarModelInfoA : topBarModelInfoB;
-  if (!sel || !infoEl) return;
-
-  const choice = describeSelection(sel.value);
-  //const modelMeta = choice.model ? findModelById(choice.model) : null;
-  const modelMeta = choice.model
-    ? findModelMeta(choice.provider_id, choice.model)
-    : null;
-
-  const parts = [];
-
-  parts.push(`<span class="modelName">${escapeHtml(choice.display_name || choice.id)}</span>`);
-
-  if (choice.provider_id) {
-    parts.push(`<span class="modelVendor">${escapeHtml(choice.provider_id)}</span>`);
-  }
-
-  if (choice.kind === "deployment" && choice.model && choice.model !== choice.display_name) {
-    parts.push(`<span class="modelId">${escapeHtml(choice.model)}</span>`);
-  }
-
-  if (modelMeta?.input_cost_per_million != null)
-    parts.push(`<span class="modelPrice">in: $${modelMeta.input_cost_per_million}/M</span>`);
-  if (modelMeta?.output_cost_per_million != null)
-    parts.push(`<span class="modelPrice">out: $${modelMeta.output_cost_per_million}/M</span>`);
-
-  if (modelMeta?.context_window) {
-    parts.push(`<span class="modelContext">ctx: ${modelMeta.context_window.toLocaleString()} tokens</span>`);
-  }
-
-  if (modelMeta?.description) {
-    parts.push(`<div class="modelDesc">${escapeHtml(modelMeta.description)}</div>`);
-  }
-
-  infoEl.innerHTML = parts.join(" · ");
-}
-*/
-
 async function refreshDeployments() {
   const data = await fetchJsonDebug("/api/deployments");
   deployments = data.deployments || [];
@@ -2583,10 +2496,17 @@ function renderModelDropdowns() {
   selB.innerHTML = "";
 
   for (const d of deployments) {
+    const meta =
+      findModelMeta(d.provider_id, d.model) || d;
+
     const labelParts = [d.display_name || d.id];
 
     if (d.provider_id) labelParts.push(d.provider_id);
     if (d.model && d.model !== d.display_name) labelParts.push(d.model);
+
+    if (meta.input_cost_per_million != null && meta.output_cost_per_million != null) {
+      labelParts.push(`~$${meta.input_cost_per_million}/${meta.output_cost_per_million} per M tok`);
+    }
 
     if (Array.isArray(d.tags) && d.tags.length) {
       labelParts.push(d.tags.join(", "));
@@ -2631,54 +2551,6 @@ function renderModelDropdowns() {
     selB.value = savedB;
   }
 }
-
-/*
-function renderModelDropdowns() {
-  const selA = document.getElementById("modelSelectA");
-  const selB = document.getElementById("modelSelectB");
-  if (!selA || !selB) return;
-
-  // What we saved last time (global, not per-conversation yet)
-  const savedA = localStorage.getItem("chatoss.modelA") || "";
-  const savedB = localStorage.getItem("chatoss.modelB") || "";
-
-  selA.innerHTML = "";
-  selB.innerHTML = "";
-
-  for (const m of models) {
-    const labelParts = [m.display_name];
-    if (m.vendor) labelParts.push(m.vendor);
-    if (m.input_cost_per_million != null && m.output_cost_per_million != null) {
-      labelParts.push(
-        `~$${m.input_cost_per_million}/${m.output_cost_per_million} per M tok`
-      );
-    }
-    const label = labelParts.join(" · ");
-
-    const optA = document.createElement("option");
-    optA.value = m.id;
-    optA.textContent = label;
-
-    const optB = document.createElement("option");
-    optB.value = m.id;
-    optB.textContent = label;
-
-    selA.appendChild(optA);
-    selB.appendChild(optB);
-  }
-
-  // Restore saved selections if they’re still valid
-  if (savedA && models.some((m) => m.id === savedA)) {
-    selA.value = savedA;
-  }
-  if (savedB && models.some((m) => m.id === savedB)) {
-    selB.value = savedB;
-  }
-
-  // If we didn't have anything saved, leave the defaults (first options)
-}
-*/
-
 function initABUI() {
   renderModelDropdowns();
   

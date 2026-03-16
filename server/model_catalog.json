@@ -1,4 +1,13 @@
 {
+  "gpt-5.4": {
+    "vendor": "OpenAI",
+    "display_name": "GPT-5.4",
+    "description": "Primary high-end GPT-5 deployment.",
+    "input_cost_per_million": 1.25,
+    "output_cost_per_million": 10.0,
+    "context_window": 500000,
+    "tags": ["general", "flagship"]
+  },
   "gpt-5.2": {
     "vendor": "OpenAI",
     "display_name": "GPT-5.2",
@@ -151,6 +160,15 @@
     "output_cost_per_million": 17.0,
     "context_window": 128000,
     "tags": ["multimodal", "deprecated-soon"]
+  },
+  "gpt-4o-2024-11-20": {
+    "vendor": "OpenAI",
+    "display_name": "GPT-4o 2024-11-20",
+    "description": "Pinned GPT-4o snapshot from November 20, 2024.",
+    "input_cost_per_million": 4.25,
+    "output_cost_per_million": 17.0,
+    "context_window": 128000,
+    "tags": ["multimodal", "pinned", "legacy-favorite"]
   },
   "gpt-4o-mini": {
     "vendor": "OpenAI",
