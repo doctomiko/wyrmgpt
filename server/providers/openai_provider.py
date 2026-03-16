@@ -19,6 +19,25 @@ class ProviderExecutionError(Exception):
         self.payload = payload or {}
 
 
+def _effective_api_key(provider_def: ProviderDef) -> str | None:
+    raw = (provider_def.api_key or "").strip()
+    if raw:
+        return raw
+    if provider_def.type in ("ollama", "lmstudio", "openai_compat"):
+        return "local-not-needed"
+    return None
+
+
+def _default_vendor(provider_def: ProviderDef) -> str:
+    if provider_def.type == "openai":
+        return "OpenAI"
+    if provider_def.type == "ollama":
+        return "Ollama"
+    if provider_def.type == "lmstudio":
+        return "LM Studio"
+    return provider_def.id
+
+
 def extract_output_text(resp) -> str:
     t = getattr(resp, "output_text", None)
     if isinstance(t, str) and t.strip():
@@ -67,18 +86,37 @@ def extract_error_message(payload: dict[str, Any]) -> str:
     if isinstance(body, dict):
         err = body.get("error")
         if isinstance(err, dict):
-            return err.get("message") or body.get("message") or "OpenAI API error"
-        return body.get("message") or "OpenAI API error"
-    return "OpenAI API error"
+            return err.get("message") or body.get("message") or "API error"
+        return body.get("message") or "API error"
+    return "API error"
+
+if (False):
+    def extract_error_message(payload: dict[str, Any]) -> str:
+        body = payload.get("body") or {}
+        if isinstance(body, dict):
+            err = body.get("error")
+            if isinstance(err, dict):
+                return err.get("message") or body.get("message") or "OpenAI API error"
+            return body.get("message") or "OpenAI API error"
+        return "OpenAI API error"
 
 
 class OpenAIProvider:
     def __init__(self, provider_def: ProviderDef, model_catalog: ModelCatalog | None = None):
         kwargs: dict[str, Any] = {}
-        if provider_def.api_key:
-            kwargs["api_key"] = provider_def.api_key
+
+        api_key = _effective_api_key(provider_def)
+        if api_key:
+            kwargs["api_key"] = api_key
         if provider_def.base_url:
             kwargs["base_url"] = provider_def.base_url
+
+        if (False):
+            kwargs: dict[str, Any] = {}
+            if provider_def.api_key:
+                kwargs["api_key"] = provider_def.api_key
+            if provider_def.base_url:
+                kwargs["base_url"] = provider_def.base_url
 
         self.client = OpenAI(**kwargs)
         self.provider_def = provider_def
@@ -134,7 +172,8 @@ class OpenAIProvider:
                     id=mid,
                     provider_id=provider.id,
                     provider_type=provider.type,
-                    vendor=meta.get("vendor", "OpenAI"),
+                    vendor=meta.get("vendor", _default_vendor(provider)),                    
+                    #vendor=meta.get("vendor", "OpenAI"),
                     display_name=meta.get("display_name", mid),
                     description=meta.get("description", ""),
                     created=getattr(m, "created", None),
