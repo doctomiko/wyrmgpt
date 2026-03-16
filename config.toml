@@ -136,6 +136,21 @@ capabilities = ["chat", "stream"]
 enabled = true
 tags = ["fast", "remote"]
 
+[deployments.chat_4o]
+provider = "openai"
+model = "gpt-4o"
+display_name = "OpenAI GPT-4o"
+capabilities = ["chat", "stream", "catalog"]
+enabled = true
+tags = ["remote", "warm", "legacy-favorite"]
+
+[deployments.chat_4o_mini]
+provider = "openai"
+model = "gpt-4o-mini"
+display_name = "OpenAI GPT-4o Mini"
+capabilities = ["chat", "stream", "catalog"]
+enabled = true
+tags = ["remote", "fast", "cheap"]
 
 [deployments.lmstudio_chat]
 provider = "lmstudio_local"

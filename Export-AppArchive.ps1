@@ -4,6 +4,11 @@ param(
     [switch]$IncludeVenv = $false
 )
 
+$ProgressPreference = 'Continue'
+if ($PSVersionTable.PSVersion.Major -ge 7) {
+    $PSStyle.Progress.View = 'Classic'
+}
+
 Set-StrictMode -Version Latest
 
 $root = Get-Location
