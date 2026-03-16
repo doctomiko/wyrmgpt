@@ -87,7 +87,7 @@ class ProviderRegistry:
             if not provider:
                 raise ValueError(f"Provider '{dep.provider}' for deployment '{requested}' is not configured.")
             if not provider.enabled:
-                raise ValueError(f"Provider '{provider.id}' is disabled.")
+                raise ValueError(f"Provider '{provider.id}' is disabled.")            
             return ResolvedDeployment(
                 id=dep.id,
                 provider_id=provider.id,
@@ -95,8 +95,11 @@ class ProviderRegistry:
                 model=dep.model,
                 display_name=dep.display_name or dep.model,
                 capabilities=dep.capabilities,
+                tags=dep.tags,
+                enabled=dep.enabled,
                 base_url=provider.base_url,
             )
+
         # Backward-compatibility path:
         # treat unknown requested value as a raw model string on the default provider.
         default_id = self.get_default_chat_deployment_id()

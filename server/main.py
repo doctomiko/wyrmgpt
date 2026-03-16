@@ -335,16 +335,25 @@ _ALLOWED_MODEL_PREFIXES = ("gpt-", "o1", "o3", "o4")
 
 # region Misc Helper functions
 
+# TODO why isn't this moved to someplace like register.py?
 def build_provider_registry(model_catalog: ModelCatalog) -> ProviderRegistry:
     providers = load_provider_defs()
     deployments = load_deployment_defs()
 
+    compat_factory = lambda provider_def: OpenAIProvider(provider_def, model_catalog=model_catalog)
+
     chat_factories: dict[str, Callable[[ProviderDef], ChatProvider]] = {
-        "openai": lambda provider_def: OpenAIProvider(provider_def, model_catalog=model_catalog),
+        "openai": compat_factory,
+        "ollama": compat_factory,
+        "lmstudio": compat_factory,
+        "openai_compat": compat_factory,
     }
 
     catalog_factories: dict[str, Callable[[ProviderDef], ModelCatalogProvider]] = {
-        "openai": lambda provider_def: OpenAIProvider(provider_def, model_catalog=model_catalog),
+        "openai": compat_factory,
+        "ollama": compat_factory,
+        "lmstudio": compat_factory,
+        "openai_compat": compat_factory,
     }
 
     return ProviderRegistry(
@@ -353,6 +362,26 @@ def build_provider_registry(model_catalog: ModelCatalog) -> ProviderRegistry:
         chat_factories=chat_factories,
         catalog_factories=catalog_factories,
     )
+
+if (False):
+    def build_provider_registry(model_catalog: ModelCatalog) -> ProviderRegistry:
+        providers = load_provider_defs()
+        deployments = load_deployment_defs()
+
+        chat_factories: dict[str, Callable[[ProviderDef], ChatProvider]] = {
+            "openai": lambda provider_def: OpenAIProvider(provider_def, model_catalog=model_catalog),
+        }
+
+        catalog_factories: dict[str, Callable[[ProviderDef], ModelCatalogProvider]] = {
+            "openai": lambda provider_def: OpenAIProvider(provider_def, model_catalog=model_catalog),
+        }
+
+        return ProviderRegistry(
+            providers=providers,
+            deployments=deployments,
+            chat_factories=chat_factories,
+            catalog_factories=catalog_factories,
+        )
 
 def postprocess_text(text: str) -> str:
     """
@@ -1897,6 +1926,7 @@ def api_deployments():
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to list deployments: {e}")
 
+
 @app.get("/api/models")
 def api_models():
     global _MODELS_CACHE, _MODELS_CACHE_TS
@@ -1908,39 +1938,95 @@ def api_models():
         raise HTTPException(status_code=500, detail="Provider registry is not initialized.")
 
     try:
-        provider_id = "openai"
-        catalog = PROVIDER_REGISTRY.get_catalog_provider(provider_id)
-        provider_def = PROVIDER_REGISTRY.providers[provider_id]
-        model_infos = catalog.list_models(provider_def)
+        items: list[dict[str, Any]] = []
 
-        items: list[dict] = []
-        for m in model_infos:
-            mid = m.id
-            if _ALLOWED_MODEL_PREFIXES and not mid.startswith(_ALLOWED_MODEL_PREFIXES):
+        for provider_id, provider_def in PROVIDER_REGISTRY.providers.items():
+            if not provider_def.enabled:
                 continue
 
-            items.append(
-                {
-                    "id": m.id,
-                    "created": m.created,
-                    "owned_by": m.owned_by,
-                    "vendor": m.vendor,
-                    "display_name": m.display_name,
-                    "description": m.description,
-                    "input_cost_per_million": m.input_cost_per_million,
-                    "output_cost_per_million": m.output_cost_per_million,
-                    "context_window": m.context_window,
-                    "tags": list(m.tags),
-                }
-            )
+            try:
+                catalog = PROVIDER_REGISTRY.get_catalog_provider(provider_id)
+                model_infos = catalog.list_models(provider_def)
+            except Exception:
+                continue
 
-        items.sort(key=lambda m: m["display_name"].lower())
+            for m in model_infos:
+                mid = m.id
+
+                # Only filter OpenAI models by OpenAI-ish prefixes.
+                if provider_def.type == "openai" and _ALLOWED_MODEL_PREFIXES and not mid.startswith(_ALLOWED_MODEL_PREFIXES):
+                    continue
+
+                items.append(
+                    {
+                        "id": m.id,
+                        "provider_id": m.provider_id,
+                        "provider_type": m.provider_type,
+                        "created": m.created,
+                        "owned_by": m.owned_by,
+                        "vendor": m.vendor,
+                        "display_name": m.display_name,
+                        "description": m.description,
+                        "input_cost_per_million": m.input_cost_per_million,
+                        "output_cost_per_million": m.output_cost_per_million,
+                        "context_window": m.context_window,
+                        "tags": list(m.tags),
+                    }
+                )
+
+        items.sort(key=lambda m: (m.get("vendor", ""), m["display_name"].lower()))
         payload = {"models": items, "cached": True, "fetched_at": int(now)}
         _MODELS_CACHE = payload
         _MODELS_CACHE_TS = now
         return payload
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to list models: {e}")
+
+if (False):
+    @app.get("/api/models")
+    def api_models():
+        global _MODELS_CACHE, _MODELS_CACHE_TS
+        now = time.time()
+        if _MODELS_CACHE and (now - _MODELS_CACHE_TS) < _MODELS_TTL_SECONDS:
+            return _MODELS_CACHE
+
+        if PROVIDER_REGISTRY is None:
+            raise HTTPException(status_code=500, detail="Provider registry is not initialized.")
+
+        try:
+            provider_id = "openai"
+            catalog = PROVIDER_REGISTRY.get_catalog_provider(provider_id)
+            provider_def = PROVIDER_REGISTRY.providers[provider_id]
+            model_infos = catalog.list_models(provider_def)
+
+            items: list[dict] = []
+            for m in model_infos:
+                mid = m.id
+                if _ALLOWED_MODEL_PREFIXES and not mid.startswith(_ALLOWED_MODEL_PREFIXES):
+                    continue
+
+                items.append(
+                    {
+                        "id": m.id,
+                        "created": m.created,
+                        "owned_by": m.owned_by,
+                        "vendor": m.vendor,
+                        "display_name": m.display_name,
+                        "description": m.description,
+                        "input_cost_per_million": m.input_cost_per_million,
+                        "output_cost_per_million": m.output_cost_per_million,
+                        "context_window": m.context_window,
+                        "tags": list(m.tags),
+                    }
+                )
+
+            items.sort(key=lambda m: m["display_name"].lower())
+            payload = {"models": items, "cached": True, "fetched_at": int(now)}
+            _MODELS_CACHE = payload
+            _MODELS_CACHE_TS = now
+            return payload
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Failed to list models: {e}")
 
 # endregion
 

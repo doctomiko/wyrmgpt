@@ -110,6 +110,16 @@ model = "gpt-5.4"
 # Moving to [deployments.summary_default]
 summary_model = "gpt-5-mini"
 
+[providers.lmstudio_local]
+type = "lmstudio"
+base_url = "http://localhost:1234/v1"
+api_key = "lm-studio"
+
+[providers.ollama_local]
+type = "ollama"
+base_url = "http://localhost:11434/v1"
+api_key = "ollama"
+
 [deployments.chat_default]
 provider = "openai"
 model = "gpt-5.4"
@@ -125,6 +135,23 @@ display_name = "OpenAI Chat Fast"
 capabilities = ["chat", "stream"]
 enabled = true
 tags = ["fast", "remote"]
+
+
+[deployments.lmstudio_chat]
+provider = "lmstudio_local"
+model = "REPLACE_WITH_EXACT_LMSTUDIO_MODEL_ID"
+display_name = "LM Studio Local Chat"
+capabilities = ["chat", "stream", "catalog"]
+enabled = true
+tags = ["local", "lmstudio"]
+
+[deployments.ollama_chat]
+provider = "ollama_local"
+model = "REPLACE_WITH_EXACT_OLLAMA_MODEL_ID"
+display_name = "Ollama Local Chat"
+capabilities = ["chat", "stream", "catalog"]
+enabled = true
+tags = ["local", "ollama"]
 
 [deployments.summary_default]
 provider = "openai"

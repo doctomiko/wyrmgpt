@@ -245,7 +245,6 @@ const contextSectionState = (() => {
 
 // Zeitgeber hints - used to let ChatGPT know the time of a chat
 const ZEIT_PREFIX_RE = /^\s*(?:⟂ts=\d+|⟂t=\d{8}T\d{6}Z(?:\s+⟂age=-?\d+)?)\s*\n/;
-//const ZEIT_PREFIX_RE = /^\s*(?:⟂ts=\d+|⟂t=\d{8}T\d{6}Z(?:\s+⟂age=\d+)?)\s*\n/;
 const LEGACY_PREFIX_RE = /^\s*\[20\d\d-[^\]]+\]\s*\n/;
 
 // #region Configuration
@@ -520,8 +519,6 @@ async function newChat() {
   conversationId = data.conversation_id;
   localStorage.setItem("callie_mvp_conversation_id", conversationId);
 
-  //const conversations = await fetchConversations();
-  //renderConversations(conversations);
   await refreshConversationLists();
 
   clearChat();
@@ -542,19 +539,6 @@ function toggleTopMenu(forceState) {
     topMenu.classList.add("hidden");
   }
 }
-/*
-function toggleTopMenu(forceState) {
-  if (!topMenu) return;
-  const shouldShow = forceState !== undefined
-    ? forceState
-    : topMenu.classList.contains("hidden");
-  if (shouldShow) {
-    topMenu.classList.remove("hidden");
-  } else {
-    topMenu.classList.add("hidden");
-  }
-}
-*/
 
 // #region General Menu / Modal Helpers
 
@@ -824,13 +808,7 @@ function addAssistantMsgWithModel(modelId, initialText, createdAtIso, metaObj = 
   wrapper.className = "msgWithModel assistantWrap";
   // Label bar above the bubble
   const { metaBar } = buildMetaBar({ labelText, timeIso: createdAtIso || null, includeButton: false, metaObj });
-  // This is now handled in buildMetaBar
-  // const metaBar = document.createElement("div");
-  //metaBar.className = "abMeta singleMeta";
-  //const labelSpan = document.createElement("span");
-  //labelSpan.className = "abLabel";
-  //labelSpan.textContent = labelText;
-  //metaBar.appendChild(labelSpan);
+  
   wrapper.appendChild(metaBar);
 
   // Actual chat bubble
@@ -969,31 +947,6 @@ function renderABRow(msgA, msgB, canonicalA, canonicalB) {
   else if (canonicalB) markCanonical(rowEl, "B");
 }
 
-/*
-function renderABRow(msgA, msgB, canonicalA, canonicalB) {
-  // Try to get model labels if you’re storing them in meta; otherwise fall back.
-  const modelA = (msgA.meta && msgA.meta.model) || "model A";
-  const modelB = (msgB.meta && msgB.meta.model) || "model B";
-  // Reuse the same builder used for live A/B sends
-  const { rowEl, msgAEl, msgBEl } = addABRow(
-    modelA, modelB,
-    msgA.created_at || null, msgB.created_at || null
-  );
-  // Fill in the content
-  msgAEl.innerHTML = renderMarkdown(stripZeit(msgA.content));
-  msgBEl.innerHTML = renderMarkdown(stripZeit(msgB.content));
-  // Paint stored error rows red (persist across reload)
-  if (msgA.meta && msgA.meta.kind === "error") msgAEl.classList.add("error");
-  if (msgB.meta && msgB.meta.kind === "error") msgBEl.classList.add("error");
-  // Restore canonical choice if we know it
-  if (canonicalA) {
-    markCanonical(rowEl, "A");
-  } else if (canonicalB) {
-    markCanonical(rowEl, "B");
-  }
-}
-*/
-
 function addABRow(modelA, modelB, createdAtIsoA = null, createdAtIsoB = null) {
   const row = document.createElement("div");
   row.className = "abRow";
@@ -1080,162 +1033,6 @@ function addABRow(modelA, modelB, createdAtIsoA = null, createdAtIsoB = null) {
     infoBEl: B.info,
   };
 }
-/*
-function addABRow(modelA, modelB, createdAtIsoA = null, createdAtIsoB = null) {
-  const row = document.createElement("div");
-  row.className = "abRow";
-
-  const makeCol = (labelText, timeIso) => {
-    const meta = document.createElement("div");
-    meta.className = "abMeta";
-
-    const left = document.createElement("div");
-    left.className = "abMetaLeft";
-
-    const right = document.createElement("div");
-    right.className = "abMetaRight";
-
-    const col = document.createElement("div");
-    col.className = "abCol";
-
-    const label = document.createElement("span");
-    label.className = "abLabel";
-    label.textContent = labelText;
-
-    const timeEl = document.createElement("span");
-    timeEl.className = "msgTime";
-    timeEl.textContent = timeIso ? formatReadableDateTime(timeIso) : "";
-
-    const btn = document.createElement("button");
-    btn.className = "abChoose";
-    btn.textContent = "Use";
-
-    const info = document.createElement("button");
-    info.className = "abInfo";
-    info.textContent = "i";
-    info.title = "Details";
-
-    left.appendChild(label);
-    left.appendChild(timeEl);
-
-    // ✅ cluster buttons together on the right
-    right.appendChild(btn);
-    right.appendChild(info);
-
-    meta.appendChild(left);
-    meta.appendChild(right);
-
-    const msg = document.createElement("div");
-    msg.className = "msg assistant abMsg";
-    msg.textContent = "Thinking…";
-
-    col.appendChild(meta);
-    col.appendChild(msg);
-
-    return { col, meta, label, btn, info, msg, timeEl };
-  };
-
-  let safeLabelA = modelA && modelA.trim() ? modelA : "Unknown Model A";
-  if (safeLabelA == "model A") safeLabelA = "Unknown Model A";
-
-  let safeLabelB = modelB && modelB.trim() ? modelB : "Unknown Model B";
-  if (safeLabelB == "model B") safeLabelB = "Unknown Model B";
-
-  const A = makeCol(safeLabelA, createdAtIsoA);
-  const B = makeCol(safeLabelB, createdAtIsoB);
-
-  row.appendChild(A.col);
-  row.appendChild(B.col);
-
-  chatWindow.appendChild(row);
-  chatWindow.scrollTop = chatWindow.scrollHeight;
-
-  return {
-    rowEl: row,
-    msgAEl: A.msg,
-    msgBEl: B.msg,
-    labelAEl: A.label,
-    labelBEl: B.label,
-    timeAEl: A.timeEl,
-    timeBEl: B.timeEl,
-    btnAEl: A.btn,
-    btnBEl: B.btn,
-    infoAEl: A.info,
-    infoBEl: B.info,
-  };
-}
-*/
-
-/*
-function addABRow(modelA, modelB, createdAtIsoA = null, createdAtIsoB = null) {
-  const row = document.createElement("div");
-  row.className = "abRow";
-
-  const makeCol = (labelText, timeIso) => {
-    const meta = document.createElement("div");
-    meta.className = "abMeta";
-  
-    const left = document.createElement("div");
-    left.className = "abMetaLeft";
-
-    const col = document.createElement("div");
-    col.className = "abCol";
-
-    const label = document.createElement("span");
-    label.className = "abLabel";
-    label.textContent = labelText;
-
-    const timeEl = document.createElement("span");
-    timeEl.className = "msgTime";
-    timeEl.textContent = timeIso ? formatReadableDateTime(timeIso) : "";
-
-    const btn = document.createElement("button");
-    btn.className = "abChoose";
-    btn.textContent = "Use";
-
-    const info = document.createElement("button");
-    info.className = "abInfo";
-    info.textContent = "i";
-    info.title = "Details";
-
-    left.appendChild(label);
-    left.appendChild(timeEl);
-
-    meta.appendChild(left); // left now contains both label and time
-    //meta.appendChild(label);
-    meta.appendChild(info);
-    meta.appendChild(btn);
-
-    const msg = document.createElement("div");
-    msg.className = "msg assistant abMsg";
-    msg.textContent = "Thinking…";
-
-    col.appendChild(meta);
-    col.appendChild(msg);
-
-    return { col, meta, label, btn, info, msg, timeEl };
-  };
-
-  let safeLabelA = modelA && modelA.trim() ? modelA : "Unknown Model A";
-  if (safeLabelA == "model A") safeLabelA = "Unknown Model A";
-  const { col: colA, label: labelA, btn: btnA, info: infoA, msg: msgA, timeEl: timeElA } =
-    makeCol(`A · ${safeLabelA}`, createdAtIsoA);
-  let safeLabelB = modelB && modelB.trim() ? modelB : "Unknown Model B";
-  if (safeLabelB == "model B") safeLabelB = "Unknown Model B";
-  const { col: colB, label: labelB, btn: btnB, info: infoB, msg: msgB, timeEl: timeElB } =
-    makeCol(`B · ${safeLabelB}`, createdAtIsoB);
-
-  row.appendChild(colA);
-  row.appendChild(colB);
-  chatEl.appendChild(row);
-  chatEl.scrollTop = chatEl.scrollHeight;
-
-  btnA.addEventListener("click", () => chooseCanonical(row, "A"));
-  btnB.addEventListener("click", () => chooseCanonical(row, "B"));
-
-  return { rowEl: row, msgAEl: msgA, msgBEl: msgB, labelAEl: labelA, labelBEl: labelB, timeAEl: timeElA, timeBEl: timeElB, infoAEl: infoA, infoBEl: infoB };
-}
-*/
 
 // #endregion
 
@@ -1544,29 +1341,6 @@ async function selectConversation(cid) {
   scheduleTranscriptRefresh(cid);
 }
 
-// Updated version includes transcript regen logic
-/*
-async function selectConversation(cid) {
-  conversationId = cid;
-  localStorage.setItem("callie_mvp_conversation_id", conversationId);
-
-  //const conversations = await fetchConversations();
-  //renderConversations(conversations);
-  await refreshConversationLists();
-  
-  clearChat();
-
-  const msgs = await loadMessages(cid); // now returns raw with meta
-  if (!msgs.length) {
-    addMsg("assistant", "Empty chat. Say something mean to the void.");
-  } else {
-    renderMessagesWithAB(msgs);
-  }
-
-  await refreshContext();
-}
-*/
-
 // #endregion
 
 // #region Advanced mode (AB) helpers
@@ -1741,13 +1515,7 @@ function createCtxSection(key, title, bodyNode, summary = "") {
     persistContextSectionState();
     if (lastRenderedContext) renderContext(lastRenderedContext);
   });
-  /*
-  header.addEventListener("click", () => {
-    contextSectionState[key] = !contextSectionState[key];
-    if (lastRenderedContext) renderContext(lastRenderedContext);
-  });
-  */
-
+  
   section.appendChild(header);
   section.appendChild(body);
   return section;
@@ -1894,14 +1662,7 @@ function renderContext(ctx) {
   const beforeDiversify = retrievalDebug.result_count_before_diversify ?? "?";
   const afterDiversify = retrievalDebug.result_count_after_diversify ?? finalRows.length;
   const cacheHit = !!retrievalDebug.cache_hit;
-  /*
-  const rawCount = retrievalDebug.raw_result_count ?? rawRows.length;
-  const ftsCount = retrievalDebug.fts_result_count ?? 0;
-  const vectorCount = retrievalDebug.vector_result_count ?? 0;
-  const beforeDiversify = retrievalDebug.result_count_before_diversify ?? "?";
-  const afterDiversify = retrievalDebug.result_count_after_diversify ?? finalRows.length;
-  */
-
+  
   const suppressedIncluded = (retrievalDebug.suppressed_included_artifact_rows || []).length;
   const suppressedExpanded = (retrievalDebug.suppressed_expanded_artifact_rows || []).length;
   const expandedCount = (ctx.expanded_artifact_ids || []).length;
@@ -2178,14 +1939,6 @@ function renderContext(ctx) {
                   : "";
               return `${base}${range}`;
             })();
-      /*
-      const label =
-        item.kind === "FILE"
-          ? (item.filename || item.artifact_title || item.artifact_id)
-          : item.kind === "MEMORY"
-          ? (item.artifact_title || item.artifact_id)
-          : (item.conversation_title || item.artifact_title || item.artifact_id);
-      */
       return `${item.kind}: ${label} (raw hits=${item.raw_hit_count}, score=${item.score})`;
     });
 
@@ -2279,30 +2032,6 @@ async function refreshContext(draftOverride = null) {
     setContextRefreshing(false);
   }
 }
-/*
-async function refreshContext() {
-  if (!conversationId) return;
-  const limit = contextExpanded ? UI_CONFIG.context_preview_limit_max : UI_CONFIG.context_preview_limit_min;
-  const draft = (chatWindowInputTextbox?.value || "").trim();
-
-  setContextRefreshing(true);
-  try {
-    const ctx = await fetchContext(conversationId, limit, draft);
-    setContextRefreshing(false);
-    renderContext(ctx);
-    updateContextToggleButton();
-    //contextPreviewToggleBtn.textContent = contextExpanded ? "Show less" : "Show more";
-  } catch (e) {
-    console.error("refreshContext failed", e);
-    setContextRefreshing(false);
-    if (contextPreviewEl) {
-      contextPreviewEl.textContent = `Context refresh failed: ${e?.message || e}`;
-    }
-  } finally {
-    setContextRefreshing(false);
-  }
-}
-*/
 
 // #endregion
 
@@ -2343,28 +2072,6 @@ async function send() {
     deployment_id: choiceB.kind === "deployment" ? choiceB.id : null,
     provider: choiceB.provider_id || null,
   };
-
-  /*
-  const modelA = topBarModelSelectA?.value || null;
-  let modelB = modelA;
-  if (topBarModelSelectB && topBarModelSelectB.style.display !== "none") {
-    const v = (topBarModelSelectB.value || "").trim();
-    if (v) modelB = v;
-  }
-
-  const mA = findModelById(topBarModelSelectA.value);
-  const metaA = {
-    ab_group: "A",
-    canonical: true,
-    model: mA ? mA.display_name : topBarModelSelectA.value
-  };
-  const mB = findModelById(topBarModelSelectB.value);
-  const metaB = {
-    ab_group: "B",
-    canonical: false,
-    model: mB ? mB.display_name : topBarModelSelectB.value
-  };
-  */
 
   const useAB =
     typeof advancedMode !== "undefined" &&
@@ -2439,11 +2146,6 @@ async function sendAB(text, modelA, modelB) {
     now,
     now
   );
-  /*
-  const { rowEl, msgAEl, msgBEl, labelAEl, labelBEl, infoAEl, infoBEl } = addABRow(
-    modelA, modelB, now, now
-  );
-  */
 
   // These will be updated after the server returns.
   let detailsA = {
@@ -2462,11 +2164,7 @@ async function sendAB(text, modelA, modelB) {
     provider: choiceB.provider_id || null,
     selected_label: choiceB.display_name || modelB,
   };
-  /*
-  let detailsA = { pending: true, slot: "A", model: modelA };
-  let detailsB = { pending: true, slot: "B", model: modelB };
-  */
-
+  
   infoAEl.onclick = () => openMetaInfo(labelAEl.textContent || "A", detailsA);
   infoBEl.onclick = () => openMetaInfo(labelBEl.textContent || "B", detailsB);
 
@@ -2538,10 +2236,6 @@ async function sendAB(text, modelA, modelB) {
 
     renderSlot(msgAEl, labelAEl, "A", labelA, data.a);
     renderSlot(msgBEl, labelBEl, "B", labelB, data.b);
-    /*
-    renderSlot(msgAEl, labelAEl, "A", data.model_a || modelA, data.a);
-    renderSlot(msgBEl, labelBEl, "B", data.model_b || modelB, data.b);
-    */
 
     // Update the info payloads AFTER we have data
     detailsA = { slot: "A", model: data.model_a || modelA, ab_group: data.ab_group || null, result: data.a };
@@ -2562,156 +2256,6 @@ async function sendAB(text, modelA, modelB) {
   }
 }
 
-/*
-async function sendAB(text, modelA, modelB) {
-  const now = nowIso();
-  addUserMsgWithTime(text, now);
-
-  const { rowEl, msgAEl, msgBEl, labelAEl, labelBEl, timeAEl, timeBEl, infoAEl, infoBEl } = addABRow(
-    modelA,
-    modelB,
-    now,
-    now
-  );
-
-  infoAEl.onclick = () => openMetaInfo(`A · ${data.model_a || modelA}`, data.a);
-  infoBEl.onclick = () => openMetaInfo(`B · ${data.model_b || modelB}`, data.b);
-
-  // helper to render one slot (A or B)
-  function renderSlot(msgEl, slotLabelEl, slotName, slotModel, slotData) {
-    // Reset styles
-    msgEl.classList.remove("error");
-
-    if (!slotData) {
-      msgEl.textContent = "(empty)";
-      return;
-    }
-
-    // slotData shape: {ok:true,text:"..."} OR {ok:false,error:{status_code, request_id, body}}
-    if (slotData.ok) {
-      const t = stripZeit(slotData.text || "") || "(empty)";
-      msgEl.innerHTML = renderMarkdown(t);
-      if (slotModel) slotLabelEl.textContent = `${slotName} · ${slotModel}`;
-      return;
-    }
-
-    // Error case
-    msgEl.classList.add("error");
-
-    const err = slotData.error || {};
-    const status = err.status_code || "";
-    const reqId = err.request_id || "";
-    const body = err.body || {};
-    const msg =
-      (body.error && body.error.message) ||
-      body.message ||
-      "OpenAI API error";
-
-    // Render error text as markdown-safe plaintext
-    const lines = [];
-    lines.push(`**${slotName} error** (HTTP ${status || "?"})`);
-    if (reqId) lines.push(`request_id: \`${reqId}\``);
-    lines.push(msg);
-
-    msgEl.innerHTML = renderMarkdown(lines.join("\n\n"));
-    if (slotModel) slotLabelEl.textContent = `${slotName} · ${slotModel}`;
-  }
-
-  const payload = {
-    conversation_id: conversationId,
-    model_a: modelA,
-    model_b: modelB,
-    message: text
-  };
-
-  try {
-    const res = await fetch("/api/chat_ab", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-
-    const data = await res.json();
-
-    if (data.conversation_id) {
-      conversationId = data.conversation_id;
-      localStorage.setItem("callie_mvp_conversation_id", conversationId);
-    }
-
-    rowEl.dataset.abGroup = data.ab_group || "";
-
-    // Data now returns structured a/b objects
-    renderSlot(msgAEl, labelAEl, "A", data.model_a || modelA, data.a);
-    renderSlot(msgBEl, labelBEl, "B", data.model_b || modelB, data.b);
-
-    // canonical_slot might not exist anymore; keep old behavior defaulting to A
-    markCanonical(rowEl, data.canonical_slot || "A");
-
-    await refreshConversationLists();
-    await refreshContext();
-  } catch (e) {
-    console.error("Failed A/B send", e);
-    msgAEl.classList.add("error");
-    msgBEl.classList.add("error");
-    msgAEl.textContent = "[A] error during A/B call";
-    msgBEl.textContent = "[B] error during A/B call";
-  }
-}
-*/
-
-/*
-async function sendAB(text, modelA, modelB) {
-  const now = nowIso();
-  addUserMsgWithTime(text, now); //addMsg("user", text);
-
-  const { rowEl, msgAEl, msgBEl, labelAEl, labelBEl, timeAEl, timeBEl } = addABRow(modelA, modelB, now, now);
-
-  const payload = {
-    conversation_id: conversationId,
-    model_a: modelA,
-    model_b: modelB,
-    message: text
-  };
-
-  try {
-    const res = await fetch("/api/chat_ab", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-
-    const data = await res.json();
-
-    if (data.conversation_id) {
-      conversationId = data.conversation_id;
-      localStorage.setItem("callie_mvp_conversation_id", conversationId);
-    }
-
-    rowEl.dataset.abGroup = data.ab_group || "";
-
-    // Support rendering as Markdown, but fallback to plain text if it fails for some reason (e.g. malicious content that causes our markdown renderer to throw)
-    //msgAEl.textContent = data.a || "(empty)";
-    msgAEl.innerHTML = renderMarkdown(stripZeit(data.a) || "(empty)");
-    //msgBEl.textContent = data.b || "(empty)";
-    msgBEl.innerHTML = renderMarkdown(stripZeit(data.b) || "(empty)");
-
-    if (data.model_a) labelAEl.textContent = `A · ${data.model_a}`;
-    if (data.model_b) labelBEl.textContent = `B · ${data.model_b}`;
-
-    markCanonical(rowEl, data.canonical_slot || "A");
-
-    //const conversations = await fetchConversations();
-    //renderConversations(conversations);
-    await refreshConversationLists();
-    await refreshContext();
-  } catch (e) {
-    console.error("Failed A/B send", e);
-    msgAEl.textContent = "[A] error during A/B call";
-    msgBEl.textContent = "[B] error during A/B call";
-  }
-}
-*/
-
 // #endregion
 
 // #region Model / Deployment Settings helpers
@@ -2725,6 +2269,14 @@ function findDeploymentById(id) {
 
 function findModelById(id) {
   return models.find((m) => m.id === id) || null;
+}
+
+function findModelMeta(providerId, modelId) {
+  return (
+    models.find((m) => m.provider_id === providerId && m.id === modelId) ||
+    models.find((m) => m.id === modelId) ||
+    null
+  );
 }
 
 function describeSelection(id) {
@@ -2771,7 +2323,10 @@ function updateModelInfo(which) {
   if (!sel || !infoEl) return;
 
   const choice = describeSelection(sel.value);
-  const modelMeta = choice.model ? findModelById(choice.model) : null;
+  //const modelMeta = choice.model ? findModelById(choice.model) : null;
+  const modelMeta = choice.model
+    ? findModelMeta(choice.provider_id, choice.model)
+    : null;
 
   const parts = [];
 
@@ -2801,56 +2356,6 @@ function updateModelInfo(which) {
   infoEl.innerHTML = parts.join(" · ");
 }
 
-/*
-function updateModelInfo(which) {
-  const sel =
-    which === "A"
-      ? document.getElementById("modelSelectA")
-      : document.getElementById("modelSelectB");
-  const infoEl =
-    which === "A"
-      ? document.getElementById("modelInfoA")
-      : document.getElementById("modelInfoB");
-
-  if (!sel || !infoEl) return;
-
-  const id = sel.value;
-  const m = findModelById(id);
-  if (!m) {
-    infoEl.textContent = "";
-    return;
-  }
-
-  const parts = [];
-
-  parts.push(`<strong>${m.display_name}</strong>`);
-  if (m.vendor) parts.push(`<span class="modelVendor">${m.vendor}</span>`);
-
-  const priceBits = [];
-  if (m.input_cost_per_million != null)
-    priceBits.push(`in: $${m.input_cost_per_million}/M`);
-  if (m.output_cost_per_million != null)
-    priceBits.push(`out: $${m.output_cost_per_million}/M`);
-  if (priceBits.length) {
-    parts.push(`<span class="modelPrice">${priceBits.join(" · ")}</span>`);
-  }
-
-  if (m.context_window) {
-    parts.push(
-      `<span class="modelContext">ctx: ${m.context_window.toLocaleString()} tokens</span>`
-    );
-  }
-
-  if (m.description) {
-    parts.push(
-      `<div class="modelDesc">${escapeHtml(m.description)}</div>`
-    );
-  }
-
-  infoEl.innerHTML = parts.join(" · ");
-}
-*/
-
 async function refreshDeployments() {
   const data = await fetchJsonDebug("/api/deployments");
   deployments = data.deployments || [];
@@ -2869,16 +2374,6 @@ async function refreshModels() {
   updateModelInfo("A");
   updateModelInfo("B");
 }
-/*
-async function refreshModels() {
-  const data = await fetchJsonDebug("/api/models");
-  models = data.models || [];
-
-  renderModelDropdowns();
-  updateModelInfo("A");
-  updateModelInfo("B");
-}
-*/
 
 function renderModelDropdowns() {
   const selA = document.getElementById("modelSelectA");
@@ -3047,12 +2542,6 @@ function openMemoryModal() {
   hideAllTransientUI({ except: [persModal] });
   persModal.classList.remove("hidden");
 }
-/*
-function openMemoryModal() {
-  if (!persModal) return;
-  persModal.classList.remove("hidden");
-}
-*/
 
 function closeMemoryModal() {
   if (!persModal) return;
@@ -3086,16 +2575,6 @@ async function loadPersonalization() {
   resetMemoryEditor();      
   await refreshContext();
 }
-/*
-async function loadPersonalization() {
-  const [pins, aboutYou] = await Promise.all([
-    fetchPins(),
-    fetchAboutYou(),
-  ]);
-  renderPins(pins);
-  populateAboutYouForm(aboutYou);
-}
-*/
 
 function csvSetFromChecks(map) {
   return Object.entries(map)
@@ -3636,33 +3115,6 @@ async function loadMemories() {
   renderMemories(filtered);
   return filtered;
 }
-/*
-async function loadMemories() {
-  const memories = await fetchMemories();
-  let filtered = memories || [];
-
-  if (personalizationMode === "project" && personalizationProjectId != null) {
-    filtered = filtered.filter(m =>
-      Array.isArray(m.project_ids) &&
-      m.project_ids.some(pid => Number(pid) === Number(personalizationProjectId))
-    );
-  } else {
-    filtered = filtered.filter(m =>
-      !Array.isArray(m.project_ids) || m.project_ids.length === 0
-    );
-  }
-
-  renderMemories(filtered);
-  return filtered;
-}
-*/
-/*
-async function loadMemories() {
-  const memories = await fetchMemories();
-  renderMemories(memories);
-  return memories;
-}
-*/
 
 // #endregion
 
@@ -3979,21 +3431,6 @@ function renderProjects(projects, conversations) {
         refreshProjectFilesState(p.id);
       }
     });
-    /*
-    header.addEventListener("contextmenu", (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      menuTargetProjectId = p.id;
-      positionMenu(projMenuEl, ev.clientX, ev.clientY);
-      //projMenuEl.style.left = `${ev.clientX}px`;
-      //projMenuEl.style.top = `${ev.clientY}px`;
-      //projMenuEl.classList.remove("hidden");
-      if (projMenuManageFilesBtn) {
-        setFilesButtonEnabled(projMenuManageFilesBtn, false);
-        refreshProjectFilesState(p.id);
-      }
-    });
-    */
 
     const children = document.createElement("div");
     children.className = "projConvs";
@@ -4930,37 +4367,6 @@ if (contextPreviewToggleBtn) {
     if (lastRenderedContext) renderContext(lastRenderedContext);
   });
 }
-/*
-if (contextPreviewToggleBtn) {
-  contextPreviewToggleBtn.addEventListener("click", () => {
-    const next = !allContextSectionsExpanded();
-    Object.keys(contextSectionState).forEach((key) => {
-      contextSectionState[key] = next;
-    });
-    persistContextSectionState();
-    if (lastRenderedContext) renderContext(lastRenderedContext);
-  });
-}
-*/
-/*
-if (contextPreviewToggleBtn) {
-  contextPreviewToggleBtn.addEventListener("click", () => {
-    const next = !allContextSectionsExpanded();
-    Object.keys(contextSectionState).forEach((key) => {
-      contextSectionState[key] = next;
-    });
-    if (lastRenderedContext) renderContext(lastRenderedContext);
-  });
-}
-*/
-/*
-if (contextPreviewToggleBtn) {
-  contextPreviewToggleBtn.addEventListener("click", async () => {
-    contextExpanded = !contextExpanded;
-    await refreshContext();
-  });
-}
-*/
 
 // #endregion
 
