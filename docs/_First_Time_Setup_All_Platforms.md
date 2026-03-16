@@ -17,32 +17,33 @@ If you know what you're doing in Python, skip to `The shortest possible version`
 
 ## What I checked in this repo snapshot first
 
-This install guide was checked against the code and config in `WyrmGPT.20260314.a.zip` before writing.
+This install guide was checked against the code and config in `WyrmGPT.20260316.f.zip` before writing.
 
 The important findings:
 
-- `config.toml` **has** been adjusted to use forward slashes. Good. That is the right move for cross-platform sanity.
-- `README.md` still talks about `.env` / `.env.example`, which is stale compared to the current TOML-based config loader in `server/config.py`.
+- `config.toml` **has** been adjusted to use forward slashes. This was the right move for cross-platform sanity.
 - For a first-time civilian install, the safest path is: **leave `config.toml` alone** and create a small `config.secrets.toml` with your API key.
+- In current builds, the model selectors in the UI are deployment selectors backed by `/api/deployments`, not direct raw model catalog rows (as was true in older versions).
 
-So this guide is built around the path that is least likely to waste the user’s afternoon.
+This guide is built around the path that is least likely to waste your afternoon.
 
 ---
 
 ## Before you start
 
-You need:
+To complete the steps in this guide, you will need:
 
-- An Internet connection  (Duh!)
+- An Internet connection (Well, duh!)
+- Your exported ChatGPT data from OpenAI, downloaded as a `.zip` file, or an extracted export folder. **Highly Recommended**: you should get this started first, as it will take a while to get the data.
 - Python 3 installed https://www.python.org/
 - The WyrmGPT repo folder on your machine https://github.com/doctomiko/wyrmgpt
-- An OpenAI API key (See https://platform.openai.com/api-keys)
+- An OpenAI API key (See https://platform.openai.com/api-keys), now optional.
 - A terminal: PowerShell on Windows, Terminal on Mac, or a normal shell on Linux
-- Your exported ChatGPT data from OpenAI, downloaded as a `.zip` file, or an extracted export folder.
 - About 15 minutes of setup time, plus however long your import and embedding build takes.
 
 You do **not** need to edit Python source code.
-This version should greatly streamline initial configuration on Linux and Mac.
+
+This version of the guide should greatly streamline initial configuration on Linux and Mac.
 
 ---
 
@@ -161,8 +162,11 @@ Run these in PowerShell Terminal from the repo root:
 py -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-# Alternatively you can simply run the following:
-# .\Install-Requirements.ps1
+
+Alternatively you can simply run the following:
+
+```powershell
+.\Install-Requirements.ps1
 ```
 
 If PowerShell complains about script execution being blocked, you can run this once in the same PowerShell window:
@@ -201,7 +205,9 @@ If your system wants `python3` instead of `python`, use that.
 
 ## Step 4: Add your OpenAI API key
 
-This version of WyrmGPT needs your API key for:
+The default config expects an OpenAI API key. If you switch deployments/providers to LM Studio or Ollama, local chat/summary/title can work without it.
+
+When using OpenAI models, this version of WyrmGPT needs your API key for:
 
 - normal chatting
 - title generation
@@ -221,13 +227,16 @@ Put this in it:
 ```toml
 [providers.openai]
 api_key = "YOUR_OPENAI_API_KEY_HERE"
-model = "gpt-5.4"
-summary_model = "gpt-5-mini"
 ```
 
 Replace `YOUR_OPENAI_API_KEY_HERE` with your real key.
 
 That is enough for first-time setup.
+
+**Important Security Note:**
+- Default chat/title/summary behavior comes from [deployments.*] in `config.toml`
+- the API key belongs in `config.secrets.toml`
+- model/deployment choices belong in `config.toml` unless you are intentionally overriding secrets
 
 You do **not** need to edit `config.toml` just to get started.
 
@@ -367,7 +376,7 @@ This is the step that gives you embedding-based retrieval over the imported corp
 What it does:
 
 - Finds corpus chunks in the index that do not yet have embeddings
-- Calls the OpenAI embeddings API
+- Calls the configured embeddings provider from [embeddings].provider (default OpenAI)
 - Stores vectors in the local Qdrant-backed vector store under `data/qdrant/`
 - Updates embedding state in the local database
 

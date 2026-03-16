@@ -1,16 +1,21 @@
 # WyrmGPT
 
-WyrmGPT is a tiny, local-first web UI (FastAPI + vanilla JS) for chatting with OpenAI models while keeping the *scaffold* under your control: conversations live in a local SQLite DB, chats can be organized into Projects, and you can A/B two models and pick which answer becomes “canonical” for future context.
+WyrmGPT is a tiny, local-first web UI (FastAPI + vanilla JS) for chatting with LLM models while keeping the *scaffold* under your control: conversations live in a local SQLite DB, chats can be organized into Projects, and you can A/B two models and pick which answer becomes “canonical” for future context.
 
 This repo exists because the official web UI is… let’s say “enthusiastic about regressions.” If you’ve ever watched a feature you rely on quietly vanish between releases, you already understand the motivation.
+
+We now support not only OpenAI API, but OpenAI-like services such as those running in LM Studio or Ollama. With locally hosted LLM, you can own your entire conversation with AI from end-to-end - model, scaffolding, history, and context.
 
 ## What you get
 
 - A simple ChatGPT-style web UI you host locally
-- A/B mode: send one prompt to two models, then click **Use** on the preferred answer to mark it canonical
+- Advanced A/B testing mode: send one prompt to two models, then click **Use** on the preferred answer to mark it canonical
 - “Context pack” preview panel so you can see what the server is about to send to the model (system prompt + summary + memories + conversation history)
-- Pinned “memory” notes (manual, user-curated)
-- Model dropdown populated from your OpenAI account, with optional metadata from `server/model_catalog.json`
+- Override or extend the system prompt at the project level.
+- “Custom instructions” and weighted “memories” at the global and project level.
+- Deployment (model) selection is populated from configured deployments in config.toml / config.secrets.toml, including OpenAI and local OpenAI-compatible providers such as LM Studio and Ollama. Optional UI metadata comes from `server/model_catalog.json`.
+- Highly configurable RAG framework for files, memories, chat summaries, and chat transcripts - adjustable at both global and project levels. Now supports FTS and embeddings/vector db.
+- Import complete chat history from OpenAI.
 
 ### Other cool things our app can do (so far)
 
@@ -45,9 +50,11 @@ Transparency:
 
 ### Lies We're Telling You
 
-* “Average people can get this up and running” might be a lie today, but it doesn’t have to be a permanent lie. It may just be an ambition ahead of its packaging. There’s a difference between “this is easy” and “this can be made easy.” Right now it sounds more like the second.
-* “We’re giving it away for free and won’t make money” is not a lie unless you’re quietly hoping never to confront the economics. If the project has to grow teeth eventually, better to admit that early. This project is source accessible for a reason. It isn't OSS because we've seen a few dozen scammers out there with clones of ChatGPT, trying to grift the public as various models they loved got not-so-slowly phased out. We want this project to be accessible. That being said, we may monetize support, hosting, convenience, or advanced features later. We all need to eat. We are open to licensing what we are building to other entrepreneurs interested in leveraging it for their own ambitions.
-* And finally, it would be a lie if we didn't show you exactly where each reply comes from. That means chat history (recent and historical), uploaded files, memories you input, and the model that was used in that particular interchange. Because of this, we do our best to show provenance on every assistant message. We show which model authored it, and whether the current responder is continuing a transcript partly authored by others. Users can decide whether they want “single-continuity assistant mode” or “strict per-model continuity mode.” One gives you the illusion of a single soul moving between bodies. The other gives you honest parallel minds. Both are useful. The lie is forcing one while pretending it’s the other.
+* “Average people can get this up and running” might be a lie today, but it doesn’t have to be a permanent lie. It may just be an ambition ahead of its packaging. There’s a difference between “this is easy” and “this can be made easy.” We took significant steps to make first time setup pretty mindless, but you should probably have some basic familiarity with command line tools like Python and optionally PowerShell.
+
+* “We’re giving it away for free and won’t make money” is not a lie unless you’re quietly hoping never to confront the economics. If the project has to grow teeth eventually, better to admit that early. This project is source accessible for a reason. It isn't technically OSS, because we've seen a few dozen scammers out there with clones of ChatGPT, trying to grift the public as various models they loved got not-so-slowly phased out. We want this project to be accessible. That being said, we may monetize support, hosting, convenience, or advanced features later. We all need to eat. We are open to licensing what we've built to other entrepreneurs interested in leveraging it for their own ambitions - just be prepared to demonstrate that you're an honest dealer.
+
+* And finally, it would be a lie if we didn't show you exactly where each reply comes from. That means: chat history (recent and historical), uploaded files, memories you input, and the model that was used in each particular interchange. Because of this, we do our best to show provenance on every assistant message. We show which model authored it, and whether the current responder is continuing a transcript partly authored by others. Users can decide whether they want “single-continuity assistant mode” or “strict per-model continuity mode.” One gives you the illusion of a single soul moving between bodies. The other gives you honest parallel minds. Both are useful. The lie is forcing one while pretending it’s the other.
 
 ## Quick start
 
@@ -56,8 +63,9 @@ Initial setup and optional steps have been updated and moved to the `_First_Time
 ## How it works (high level)
 
 - `server/main.py` is the FastAPI backend.
+  - `POST /api/chat` streams responses through the provider/deployment registry using an OpenAI-compatible transport layer. That can target OpenAI, LM Studio, Ollama, and future compatible backends.
   - `POST /api/chat` streams responses using the OpenAI Responses API.
-  - `POST /api/chat_ab` returns two completions (A/B) and stores both with metadata.
+  - `POST /api/chat_ab` returns two simultaneous completions (A/B) and stores both with metadata.
   - `POST /api/ab/canonical` marks which A/B answer is canonical for future prompt context.
 
 - `server/db.py` is the SQLite data layer and schema.
@@ -108,15 +116,12 @@ If you care about your chat history, back up the `data/` folder periodically. (S
 
 ## Model metadata (optional)
 
-- The model dropdown is populated from `client.models.list()` and filtered to IDs starting with:
-  - `gpt-`, `o1`, `o3`, `o4`
-
-- WyrmGPT also loads optional extra metadata from:
-  - `server/model_catalog.json`
-
-You can hand-edit that file to add pricing/context-window notes shown in the UI.
-
-There’s also a helper script at `server/scripts/sync_model_catalog.py` that can stub new entries from your account’s model list (it requires `OPENAI_API_KEY` to be set).
+- the UI model selectors use `/api/deployments`
+- `/api/models` is still used for metadata enrichment and provider model catalogs
+- OpenAI model-prefix filtering (e.g. `gpt-`, `o1`, `o3`, `o4`) applies only to OpenAI provider catalog rows, not to local deployment choices.
+- Pricing and context window data shown in the UI come from `server/model_catalog.json` when there is an exact key match for the deployment’s model.
+  - You can hand-edit that file to add pricing/context-window notes shown in the UI.
+  - There’s also an Open AI helper script at `server/scripts/sync_model_catalog.py` that can stub new entries from your account’s model list (it requires `OPENAI_API_KEY` to be set).
 
 ## API endpoints (selected)
 
@@ -130,6 +135,7 @@ There’s also a helper script at `server/scripts/sync_model_catalog.py` that ca
 - `GET /api/projects` / `POST /api/projects` / `PUT /api/projects/{id}` – projects
 - `GET /api/conversation/{id}/context` – context pack preview
 - `GET /api/models` – list available models for dropdown
+- `GET /api/deployments` – list configured deployments for the UI; supports `?capability=all` if you want the honest nerd version.
 
 ## Security note
 
@@ -139,4 +145,4 @@ This is a personal, local tool. There’s no authentication layer. Don’t expos
 
 This project is licensed under the **PolyForm Noncommercial License 1.0.0** (see `LICENSE.md`). Noncommercial use is allowed with required notices; commercial use requires a separate agreement.
 
-If you want a commercial license, contact the maintainers (add your preferred contact info here).
+If you want a commercial license, contact the maintainers. We are reachable via https://doctorwyrm.com.
