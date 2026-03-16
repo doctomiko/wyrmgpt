@@ -139,7 +139,8 @@ tags = ["fast", "remote"]
 
 [deployments.lmstudio_chat]
 provider = "lmstudio_local"
-model = "REPLACE_WITH_EXACT_LMSTUDIO_MODEL_ID"
+# REPLACE_WITH_EXACT_LMSTUDIO_MODEL_ID
+model = "meta-llama-3.1-8b-instruct"
 display_name = "LM Studio Local Chat"
 capabilities = ["chat", "stream", "catalog"]
 enabled = true
@@ -147,7 +148,8 @@ tags = ["local", "lmstudio"]
 
 [deployments.ollama_chat]
 provider = "ollama_local"
-model = "REPLACE_WITH_EXACT_OLLAMA_MODEL_ID"
+# REPLACE_WITH_EXACT_OLLAMA_MODEL_ID
+model = "llama3.1:8b-instruct-q4_K_M"
 display_name = "Ollama Local Chat"
 capabilities = ["chat", "stream", "catalog"]
 enabled = true
