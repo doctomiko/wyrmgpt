@@ -13,8 +13,6 @@ Set-StrictMode -Version Latest
 
 $root = Get-Location
 $date = Get-Date -Format "yyyyMMdd"
-$root = Get-Location
-$date = Get-Date -Format "yyyyMMdd"
 
 function Get-NextArchiveRev {
     param(
@@ -100,28 +98,6 @@ function Get-GitIgnorePatterns {
     return $patterns
 }
 
-<#
-function Get-GitIgnorePatterns {
-    $gitignore = Join-Path $root ".gitignore"
-
-    if (!(Test-Path $gitignore)) {
-        return @()
-    }
-
-    $patterns = @()
-
-    Get-Content $gitignore | ForEach-Object {
-        $line = $_.Trim()
-
-        if ($line -and !$line.StartsWith("#")) {
-            $patterns += $line
-        }
-    }
-
-    return $patterns
-}
-#>
-
 function Test-ArchiveRuleMatch {
     param(
         [string]$Path,
@@ -167,24 +143,6 @@ function Get-ShouldExclude {
     return $exclude
 }
 
-<#
-function Get-ShouldExclude {
-    param(
-        $path,
-        $patterns
-    )
-
-    foreach ($pattern in $patterns) {
-
-        if ($path -like "*$pattern*") {
-            return $true
-        }
-    }
-
-    return $false
-}
-#>
-
 function Get-ExcludePatterns {
     $patterns = Get-GitIgnorePatterns
 
@@ -215,30 +173,173 @@ function Get-ExcludePatterns {
     return $patterns
 }
 
-<#
-function Get-ExcludePatterns {
+function Get-ProgressBarText {
+    param(
+        [int]$Percent,
+        [int]$Width = 28
+    )
 
-    $patterns = Get-GitIgnorePatterns
+    $p = [Math]::Max(0, [Math]::Min(100, $Percent))
+    $filled = [Math]::Floor(($p / 100) * $Width)
+    $empty = $Width - $filled
 
-    if (!$IncludeEnv) {
-        $patterns += ".env"
-    }
-
-    if (!$IncludeData) {
-        $patterns += "data"
-    }
-
-    if (!$IncludeVenv) {
-        $patterns += ".venv"
-    }
-
-    return $patterns
+    return ("[" + ("#" * $filled) + ("-" * $empty) + "]")
 }
-#>
+
+function Get-PrunableDirectoryNames {
+    param($Patterns)
+
+    $set = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+    foreach ($rule in $Patterns) {
+        if (-not $rule.DirectoryOnly) { continue }
+        if ($rule.Negate) { continue }
+
+        $pattern = [string]$rule.Pattern
+        if ([string]::IsNullOrWhiteSpace($pattern)) { continue }
+        if ($pattern.Contains("*") -or $pattern.Contains("?")) { continue }
+        if ($pattern.Contains("/")) { continue }
+
+        [void]$set.Add($pattern)
+    }
+
+    foreach ($name in @(
+        ".git",
+        "_bak",
+        "node_modules",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        "dist",
+        "build"
+    )) {
+        [void]$set.Add($name)
+    }
+
+    return $set
+}
+
+function Get-FilesForArchive {
+    param(
+        $Root,
+        $Patterns
+    )
+
+    $rootDir = Get-Item -LiteralPath $Root.Path
+    $prunableDirNames = Get-PrunableDirectoryNames $Patterns
+    $filtered = New-Object System.Collections.Generic.List[System.IO.FileInfo]
+    $stack = New-Object System.Collections.Generic.Stack[System.IO.DirectoryInfo]
+
+    $stack.Push($rootDir)
+
+    $dirsScanned = 0
+    $dirsQueued = 1
+
+    while ($stack.Count -gt 0) {
+        $dir = $stack.Pop()
+        $dirsScanned++
+
+        $knownDirs = [Math]::Max(($dirsScanned + $stack.Count), 1)
+
+        Show-ArchiveProgress `
+            -Id 1 `
+            -Activity "Scanning files" `
+            -Current $dirsScanned `
+            -Total $knownDirs `
+            -Status "$dirsScanned dirs scanned, $($filtered.Count) files kept" `
+            -Force:($dirsScanned -eq 1)
+
+        foreach ($subdir in @(Get-ChildItem -LiteralPath $dir.FullName -Directory -Force -ErrorAction SilentlyContinue)) {
+            $relativeDir = Convert-ToArchivePath ($subdir.FullName.Substring($Root.Path.Length + 1))
+
+            if ($prunableDirNames.Contains($subdir.Name)) {
+                continue
+            }
+
+            if (Get-ShouldExclude $relativeDir $Patterns) {
+                continue
+            }
+
+            $stack.Push($subdir)
+            $dirsQueued++
+        }
+
+        foreach ($file in @(Get-ChildItem -LiteralPath $dir.FullName -File -Force -ErrorAction SilentlyContinue)) {
+            $relativeFile = Convert-ToArchivePath ($file.FullName.Substring($Root.Path.Length + 1))
+
+            if (-not (Get-ShouldExclude $relativeFile $Patterns)) {
+                [void]$filtered.Add($file)
+            }
+        }
+    }
+
+    Show-ArchiveProgress -Id 1 -Activity "Scanning files" -Completed
+    return $filtered
+}
+
+function Show-ArchiveProgress {
+    param(
+        [int]$Id,
+        [string]$Activity,
+        [int]$Current,
+        [int]$Total,
+        [string]$Status,
+        [switch]$Completed,
+        [switch]$Force
+    )
+
+    if ($Completed) {
+        Write-Progress -Id $Id -Activity $Activity -Completed
+        if ($script:ProgressLineActive) {
+            Write-Host ""
+            $script:ProgressLineActive = $false
+        }
+        return
+    }
+
+    if ($Total -le 0) {
+        $percent = 0
+    } else {
+        $percent = [int][Math]::Floor(($Current / $Total) * 100)
+    }
+
+    $nowMs = $script:ProgressStopwatch.ElapsedMilliseconds
+    if (-not $Force -and ($nowMs - $script:LastProgressRenderMs) -lt 80 -and $Current -lt $Total) {
+        return
+    }
+    $script:LastProgressRenderMs = $nowMs
+    <#
+    $now = [Environment]::TickCount64
+    if (-not $Force -and ($now - $script:LastProgressRender) -lt 80 -and $Current -lt $Total) {
+        return
+    }
+    $script:LastProgressRender = $now
+    #>
+
+    Write-Progress `
+        -Id $Id `
+        -Activity $Activity `
+        -Status $Status `
+        -PercentComplete $percent
+
+    $bar = Get-ProgressBarText -Percent $percent
+    $line = "`r$Activity $bar $percent%  $Status"
+
+    Write-Host -NoNewline $line
+    $script:ProgressLineActive = $true
+}
+
+
 
 $rev = Get-NextArchiveRev -Root $root -Date $date
 $zipName = "WyrmGPT.$date.$rev.zip"
 $zipPath = Join-Path $root $zipName
+
+#$script:LastProgressRender = 0
+$script:ProgressStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+$script:LastProgressRenderMs = 0
+$script:ProgressLineActive = $false
 
 $excludePatterns = Get-ExcludePatterns
 
@@ -255,21 +356,12 @@ $excludePatterns | ForEach-Object { Write-Host " - $_" }
 
 Write-Host ""
 
-$files = Get-ChildItem -Path $root -Recurse -File
-
-$filtered = @()
-
-foreach ($file in $files) {
-
-    $relative = Convert-ToArchivePath ($file.FullName.Substring($root.Path.Length))
-    #$relative = $file.FullName.Substring($root.Path.Length)
-
-    if (-not (Get-ShouldExclude $relative $excludePatterns)) {
-        $filtered += $file
-    }
-}
+$filtered = Get-FilesForArchive -Root $root -Patterns $excludePatterns
 
 $total = $filtered.Count
+if ($total -le 0) {
+    throw "No files matched the archive rules."
+}
 
 Write-Host "Files to archive: $total"
 Write-Host ""
@@ -285,18 +377,17 @@ $zip = [System.IO.Compression.ZipFile]::Open($zipPath, 'Create')
 $i = 0
 
 foreach ($file in $filtered) {
-
     $i++
 
-    $percent = [int](($i / $total) * 100)
+    $relativePath = Convert-ToArchivePath ($file.FullName.Substring($root.Path.Length + 1))
 
-    Write-Progress `
+    Show-ArchiveProgress `
+        -Id 2 `
         -Activity "Creating ZIP archive" `
-        -Status "$i of $total files" `
-        -PercentComplete $percent
-
-    $relativePath = Convert-ToArchivePath ($file.FullName.Substring($root.Path.Length + 1))        
-    #$relativePath = $file.FullName.Substring($root.Path.Length + 1)
+        -Current $i `
+        -Total $total `
+        -Status "$i of $total files : $relativePath" `
+        -Force:($i -eq 1 -or $i -eq $total)
 
     if ($VerbosePreference -eq "Continue") {
         Write-Verbose "Adding $relativePath"
@@ -307,15 +398,18 @@ foreach ($file in $filtered) {
     $entryStream = $entry.Open()
     $fileStream = [System.IO.File]::OpenRead($file.FullName)
 
-    $fileStream.CopyTo($entryStream)
-
-    $fileStream.Dispose()
-    $entryStream.Dispose()
+    try {
+        $fileStream.CopyTo($entryStream)
+    }
+    finally {
+        $fileStream.Dispose()
+        $entryStream.Dispose()
+    }
 }
 
 $zip.Dispose()
 
-Write-Progress -Activity "Creating ZIP archive" -Completed
+Show-ArchiveProgress -Id 2 -Activity "Creating ZIP archive" -Completed
 
 Write-Host ""
 Write-Host "Archive created:"

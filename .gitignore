@@ -1,3 +1,26 @@
+.git/
+node_modules/
+dist/
+build/
+
+# Root and Server Caches
+.pytest_cache/
+server/__pycache__ 
+__pycache__/
+.mypy_cache/
+.ruff_cache/
+
+# Local backups / Archives - these are backups of previous versions
+*.zip
+_bak/
+
+# Virtualenv
+.venv/
+.venv-bak/
+
+# Local DB / runtime data
+data/
+
 # Env files (ignore real secrets, keep redacted/examples)
 .env
 !.env.*
@@ -13,17 +36,3 @@
 # TOML versions of secure configuration
 config.secrets.toml
 !config.secrets.toml.example
-
-# Local backups / Archives - these are backups of previous versions
-*.zip
-_bak/
-
-# Virtualenv
-.venv/
-.venv-bak/
-
-# Server pycache
-server/__pycache__
-
-# Local DB / runtime data
-data/
