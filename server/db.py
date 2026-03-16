@@ -1544,6 +1544,7 @@ def update_conversation_title(conversation_id: str, title: str) -> bool:
         )
         return (cur.rowcount or 0) > 0
     
+
 def _summary_excerpt(text: str, max_chars: int = 220) -> str:
     s = (text or "").strip()
     if not s:
@@ -1631,6 +1632,7 @@ def get_conversation_title(conversation_id: str) -> str | None:
             (conversation_id,),
         ).fetchone()
         return row["title"] if row else None
+
 
 def get_conversation_context(conversation_id: str, preview_limit: int = 20) -> dict:
     title = get_conversation_title(conversation_id)
@@ -2756,6 +2758,7 @@ def update_ab_canonical(conversation_id: str, ab_group: str, slot: str) -> None:
                 "UPDATE messages SET meta = ? WHERE id = ?",
                 (json.dumps(meta), r["id"]),
             )
+
 
 # endregion
 

@@ -19,7 +19,8 @@ from pydantic import BaseModel
 from .logging_helper import log_warn
 from .context import _get_prompt, build_context, build_context_panel_payload, build_model_input
 from .markdown_helper import apply_house_markdown_normalization, autolink_text
-from .summary_helper import summarize_conversation_text
+from .summary_helper import summarize_conversation_text, suggest_conversation_title_from_transcript
+
 from .query_retrieval import retrieve_chunks_for_message
 from .providers.registry import ProviderRegistry
 from .providers.base import ChatProvider, ModelCatalogProvider
@@ -383,6 +384,7 @@ if (False):
             catalog_factories=catalog_factories,
         )
 
+
 def postprocess_text(text: str) -> str:
     """
     House normalization for output before storing in DB or displaying on screen.
@@ -397,6 +399,43 @@ def postprocess_text(text: str) -> str:
     text = apply_house_markdown_normalization(text)
     text = autolink_text(text)
     return text
+
+
+def _resolve_utility_target(*preferred_deployment_ids: str, fallback_model: str | None = None):
+    registry = PROVIDER_REGISTRY
+    if registry is None:
+        raise RuntimeError("Provider registry is not initialized.")
+
+    for deployment_id in preferred_deployment_ids:
+        did = (deployment_id or "").strip()
+        if not did:
+            continue
+        if did in registry.deployments:
+            return registry.get_deployment(did)
+
+    requested = (fallback_model or MODEL).strip()
+    return registry.resolve_chat_target(requested)
+
+
+def _make_utility_completion(*preferred_deployment_ids: str, fallback_model: str | None = None):
+    registry = PROVIDER_REGISTRY
+    if registry is None:
+        raise RuntimeError("Provider registry is not initialized.")
+
+    target = _resolve_utility_target(*preferred_deployment_ids, fallback_model=fallback_model)
+    provider = registry.get_chat_provider(target)
+
+    def complete_fn(system_prompt: str, user_prompt: str, max_output_tokens: int) -> str:
+        model_input: ModelInput = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        request_options = {"max_output_tokens": max(1, int(max_output_tokens or 0))} if max_output_tokens else None
+        result = provider.complete(target, model_input, request_options=request_options)
+        return (result.text or "").strip()
+
+    return complete_fn, target
+
 
 def _preview_content(c):
     if c is None:
@@ -1044,10 +1083,11 @@ def api_get_title(conversation_id: str):
 
 # endregion
 
+
 @app.post("/api/conversations/{conversation_id}/summarize")
 def api_summarize_conversation(conversation_id: str, sum_cfg: SummaryConfig | None = None):
     sum_cfg = sum_cfg or load_summary_config()
-    oai_cfg = load_openai_config()
+
     try:
         title, transcript = get_transcript_for_summary(conversation_id)
     except KeyError:
@@ -1061,37 +1101,102 @@ def api_summarize_conversation(conversation_id: str, sum_cfg: SummaryConfig | No
         cfg_default="SUMMARY_CONVO_PROMPT",
         cfg_filepath="SUMMARY_CONVO_PROMPT_FILE",
     )
-    # TODO phase out MODEL completely
-    model = oai_cfg.summary_model or MODEL
+
     try:
+        complete_fn, target = _make_utility_completion(
+            "summary_default",
+            fallback_model=TITLE_MODEL or MODEL,
+        )
+
         summary_text = summarize_conversation_text(
-            model=model,
+            model=target.model,
             title=title,
             transcript=transcript,
             cfg=sum_cfg,
             system_prompt=system_prompt,
+            complete_fn=complete_fn,
         )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to summarize: {e}")
-    # summary_text = (_extract_output_text(resp) or "").strip()
+
     summary_text = (summary_text or "").strip()
     if not summary_text:
         raise HTTPException(status_code=502, detail="Summarizer returned empty output.")
-    
-    summary_message = f"Summary of “{title}”:\n\n{summary_text}"
 
+    summary_message = f"Summary of “{title}”:\n\n{summary_text}"
     full = postprocess_text(summary_message)
+
     if full:
         add_message(
             conversation_id,
             "assistant",
             full,
-            meta={"summary": True, "model": model},
+            meta={
+                "summary": True,
+                "model": target.model,
+                "provider": target.provider_id,
+                "deployment_id": target.id,
+            },
         )
-        save_conversation_summary_artifact(conversation_id, summary_text, model)
-        # save_conversation_summary(conversation_id, full, model)
+        save_conversation_summary_artifact(conversation_id, summary_text, target.model)
 
-    return {"conversation_id": conversation_id, "summary": summary_text, "model": model}
+    return {
+        "conversation_id": conversation_id,
+        "summary": summary_text,
+        "model": target.model,
+        "provider": target.provider_id,
+        "deployment_id": target.id,
+    }
+
+if (False):
+    @app.post("/api/conversations/{conversation_id}/summarize")
+    def api_summarize_conversation(conversation_id: str, sum_cfg: SummaryConfig | None = None):
+        sum_cfg = sum_cfg or load_summary_config()
+        oai_cfg = load_openai_config()
+        try:
+            title, transcript = get_transcript_for_summary(conversation_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Conversation not found.")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        system_prompt = _get_prompt(
+            default_prompt=sum_cfg.summary_conversation_prompt,
+            filepath=sum_cfg.summary_conversation_prompt_file,
+            cfg_default="SUMMARY_CONVO_PROMPT",
+            cfg_filepath="SUMMARY_CONVO_PROMPT_FILE",
+        )
+        # TODO phase out MODEL completely
+        model = oai_cfg.summary_model or MODEL
+        try:
+            summary_text = summarize_conversation_text(
+                model=model,
+                title=title,
+                transcript=transcript,
+                cfg=sum_cfg,
+                system_prompt=system_prompt,
+            )
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Failed to summarize: {e}")
+        # summary_text = (_extract_output_text(resp) or "").strip()
+        summary_text = (summary_text or "").strip()
+        if not summary_text:
+            raise HTTPException(status_code=502, detail="Summarizer returned empty output.")
+        
+        summary_message = f"Summary of “{title}”:\n\n{summary_text}"
+
+        full = postprocess_text(summary_message)
+        if full:
+            add_message(
+                conversation_id,
+                "assistant",
+                full,
+                meta={"summary": True, "model": model},
+            )
+            save_conversation_summary_artifact(conversation_id, summary_text, model)
+            # save_conversation_summary(conversation_id, full, model)
+
+        return {"conversation_id": conversation_id, "summary": summary_text, "model": model}
 
 # region Conversation Transcript Endpoints
 
@@ -1144,6 +1249,49 @@ def api_export_transcript(
         )
     except ValueError as e:
         _http_from_value_error(e)
+
+
+
+@app.post("/api/conversation/{conversation_id}/suggest_title")
+def api_suggest_title(conversation_id: str):
+    try:
+        current_title, transcript = get_transcript_for_summary(conversation_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    try:
+        complete_fn, target = _make_utility_completion(
+            "title_default",
+            "summary_default",
+            fallback_model=TITLE_MODEL or MODEL,
+        )
+
+        suggested = suggest_conversation_title_from_transcript(
+            model=target.model,
+            transcript=transcript,
+            current_title=current_title or "New chat",
+            complete_fn=complete_fn,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to suggest title: {e}")
+
+    final_title = (suggested or "").strip() or "New chat"
+    updated = update_conversation_title(conversation_id, final_title)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "title": final_title,
+            "model": target.model,
+            "provider": target.provider_id,
+            "deployment_id": target.id,
+        }
+    )
+
 
 # endregion
 

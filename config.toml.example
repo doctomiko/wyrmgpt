@@ -160,3 +160,11 @@ display_name = "OpenAI Summary Default"
 capabilities = ["chat"]
 enabled = true
 tags = ["summary"]
+
+[deployments.title_default]
+provider = "openai"
+model = "gpt-5-mini"
+display_name = "OpenAI Title Default"
+capabilities = ["chat"]
+enabled = true
+tags = ["title"]

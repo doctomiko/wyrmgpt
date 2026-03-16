@@ -122,11 +122,18 @@ class OpenAIProvider:
         self.provider_def = provider_def
         self.model_catalog = model_catalog or {}
 
-    def complete(self, deployment: ResolvedDeployment, model_input: ModelInput) -> ChatResult:
+    def complete(
+        self,
+        deployment: ResolvedDeployment,
+        model_input: ModelInput,
+        request_options: dict[str, Any] | None = None,
+    ) -> ChatResult:
         try:
+            kwargs: dict[str, Any] = dict(request_options or {})
             resp = self.client.responses.create(
                 model=deployment.model,
                 input=cast(ResponseInputParam, model_input),
+                **kwargs,
             )
             text = extract_output_text(resp)
             return ChatResult(
@@ -139,6 +146,24 @@ class OpenAIProvider:
         except APIStatusError as e:
             payload = openai_error_payload(e)
             raise ProviderExecutionError(extract_error_message(payload), payload=payload) from e
+    if (False):
+        def complete(self, deployment: ResolvedDeployment, model_input: ModelInput) -> ChatResult:
+            try:
+                resp = self.client.responses.create(
+                    model=deployment.model,
+                    input=cast(ResponseInputParam, model_input),
+                )
+                text = extract_output_text(resp)
+                return ChatResult(
+                    text=text,
+                    provider_id=deployment.provider_id,
+                    deployment_id=deployment.id,
+                    model=deployment.model,
+                    raw=resp,
+                )
+            except APIStatusError as e:
+                payload = openai_error_payload(e)
+                raise ProviderExecutionError(extract_error_message(payload), payload=payload) from e
 
     def stream_text(self, deployment: ResolvedDeployment, model_input: ModelInput) -> Iterator[str]:
         try:

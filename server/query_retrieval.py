@@ -55,12 +55,28 @@ def _cache_put(key, data, ttl_sec: float, max_entries: int):
 # endregion
 # region Singletons for Vector DB Stuffs
 
+
 @lru_cache(maxsize=1)
 def _embedding_provider():
     emb_cfg = load_embedding_config()
-    if emb_cfg.provider != "openai":
-        raise NotImplementedError(f"Embedding provider not implemented yet: {emb_cfg.provider}")
-    return OpenAIEmbeddingProvider(emb_cfg=emb_cfg)
+    provider = OpenAIEmbeddingProvider(emb_cfg=emb_cfg)
+
+    if provider.provider_def.type not in ("openai", "ollama", "lmstudio", "openai_compat"):
+        raise NotImplementedError(
+            f"Embedding provider not implemented yet: {provider.provider_def.type}"
+        )
+
+    return provider
+
+
+if (False):
+    @lru_cache(maxsize=1)
+    def _embedding_provider():
+        emb_cfg = load_embedding_config()
+        if emb_cfg.provider != "openai":
+            raise NotImplementedError(f"Embedding provider not implemented yet: {emb_cfg.provider}")
+        return OpenAIEmbeddingProvider(emb_cfg=emb_cfg)
+
 
 @lru_cache(maxsize=1)
 def _vector_store():
