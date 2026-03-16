@@ -398,24 +398,68 @@ def _get_default_chat_selector() -> str:
     return target.id
 
 
-def _resolve_utility_target(*preferred_deployment_ids: str, fallback_model: str | None = None):
+def _resolve_utility_target(
+    *preferred_deployment_ids: str,
+    fallback_model: str | None = None,
+    required_capability: str = "chat",
+):
     registry = PROVIDER_REGISTRY
     if registry is None:
         raise RuntimeError("Provider registry is not initialized.")
 
+    # First: explicitly preferred deployment ids, in order.
     for deployment_id in preferred_deployment_ids:
         did = (deployment_id or "").strip()
         if not did:
             continue
         if did in registry.deployments:
-            return registry.get_deployment(did)
+            target = registry.get_deployment(did)
+            if required_capability and not registry.has_capability(target, required_capability):
+                continue
+            return target
 
+    # Second: backward-compatible raw model / explicit selector fallback.
     requested = (fallback_model or "").strip()
     if requested:
-        return registry.resolve_chat_target(requested)
+        if requested in registry.deployments:
+            target = registry.get_deployment(requested)
+            if not required_capability or registry.has_capability(target, required_capability):
+                return target
+        else:
+            target = registry.resolve_chat_target(requested)
+            if not required_capability or registry.has_capability(target, required_capability):
+                return target
 
+    # Third: pick the first enabled deployment that supports the requested capability.
+    if required_capability:
+        return registry.resolve_deployment_for_capability(
+            required_capability,
+            None,
+            fallback_to_default_chat=True,
+        )
+
+    # Last resort: default chat deployment.
     return registry.resolve_chat_target(None)
 
+# Older versions we will remove later in phase 6
+if (False):
+    def _resolve_utility_target(*preferred_deployment_ids: str, fallback_model: str | None = None):
+        registry = PROVIDER_REGISTRY
+        if registry is None:
+            raise RuntimeError("Provider registry is not initialized.")
+
+        for deployment_id in preferred_deployment_ids:
+            did = (deployment_id or "").strip()
+            if not did:
+                continue
+            if did in registry.deployments:
+                return registry.get_deployment(did)
+
+        requested = (fallback_model or "").strip()
+        if requested:
+            return registry.resolve_chat_target(requested)
+
+        return registry.resolve_chat_target(None)
 if (False):
     def _resolve_utility_target(
         *preferred_deployment_ids: str,
@@ -463,12 +507,20 @@ if (False):
         return registry.resolve_chat_target(requested)
 
 
-def _make_utility_completion(*preferred_deployment_ids: str, fallback_model: str | None = None):
+def _make_utility_completion(
+    *preferred_deployment_ids: str,
+    fallback_model: str | None = None,
+    required_capability: str = "chat",
+):
     registry = PROVIDER_REGISTRY
     if registry is None:
         raise RuntimeError("Provider registry is not initialized.")
 
-    target = _resolve_utility_target(*preferred_deployment_ids, fallback_model=fallback_model)
+    target = _resolve_utility_target(
+        *preferred_deployment_ids,
+        fallback_model=fallback_model,
+        required_capability=required_capability,
+    )
     provider = registry.get_chat_provider(target)
 
     def complete_fn(system_prompt: str, user_prompt: str, max_output_tokens: int) -> str:
@@ -481,6 +533,26 @@ def _make_utility_completion(*preferred_deployment_ids: str, fallback_model: str
         return (result.text or "").strip()
 
     return complete_fn, target
+
+if (False):
+    def _make_utility_completion(*preferred_deployment_ids: str, fallback_model: str | None = None):
+        registry = PROVIDER_REGISTRY
+        if registry is None:
+            raise RuntimeError("Provider registry is not initialized.")
+
+        target = _resolve_utility_target(*preferred_deployment_ids, fallback_model=fallback_model)
+        provider = registry.get_chat_provider(target)
+
+        def complete_fn(system_prompt: str, user_prompt: str, max_output_tokens: int) -> str:
+            model_input: ModelInput = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]
+            request_options = {"max_output_tokens": max(1, int(max_output_tokens or 0))} if max_output_tokens else None
+            result = provider.complete(target, model_input, request_options=request_options)
+            return (result.text or "").strip()
+
+        return complete_fn, target
 
 
 def _preview_content(c):

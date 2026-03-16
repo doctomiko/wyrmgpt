@@ -4,9 +4,11 @@ dist/
 build/
 
 # Root and Server Caches
+__pycache__
 .pytest_cache/
-server/__pycache__ 
-__pycache__/
+server/__pycache__
+server/providers/__pycache__
+server/vector/__pycache__
 .mypy_cache/
 .ruff_cache/
 

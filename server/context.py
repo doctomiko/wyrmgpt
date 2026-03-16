@@ -1,43 +1,41 @@
 from datetime import datetime, timezone
 import json
-import os
+#import os
 #from typing import cast
 from pathlib import Path
 import re
+from functools import lru_cache
 
 from .logging_helper import log_debug, log_warn
+from .providers.registry import ProviderRegistry
 from .db import (
     get_app_setting,
     get_conversation_summary_text,
-    get_messages,
-    get_context_sources,
-    list_memory_pins,
+    get_messages, get_context_sources,
+    list_memory_pins, list_artifacts_for_file,
     # list_files_for_conversation,
     # list_files_for_project,
     # list_all_files,
-    list_artifacts_for_file,
-    ensure_artifacts_for_files,
-    gather_scoped_files,
+    ensure_artifacts_for_files, gather_scoped_files,
     ensure_conversation_transcript_artifact_fresh,
-    list_memories,
-    list_conversations,
+    list_memories, list_conversations,
     load_artifact_row_for_context,
-    memory_artifact_id,
-    conversation_summary_artifact_id,
+    memory_artifact_id, conversation_summary_artifact_id,
     conversation_transcript_artifact_id,
     db_session,
-    hydrate_artifact_content_text,    
-    
+    #hydrate_artifact_content_text,        
 )
 
 from .config import (
-    CoreConfig, load_core_config, 
+    CoreConfig, load_core_config,
     ContextConfig, load_context_config,
-    RetrievalConfig, load_openai_config, load_retrieval_config, 
+    RetrievalConfig, load_retrieval_config,
     QUERY_INCLUDE_ALLOWED, QUERY_EXPAND_ALLOWED,
     _normalize_csv_set,
-    load_embedding_config, load_vector_config
+    load_embedding_config, load_vector_config,
+    load_provider_defs, load_deployment_defs,
 )
+
 # TODO untagle dependencies later if needed
 # Now artifactor is used entirely from the database layer
 # from .artifactor import artifact_file
@@ -57,9 +55,9 @@ from .providers.types import ModelInput
 _QUERY_WORD_RE = WORD_RE
 _QUERY_STOP = load_filler_words_cached()
 
-oai_cfg=load_openai_config()
-CHEAP_MODEL=oai_cfg.summary_model
-FULL_MODEL=oai_cfg.open_ai_model
+#oai_cfg=load_openai_config()
+#CHEAP_MODEL=oai_cfg.summary_model
+#FULL_MODEL=oai_cfg.open_ai_model
 
 def _get_prompt(default_prompt: str, filepath: str = "", cfg_default="(cfg default)", cfg_filepath="(cfg filepath name)") -> str:
     """
@@ -91,6 +89,50 @@ def _get_prompt(default_prompt: str, filepath: str = "", cfg_default="(cfg defau
     val = val.replace("\\n", "\n")
     return val
 
+
+@lru_cache(maxsize=1)
+def _selection_registry() -> ProviderRegistry:
+    return ProviderRegistry(
+        providers=load_provider_defs(),
+        deployments=load_deployment_defs(),
+        chat_factories={},
+        catalog_factories={},
+    )
+
+
+def _default_model_for_context(*preferred_deployment_ids: str, required_capability: str = "chat") -> str:
+    registry = _selection_registry()
+
+    for deployment_id in preferred_deployment_ids:
+        did = (deployment_id or "").strip()
+        if not did:
+            continue
+        if did in registry.deployments:
+            target = registry.get_deployment(did)
+            if not required_capability or registry.has_capability(target, required_capability):
+                return target.model
+
+    if required_capability:
+        try:
+            return registry.resolve_deployment_for_capability(
+                required_capability,
+                None,
+                fallback_to_default_chat=True,
+            ).model
+        except Exception:
+            pass
+
+    return registry.resolve_chat_target(None).model
+
+
+def _cheap_context_model() -> str:
+    return _default_model_for_context("summary_default", "title_default", required_capability="chat")
+
+
+def _full_context_model() -> str:
+    return _default_model_for_context("chat_default", required_capability="chat")
+
+
 def _effective_query_setting(project_id: int | None, key: str, fallback: str) -> str:
     if project_id is not None:
         v = get_app_setting(f"query.{key}", None, "project", str(project_id))
@@ -100,6 +142,7 @@ def _effective_query_setting(project_id: int | None, key: str, fallback: str) ->
     if v is not None and str(v).strip() != "":
         return str(v)
     return fallback
+
 
 def get_system_prompt(cfg: CoreConfig | None = None) -> str:
     """
@@ -116,6 +159,7 @@ def get_system_prompt(cfg: CoreConfig | None = None) -> str:
         cfg_filepath="SYSTEM_PROMPT_FILE",
     )
 
+
 def iso_to_epoch_ms(iso: str) -> int:
     """Handles "2026-02-28T23:15:12.140213+00:00" cleanly"""
     # Accepts "Z" or "+00:00"
@@ -127,12 +171,14 @@ def iso_to_epoch_ms(iso: str) -> int:
     dt_utc = dt.astimezone(timezone.utc)
     return int(dt_utc.timestamp() * 1000)
 
+
 def iso_to_compact_utc(iso: str) -> str:
     dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     dt = dt.astimezone(timezone.utc)
     return dt.strftime("%Y%m%dT%H%M%SZ")
+
 
 def iso_to_age_seconds(iso: str) -> int:
     dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
@@ -141,6 +187,7 @@ def iso_to_age_seconds(iso: str) -> int:
     dt = dt.astimezone(timezone.utc)
     now = datetime.now(timezone.utc)
     return max(0, int((now - dt).total_seconds()))
+
 
 def _excerpt_around_query(text: str, query: str | None, *, max_chars: int) -> str:
     full = (text or "").strip()
@@ -280,6 +327,7 @@ def _format_retrieved_chunks(
 
     return ("\n\n".join(block_parts)).strip(), meta, cites
 
+
 def _format_conversation_range(started_at: str | None, ended_at: str | None) -> str:
     start = (started_at or "").strip()
     end = (ended_at or "").strip()
@@ -290,6 +338,7 @@ def _format_conversation_range(started_at: str | None, ended_at: str | None) -> 
     if end:
         return end
     return ""
+
 
 def _build_chat_chunk_context_prefix(r: dict) -> str:
     source_kind = (r.get("source_kind") or "").strip().lower()
@@ -318,6 +367,7 @@ def _build_chat_chunk_context_prefix(r: dict) -> str:
 
     return "\n".join(lines).strip()
 
+
 def _select_other_project_conversation_rows_for_context(
     conversation_id: str,
     project_id: int | None,
@@ -340,6 +390,7 @@ def _select_other_project_conversation_rows_for_context(
             break
 
     return out
+
 
 def _conversation_span_map(conn, conversation_ids: list[str]) -> dict[str, tuple[str | None, str | None]]:
     if not conversation_ids:
@@ -364,6 +415,7 @@ def _conversation_span_map(conn, conversation_ids: list[str]) -> dict[str, tuple
         for r in rows
     }
 
+
 def _conversation_summary_to_input_message(
     *,
     conversation_id: str,
@@ -387,13 +439,15 @@ def _conversation_summary_to_input_message(
 
     return {"role": "user", "content": "\n".join(lines).strip()}
 
+
 def zeitgeber_prefix(created_at: str, raw_content: str) -> str:
     stamp = iso_to_compact_utc(created_at)
     age = iso_to_age_seconds(created_at)
     text = f"⟂t={stamp} ⟂age={age}\n{raw_content}"
     return text
 
-def estimate_tokens_for_messages(messages: list[dict], model: str = CHEAP_MODEL) -> dict:
+
+def estimate_tokens_for_messages(messages: list[dict], model: str | None = None) -> dict:
     """
     Rough token estimate for a list of messages.
 
@@ -402,6 +456,8 @@ def estimate_tokens_for_messages(messages: list[dict], model: str = CHEAP_MODEL)
       - approximate token count using tiktoken if available
       - number of image inputs (we just count them; their actual billing is resolution-based)
     """
+    model = (model or "").strip() or _cheap_context_model()
+
     total_chars = 0
     num_images = 0
     text_pieces: list[str] = []
@@ -443,32 +499,111 @@ def estimate_tokens_for_messages(messages: list[dict], model: str = CHEAP_MODEL)
         "num_images": num_images,
     }
 
+if (False):
+    def estimate_tokens_for_messages(messages: list[dict], model: str = CHEAP_MODEL) -> dict:
+        """
+        Rough token estimate for a list of messages.
+
+        Counts:
+        - total characters in text
+        - approximate token count using tiktoken if available
+        - number of image inputs (we just count them; their actual billing is resolution-based)
+        """
+        total_chars = 0
+        num_images = 0
+        text_pieces: list[str] = []
+
+        for msg in messages:
+            content = msg.get("content")
+
+            # Legacy: plain string content
+            if isinstance(content, str):
+                total_chars += len(content)
+                text_pieces.append(content)
+                continue
+
+            # Responses-style: list of input items
+            if isinstance(content, list):
+                for item in content:
+                    if not isinstance(item, dict):
+                        continue
+                    itype = item.get("type")
+                    if itype == "input_text":
+                        text = item.get("text") or ""
+                        total_chars += len(text)
+                        text_pieces.append(text)
+                    elif itype == "input_image":
+                        num_images += 1
+
+        approx_tokens = None
+        if tiktoken is not None and text_pieces:
+            try:
+                enc = tiktoken.encoding_for_model(model)
+            except Exception:
+                enc = tiktoken.get_encoding("cl100k_base")
+            joined = "\n".join(text_pieces)
+            approx_tokens = len(enc.encode(joined))
+
+        return {
+            "total_chars": total_chars,
+            "approx_text_tokens": approx_tokens,
+            "num_images": num_images,
+        }
+
+
 def estimate_context_tokens(
     conversation_id: str,
     ctx_cfg: ContextConfig, #history_limit: int = 200,
     addtl_user_text: str = "",
-    model: str = FULL_MODEL,
+    model: str | None = None,
     drop_last_user_message: bool = False,
 ) -> dict:
     """
     Estimate tokens for the context that will be sent with the next user message,
     excluding that next user message itself.
     """
+    model = (model or "").strip() or _full_context_model()
+
     full_input = build_model_input(conversation_id, addtl_user_text, ctx_cfg)
     if not full_input:
         return {"total_chars": 0, "approx_text_tokens": 0, "num_images": 0}
 
-    # Optionally, Drop the last message (most recent user turn) so this is “context load”, not “what they’re about to send”.
+    # Optionally, drop the last message (most recent user turn) so this is “context load”, not “what they’re about to send”.
     if drop_last_user_message and full_input[-1].get("role") == "user":
         context = full_input[:-1]
     else:
         context = full_input
+
     return estimate_tokens_for_messages(context, model=model)
+
+if (False):
+    def estimate_context_tokens(
+        conversation_id: str,
+        ctx_cfg: ContextConfig, #history_limit: int = 200,
+        addtl_user_text: str = "",
+        model: str = FULL_MODEL,
+        drop_last_user_message: bool = False,
+    ) -> dict:
+        """
+        Estimate tokens for the context that will be sent with the next user message,
+        excluding that next user message itself.
+        """
+        full_input = build_model_input(conversation_id, addtl_user_text, ctx_cfg)
+        if not full_input:
+            return {"total_chars": 0, "approx_text_tokens": 0, "num_images": 0}
+
+        # Optionally, Drop the last message (most recent user turn) so this is “context load”, not “what they’re about to send”.
+        if drop_last_user_message and full_input[-1].get("role") == "user":
+            context = full_input[:-1]
+        else:
+            context = full_input
+        return estimate_tokens_for_messages(context, model=model)
 
 
 def _indent_block(text: str, prefix: str = "  ") -> str:
     lines = (text or "").splitlines() or [""]
     return "\n".join(prefix + line for line in lines)
+
 
 def _bulletize(text: str) -> str:
     text = (text or "").strip()
@@ -479,11 +614,13 @@ def _bulletize(text: str) -> str:
     rest = "".join(f"\n  {line}" for line in lines[1:])
     return first + rest
 
+
 def _humanize_pin_title(title: str) -> str:
     raw = (title or "").strip().replace("_", " ").replace("-", " ")
     if not raw:
         return ""
     return " ".join(word.capitalize() for word in raw.split())
+
 
 def _order_scoped_pins_for_context(
     pins: list[dict],
@@ -508,6 +645,7 @@ def _order_scoped_pins_for_context(
     if limit is not None and limit > 0:
         ordered = ordered[:limit]
     return ordered
+
 
 def _build_personalization_blocks(pins: list[dict]) -> dict:
     about_lines: list[str] = []
@@ -635,6 +773,7 @@ def _artifact_to_input_message(art: dict, *, label: str) -> dict:
     header = "\n".join(header_lines).strip()
     text = f"{header}\n\n{body}".strip()
     return {"role": "user", "content": text}
+
 
 def _order_scoped_memories_for_context(
     memories: list[dict],
@@ -869,6 +1008,7 @@ def _chat_window_to_input_message(
         lines.append("")
 
     return {"role": "user", "content": "\n".join(lines).strip()}
+
 
 def build_context(
         conversation_id: str, # shapes the context by scope
@@ -1422,6 +1562,7 @@ def build_context(
         "file_messages": normalized_file_messages,
     }
 
+
 def build_model_input(
         conversation_id: str, 
         user_text: str, 
@@ -1451,6 +1592,7 @@ def build_model_input(
     typed_history = ctx["history_rows_typed"]
     *prior_msgs, last_msg = typed_history
     return [system_message] + whole_artifact_messages + normalized_file_messages + prior_msgs + [last_msg]
+
 
 def build_context_panel_payload(
     conversation_id: str,
@@ -1517,6 +1659,7 @@ def build_context_panel_payload(
         "llm_input_messages": full_input,
     }
 
+
 def _panel_label_for_file_message(msg: dict) -> str:
     content = msg.get("content") or ""
     if isinstance(content, str):
@@ -1527,6 +1670,7 @@ def _panel_label_for_file_message(msg: dict) -> str:
         first = str(txt).splitlines()[0].strip()
         return first or "(file)"
     return "(file)"
+
 
 def _build_file_messages_for_conversation(
     conversation_id: str,

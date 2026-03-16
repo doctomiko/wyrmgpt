@@ -104,30 +104,24 @@ class ProviderRegistry:
                     f"Requested deployment '{requested}' was not found and fallback is disabled."
                 )
 
-        if cap:
-            for dep_id, dep in self.deployments.items():
-                if not dep.enabled:
-                    continue
-                if not self.has_capability(dep, cap):
-                    continue
-                provider = self.providers.get(dep.provider)
-                if not provider or not provider.enabled:
-                    continue
+        for dep in self.deployments.values():
+            if not dep.enabled:
+                continue
+            if cap and not self.has_capability(dep, cap):
+                continue
 
-                if dep_id == requested:
-                    return self._resolve_from_def(dep)
+            provider = self.providers.get(dep.provider)
+            if not provider or not provider.enabled:
+                continue
 
-            if requested and fallback_to_default_chat:
-                default_chat = self.resolve_chat_target(None)
-                if self.has_capability(default_chat, cap):
-                    return default_chat
+            return self._resolve_from_def(dep)
 
-            raise ValueError(f"No enabled deployment supports required capability '{cap}'.")
+        if fallback_to_default_chat:
+            default_chat = self.resolve_chat_target(None)
+            if not cap or self.has_capability(default_chat, cap):
+                return default_chat
 
-        if requested:
-            return self.resolve_chat_target(requested)
-
-        return self.resolve_chat_target(None)
+        raise ValueError(f"No enabled deployment supports required capability '{cap}'.")
 
     def resolve_chat_target(self, requested: str | None) -> ResolvedDeployment:
         requested = (requested or "").strip()
