@@ -2949,41 +2949,7 @@ def list_memories(limit: int = 200) -> list[dict]:
         """, (limit,)).fetchall()
 
         return [_memory_row_to_dict(r) for r in rows]
-    
-if (False):
-    def list_memories(limit: int = 200) -> list[dict]:
-        with db_session() as conn:
-            rows = conn.execute("""
-                SELECT
-                    m.id,
-                    m.scope_type,
-                    m.scope_id,
-                    m.content,
-                    m.importance,
-                    m.tags,
-                    COALESCE(m.created_by, 'user') AS created_by,
-                    COALESCE(m.origin_kind, 'user_asserted') AS origin_kind,
-                    m.source_conversation_id,
-                    m.source_message_id,
-                    m.created_at,
-                    m.updated_at,
-                    (
-                        SELECT GROUP_CONCAT(mp.project_id)
-                        FROM memory_projects mp
-                        WHERE mp.memory_id = m.id
-                    ) AS project_ids_csv,
-                    (
-                        SELECT GROUP_CONCAT(mc.conversation_id)
-                        FROM memory_conversations mc
-                        WHERE mc.memory_id = m.id
-                    ) AS conversation_ids_csv
-                FROM memories m
-                WHERE COALESCE(m.is_deleted, 0) = 0
-                ORDER BY COALESCE(m.updated_at, m.created_at) DESC, m.id DESC
-                LIMIT ?
-            """, (limit,)).fetchall()
 
-            return [_memory_row_to_dict(r) for r in rows]
 
 def update_memory(
     memory_id: str,
@@ -4112,58 +4078,9 @@ def search_corpus_for_conversation(
             """,
             tuple(params),
         ).fetchall()
-        if (False):
-            rows = conn.execute(
-                f"""
-                SELECT
-                c.id AS chunk_id,
-                c.scope_key,
-                c.artifact_id,
-                c.chunk_index,
-                c.source_kind,
-                c.source_id,
-                c.file_id,
-                c.filename,
-                c.mime_type,
-                c.text,
-
-                a.title AS artifact_title,
-                a.updated_at AS artifact_updated_at,
-
-                f.created_at AS file_created_at,
-                f.updated_at AS file_updated_at,
-
-                conv.id AS conversation_id,
-                conv.title AS conversation_title,
-                substr(COALESCE(sumart.summary_text, ''), 1, 220) AS conversation_summary_excerpt,
-
-                bm25(corpus_fts) AS score
-                FROM corpus_fts
-                JOIN corpus_chunks c ON corpus_fts.rowid = c.id
-                LEFT JOIN artifacts a ON a.id = c.artifact_id
-                LEFT JOIN files f ON f.id = c.file_id
-                LEFT JOIN conversations conv
-                ON c.source_kind = '{TRANSCRIPT_SOURCE_KIND}'
-                AND c.source_id = conv.id
-                LEFT JOIN artifacts sumart
-                ON sumart.source_kind = 'conversation:summary'
-                AND sumart.source_id = conv.id
-                AND (sumart.is_deleted IS NULL OR sumart.is_deleted = 0)
-                WHERE corpus_fts MATCH ?
-                AND (
-                        c.scope_key IN ({scope_placeholders})
-                        OR (
-                            c.source_kind = ?
-                            AND c.source_id IN ({transcript_placeholders})
-                        )
-                    )
-                ORDER BY score ASC
-                LIMIT ?
-                """,
-                tuple(params),
-            ).fetchall()
 
         return [dict(r) for r in rows]
+
 
 def search_corpus(*, scope_keys: list[str], query: str, limit: int = 10) -> list[dict]:
     q = (query or "").strip()
@@ -4239,53 +4156,6 @@ def search_corpus(*, scope_keys: list[str], query: str, limit: int = 10) -> list
             """,
             tuple(params),
         ).fetchall()
-        if (False):
-            rows = conn.execute(
-                f"""
-                SELECT
-                c.id AS chunk_id,
-                c.scope_key,
-                c.artifact_id,
-                c.chunk_index,
-                c.source_kind,
-                c.source_id,
-                c.file_id,
-                c.filename,
-                c.mime_type,
-                c.text,
-
-                a.title AS artifact_title,
-                a.updated_at AS artifact_updated_at,
-
-                f.created_at AS file_created_at,
-                f.updated_at AS file_updated_at,
-
-                conv.id AS conversation_id,
-                conv.title AS conversation_title,
-                substr(COALESCE(sumart.summary_text, ''), 1, 220) AS conversation_summary_excerpt,
-
-                bm25(corpus_fts) AS score
-                FROM corpus_fts
-                JOIN corpus_chunks c ON corpus_fts.rowid = c.id
-                LEFT JOIN artifacts a ON a.id = c.artifact_id
-                LEFT JOIN files f ON f.id = c.file_id
-
-                LEFT JOIN conversations conv
-                ON c.source_kind = '{TRANSCRIPT_SOURCE_KIND}'
-                AND c.source_id = conv.id
-
-                LEFT JOIN artifacts sumart
-                ON sumart.source_kind = 'conversation:summary'
-                AND sumart.source_id = conv.id
-                AND (sumart.is_deleted IS NULL OR sumart.is_deleted = 0)
-
-                WHERE corpus_fts MATCH ?
-                AND c.scope_key IN ({placeholders})
-                ORDER BY score ASC
-                LIMIT ?
-                """,
-                tuple(params),
-            ).fetchall()
 
         return [dict(r) for r in rows]
 

@@ -69,15 +69,6 @@ def _embedding_provider():
     return provider
 
 
-if (False):
-    @lru_cache(maxsize=1)
-    def _embedding_provider():
-        emb_cfg = load_embedding_config()
-        if emb_cfg.provider != "openai":
-            raise NotImplementedError(f"Embedding provider not implemented yet: {emb_cfg.provider}")
-        return OpenAIEmbeddingProvider(emb_cfg=emb_cfg)
-
-
 @lru_cache(maxsize=1)
 def _vector_store():
     vec_cfg = load_vector_config()
@@ -288,34 +279,9 @@ def retrieve_chunks_for_message(
         vec_cfg.backend,
         vec_cfg.collection_name,
     )    
-    if (False):
-        cache_key = (
-            conversation_id,
-            user_message.strip(),
-            cfg.query_include,
-            cfg.query_expand_results,
-            cfg.query_global_artifacts,
-            cfg.query_include_project_conversation_transcripts,
-            cfg.query_include_global_conversation_transcripts,
-            cfg.query_include_recent_conversation_transcripts,
-            cfg.recent_conversation_transcript_limit,
-            app_cfg.search_chat_history,
-            emb_cfg.provider,
-            emb_cfg.model,
-            vec_cfg.backend,
-            vec_cfg.collection_name,
-        )
-    if (False):
-        cache_key = (
-            conversation_id,
-            user_message.strip(),
-            cfg.query_global_artifacts,
-            cfg.query_include_project_conversation_transcripts,
-            cfg.query_include_global_conversation_transcripts,
-            cfg.query_include_recent_conversation_transcripts,
-            cfg.recent_conversation_transcript_limit,
-            app_cfg.search_chat_history,
-        )
+
+
+
 
     cached = _cache_get(cache_key)
     if cached is not None:
@@ -332,31 +298,6 @@ def retrieve_chunks_for_message(
             "results": cached_results,
             "debug": cached_debug,
         }
-    
-    if (False):
-        cached = _cache_get(cache_key)
-        if cached is not None:
-            return {
-                "ok": True,
-                "mode": cfg.query_include,
-                #"mode": cfg.query_mode,
-                "cached": True,
-                "results": cached,
-                "debug": {
-                    "query_include": cfg.query_include,
-                    "retrieval_mode": retrieval_mode,
-                    "fts_enabled": do_fts,
-                    "vector_enabled": do_vector,
-                    "include_globals": cfg.query_global_artifacts,
-                    "original_user_message": user_message,
-                    "cache_hit": True,
-                    "slices": [],
-                    "shapes": [],
-                    "search_queries": [],
-                    "llm_expand_enabled": cfg.llm_expand_enabled,
-                    "llm_expand_recommended": False,
-                    "llm_expand_terms": [],            },
-            }
 
     #slices = slice_user_query(user_message, cfg=cfg)
     slices = slice_user_query(user_message, cfg=qcfg)
@@ -483,14 +424,6 @@ def retrieve_chunks_for_message(
         results = diversify_results(vector_rows, limit)
     else:
         results = diversify_results(fts_rows, limit)
-
-    if (False):
-        results = list(merged.values())
-        #results.sort(key=lambda r: r.get("score", 1e9))
-        results.sort(key=_retrieval_rank_key)
-
-        before_diversify_count = len(results)
-        results = diversify_results(results, limit)
     
     after_diversify_count = len(results)
     # Report pre/post result counts
@@ -516,11 +449,6 @@ def retrieve_chunks_for_message(
         first_shape = shape_fts_query(slices[0], qcfg) if slices else None
         term_count = len(first_shape.kept_terms) + len(first_shape.kept_phrases) if first_shape else 0
         llm_expand_recommended = (term_count < qcfg.llm_expand_min_terms or len(results) < qcfg.llm_expand_min_results)
-        if (False): # cfg.llm_expand_enabled:
-            # count “signal terms” from the first slice’s shaper as a proxy
-            first_shape = shape_fts_query(slices[0], cfg) if slices else None
-            term_count = len(first_shape.kept_terms) + len(first_shape.kept_phrases) if first_shape else 0
-            llm_expand_recommended = (term_count < cfg.llm_expand_min_terms or len(results) < cfg.llm_expand_min_results)
 
         log_debug("RAG LLM assist: term_count=%s llm_expand_recommended=%s",
             term_count, llm_expand_recommended)

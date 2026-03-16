@@ -124,18 +124,6 @@ def _call_summary_model(
     )
     return cleanup_summary_text(extract_response_text(resp))
 
-if (False):
-    def _call_summary_model(client, model: str, system_prompt: str, user_prompt: str, max_output_tokens: int) -> str:
-        resp = client.responses.create(
-            model=model,
-            input=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            max_output_tokens=max_output_tokens,
-        )
-        return cleanup_summary_text(extract_response_text(resp))
-
 
 def _chunk_transcript(text: str, target_chars: int, hard_max_chars: int) -> List[str]:
     """
@@ -237,44 +225,6 @@ def _one_pass_conversation_summary(
         complete_fn=complete_fn,
         client=client,
     )
-
-if (False):
-    def _one_pass_conversation_summary(*, client, model: str, title: str, transcript: str, cfg: SummaryConfig, system_prompt: str) -> str:
-        base_user_prompt = (
-            f"Title: {title}\n\n"
-            f"Full transcript follows. Read all of it before writing.\n\n"
-            f"Return only the summary text.\n"
-            f"Do not use headings, bullets, markdown, or a 'Summary:' prefix.\n\n"
-            f"{transcript}"
-        )
-
-        summary = _call_summary_model(
-            client=client,
-            model=model,
-            system_prompt=system_prompt,
-            user_prompt=base_user_prompt,
-            max_output_tokens=cfg.summary_max_tokens,
-        )
-        if summary:
-            return summary
-
-        retry_prompt = (
-            "You are writing a plain-text archival summary of a conversation.\n"
-            "This is not a chat reply.\n"
-            "Do not ask questions.\n"
-            "Do not use markdown, headings, bullets, or any 'Summary:' prefix.\n"
-            "Summarize the conversation as a whole in chronological order.\n"
-            "Mention major topics, decisions, useful facts, and unresolved questions.\n"
-            "Output only the summary text."
-        )
-        summary = _call_summary_model(
-            client=client,
-            model=model,
-            system_prompt=retry_prompt,
-            user_prompt=base_user_prompt,
-            max_output_tokens=cfg.summary_max_tokens,
-        )
-        return summary
 
 
 def summarize_conversation_text(
@@ -404,138 +354,6 @@ def summarize_conversation_text(
         f"empty final summary after map-reduce (title={title!r}, transcript_chars={len(transcript)}, chunks={len(chunks)})"
     )
 
-if (False):
-    def summarize_conversation_text(
-        model: str,
-        title: str,
-        transcript: str,
-        cfg: SummaryConfig,
-        system_prompt: str
-    ) -> str:
-        # temporary stub to facilitate disconnection in main.py
-        client = OpenAI(api_key=oai_cfg.open_ai_apikey)
-
-        """
-        One-pass for short transcripts, map-reduce for long transcripts.
-        """
-        transcript = (transcript or "").strip()
-        if not transcript:
-            raise RuntimeError("empty transcript")
-
-        base_user_prompt = (
-            f"Title: {title}\n\n"
-            f"Full transcript follows. Read all of it before writing.\n\n"
-            f"Return only the summary text.\n"
-            f"Do not use headings, bullets, markdown, or a 'Summary:' prefix.\n\n"
-            f"{transcript}"
-        )
-
-        # One-pass for shorter conversations
-        if len(transcript) <= cfg.summary_reduce_threshold_chars:
-            summary = _one_pass_conversation_summary(
-                client=client,
-                model=model,
-                title=title,
-                transcript=transcript,
-                cfg=cfg,
-                system_prompt=system_prompt,
-            )
-            if summary:
-                return summary
-            raise RuntimeError(f"empty summary (title={title!r}, transcript_chars={len(transcript)})")
-
-        # Map-reduce for long transcripts
-        chunks = _chunk_transcript(
-            transcript,
-            target_chars=cfg.summary_chunk_target_chars,
-            hard_max_chars=cfg.summary_chunk_hard_max_chars,
-        )
-        if not chunks:
-            raise RuntimeError("failed to chunk transcript")
-
-        partials: List[str] = []
-        chunk_system_prompt = (
-            "You are generating an intermediate factual summary of part of a conversation.\n"
-            "This is not a chat reply.\n"
-            "Do not ask questions.\n"
-            "Do not add headings, bullets, markdown, titles, or 'Summary:' prefixes.\n"
-            "Summarize only what appears in this chunk.\n"
-            "Capture important facts, decisions, and unresolved questions.\n"
-            "Use plain text only."
-        )
-
-        for idx, chunk in enumerate(chunks, start=1):
-            chunk_user_prompt = (
-                f"Conversation title: {title}\n\n"
-                f"This is chunk {idx} of {len(chunks)} from a longer conversation.\n"
-                f"Summarize this chunk only.\n\n"
-                f"{chunk}"
-            )
-
-            part = _call_summary_model(
-                client=client,
-                model=model,
-                system_prompt=chunk_system_prompt,
-                user_prompt=chunk_user_prompt,
-                max_output_tokens=cfg.summary_chunk_max_tokens,
-            )
-
-            if part:
-                partials.append(f"[Chunk {idx}/{len(chunks)}]\n{part}")
-
-        if not partials:
-            # Cheap models sometimes flake out on the map step.
-            # Fall back to one-pass instead of hard-failing.
-            fallback = _one_pass_conversation_summary(
-                client=client,
-                model=model,
-                title=title,
-                transcript=transcript,
-                cfg=cfg,
-                system_prompt=system_prompt,
-            )
-            if fallback:
-                return fallback
-            raise RuntimeError(
-                f"all chunk summaries were empty (title={title!r}, transcript_chars={len(transcript)}, chunks={len(chunks)})"
-            )
-
-        reduce_user_prompt = (
-            f"Title: {title}\n\n"
-            "Below are partial summaries of a longer conversation.\n"
-            "Write one final plain-text conversation summary.\n"
-            "Cover the whole conversation in chronological order.\n"
-            "Mention major topic shifts, decisions, useful facts, and unresolved questions.\n"
-            "Do not use headings, bullets, markdown, titles, or any 'Summary:' prefix.\n\n"
-            + "\n\n".join(partials)
-        )
-
-        final_summary = _call_summary_model(
-            client=client,
-            model=model,
-            system_prompt=system_prompt,
-            user_prompt=reduce_user_prompt,
-            max_output_tokens=cfg.summary_max_tokens,
-        )
-
-        if final_summary:
-            return final_summary
-
-        fallback = _one_pass_conversation_summary(
-            client=client,
-            model=model,
-            title=title,
-            transcript=transcript,
-            cfg=cfg,
-            system_prompt=system_prompt,
-        )
-        if fallback:
-            return fallback
-
-        raise RuntimeError(
-            f"empty final summary after map-reduce (title={title!r}, transcript_chars={len(transcript)}, chunks={len(chunks)})"
-        )
-    
 
 def cleanup_title_text(text: str, fallback: str = "New chat") -> str:
     s = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()

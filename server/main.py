@@ -364,26 +364,6 @@ def build_provider_registry(model_catalog: ModelCatalog) -> ProviderRegistry:
         catalog_factories=catalog_factories,
     )
 
-if (False):
-    def build_provider_registry(model_catalog: ModelCatalog) -> ProviderRegistry:
-        providers = load_provider_defs()
-        deployments = load_deployment_defs()
-
-        chat_factories: dict[str, Callable[[ProviderDef], ChatProvider]] = {
-            "openai": lambda provider_def: OpenAIProvider(provider_def, model_catalog=model_catalog),
-        }
-
-        catalog_factories: dict[str, Callable[[ProviderDef], ModelCatalogProvider]] = {
-            "openai": lambda provider_def: OpenAIProvider(provider_def, model_catalog=model_catalog),
-        }
-
-        return ProviderRegistry(
-            providers=providers,
-            deployments=deployments,
-            chat_factories=chat_factories,
-            catalog_factories=catalog_factories,
-        )
-
 
 def postprocess_text(text: str) -> str:
     """
@@ -401,7 +381,11 @@ def postprocess_text(text: str) -> str:
     return text
 
 
-def _resolve_utility_target(*preferred_deployment_ids: str, fallback_model: str | None = None):
+def _resolve_utility_target(
+    *preferred_deployment_ids: str,
+    fallback_model: str | None = None,
+    required_capability: str = "chat",
+):
     registry = PROVIDER_REGISTRY
     if registry is None:
         raise RuntimeError("Provider registry is not initialized.")
@@ -411,10 +395,37 @@ def _resolve_utility_target(*preferred_deployment_ids: str, fallback_model: str 
         if not did:
             continue
         if did in registry.deployments:
-            return registry.get_deployment(did)
+            target = registry.get_deployment(did)
+            if required_capability and not registry.has_capability(target, required_capability):
+                continue
+            return target
 
     requested = (fallback_model or MODEL).strip()
+
+    if required_capability:
+        return registry.resolve_deployment_for_capability(
+            required_capability,
+            requested if requested in registry.deployments else None,
+            fallback_to_default_chat=True,
+        )
+
     return registry.resolve_chat_target(requested)
+
+if (False):
+    def _resolve_utility_target(*preferred_deployment_ids: str, fallback_model: str | None = None):
+        registry = PROVIDER_REGISTRY
+        if registry is None:
+            raise RuntimeError("Provider registry is not initialized.")
+
+        for deployment_id in preferred_deployment_ids:
+            did = (deployment_id or "").strip()
+            if not did:
+                continue
+            if did in registry.deployments:
+                return registry.get_deployment(did)
+
+        requested = (fallback_model or MODEL).strip()
+        return registry.resolve_chat_target(requested)
 
 
 def _make_utility_completion(*preferred_deployment_ids: str, fallback_model: str | None = None):
@@ -982,17 +993,6 @@ async def chat_ab(req: ABChatRequest):
         "a": a_res,
         "b": b_res,
     })
-    if (False):
-        return JSONResponse(
-            {
-                "conversation_id": cid,
-                "model_a": model_a,
-                "model_b": model_b,
-                "ab_group": ab_group,
-                "a": a_res,
-                "b": b_res,
-            }
-        )
 
 
 @app.post("/api/ab/canonical")
@@ -1147,56 +1147,6 @@ def api_summarize_conversation(conversation_id: str, sum_cfg: SummaryConfig | No
         "provider": target.provider_id,
         "deployment_id": target.id,
     }
-
-if (False):
-    @app.post("/api/conversations/{conversation_id}/summarize")
-    def api_summarize_conversation(conversation_id: str, sum_cfg: SummaryConfig | None = None):
-        sum_cfg = sum_cfg or load_summary_config()
-        oai_cfg = load_openai_config()
-        try:
-            title, transcript = get_transcript_for_summary(conversation_id)
-        except KeyError:
-            raise HTTPException(status_code=404, detail="Conversation not found.")
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-
-        system_prompt = _get_prompt(
-            default_prompt=sum_cfg.summary_conversation_prompt,
-            filepath=sum_cfg.summary_conversation_prompt_file,
-            cfg_default="SUMMARY_CONVO_PROMPT",
-            cfg_filepath="SUMMARY_CONVO_PROMPT_FILE",
-        )
-        # TODO phase out MODEL completely
-        model = oai_cfg.summary_model or MODEL
-        try:
-            summary_text = summarize_conversation_text(
-                model=model,
-                title=title,
-                transcript=transcript,
-                cfg=sum_cfg,
-                system_prompt=system_prompt,
-            )
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Failed to summarize: {e}")
-        # summary_text = (_extract_output_text(resp) or "").strip()
-        summary_text = (summary_text or "").strip()
-        if not summary_text:
-            raise HTTPException(status_code=502, detail="Summarizer returned empty output.")
-        
-        summary_message = f"Summary of “{title}”:\n\n{summary_text}"
-
-        full = postprocess_text(summary_message)
-        if full:
-            add_message(
-                conversation_id,
-                "assistant",
-                full,
-                meta={"summary": True, "model": model},
-            )
-            save_conversation_summary_artifact(conversation_id, summary_text, model)
-            # save_conversation_summary(conversation_id, full, model)
-
-        return {"conversation_id": conversation_id, "summary": summary_text, "model": model}
 
 # region Conversation Transcript Endpoints
 
@@ -2129,52 +2079,6 @@ def api_models():
         return payload
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to list models: {e}")
-
-if (False):
-    @app.get("/api/models")
-    def api_models():
-        global _MODELS_CACHE, _MODELS_CACHE_TS
-        now = time.time()
-        if _MODELS_CACHE and (now - _MODELS_CACHE_TS) < _MODELS_TTL_SECONDS:
-            return _MODELS_CACHE
-
-        if PROVIDER_REGISTRY is None:
-            raise HTTPException(status_code=500, detail="Provider registry is not initialized.")
-
-        try:
-            provider_id = "openai"
-            catalog = PROVIDER_REGISTRY.get_catalog_provider(provider_id)
-            provider_def = PROVIDER_REGISTRY.providers[provider_id]
-            model_infos = catalog.list_models(provider_def)
-
-            items: list[dict] = []
-            for m in model_infos:
-                mid = m.id
-                if _ALLOWED_MODEL_PREFIXES and not mid.startswith(_ALLOWED_MODEL_PREFIXES):
-                    continue
-
-                items.append(
-                    {
-                        "id": m.id,
-                        "created": m.created,
-                        "owned_by": m.owned_by,
-                        "vendor": m.vendor,
-                        "display_name": m.display_name,
-                        "description": m.description,
-                        "input_cost_per_million": m.input_cost_per_million,
-                        "output_cost_per_million": m.output_cost_per_million,
-                        "context_window": m.context_window,
-                        "tags": list(m.tags),
-                    }
-                )
-
-            items.sort(key=lambda m: m["display_name"].lower())
-            payload = {"models": items, "cached": True, "fetched_at": int(now)}
-            _MODELS_CACHE = payload
-            _MODELS_CACHE_TS = now
-            return payload
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Failed to list models: {e}")
 
 # endregion
 

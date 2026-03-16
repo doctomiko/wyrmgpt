@@ -442,21 +442,6 @@ RETRIEVAL_DEFAULTS: RetrievalConfig = RetrievalConfig()
 QUERY_INCLUDE_ALLOWED = {"FILE", "MEMORY", "CHAT", "CHAT_SUMMARY", "FTS", "EMBEDDING"}
 QUERY_EXPAND_ALLOWED = {"FILE", "MEMORY", "CHAT"}
 
-if (False):
-    def _legacy_query_mode_to_include(mode: str) -> str:
-        mode = str(mode or "").strip().upper()
-        if mode == "FILES":
-            return "FILE"
-        if mode == "FTS":
-            return "FTS"
-        if mode == "VECTOR":
-            return "EMBEDDING"
-        if mode == "HYBRID":
-            return "FTS,EMBEDDING"
-        if mode == "ALL":
-            return "FILE,FTS,EMBEDDING"
-        return RETRIEVAL_DEFAULTS.query_include
-
 
 @dataclass(frozen=True)
 class EmbeddingConfig:

@@ -670,29 +670,6 @@ def _order_scoped_memories_for_context(
     relevant.sort(key=_sort_key)
     return relevant[: max(0, int(limit))]
 
-if (False):
-    def _order_scoped_memories_for_context(
-        memories: list[dict],
-        project_id: int | None,
-        *,
-        limit: int,
-    ) -> list[dict]:
-        project_rows: list[dict] = []
-        global_rows: list[dict] = []
-
-        for m in memories or []:
-            scope_type = (m.get("scope_type") or "global").strip().lower()
-            scope_id = m.get("scope_id")
-
-            if scope_type == "project":
-                if project_id is not None and scope_id is not None and int(scope_id) == int(project_id):
-                    project_rows.append(m)
-            else:
-                global_rows.append(m)
-
-        ordered = project_rows + global_rows
-        return ordered[: max(0, int(limit))]
-
 
 def _select_scoped_conversation_ids_for_context(
     conversation_id: str,
@@ -1142,184 +1119,6 @@ def build_context(
                 title = (art.get("title") or cid).strip()
                 included_chat_labels.append(title)
 
-    if (False):
-        # Whole-artifact inclusion channel (FILE is handled later through file_messages;
-        # MEMORY and CHAT are handled here as text messages and deduped by artifact_id).
-        included_artifact_ids: set[str] = set()
-        whole_artifact_messages: list[dict] = []
-        included_memory_labels: list[str] = []
-        included_chat_labels: list[str] = []
-        included_chat_summary_labels: list[str] = []
-        
-        # File Expansion
-        included_file_artifact_labels: list[str] = []
-        expansion_candidates: list[dict] = []
-        expanded_artifact_ids: set[str] = set()
-
-        if do_include_files:
-            file_messages, included_file_artifact_labels, file_artifact_ids = _build_file_messages_for_conversation(
-                conversation_id,
-                limit=max_full_files,
-                already_included_artifact_ids=included_artifact_ids,
-            )
-            whole_artifact_messages.extend(file_messages)
-            included_artifact_ids.update(file_artifact_ids)
-
-        if do_include_chat_summaries:
-            summary_rows = _select_other_project_conversation_rows_for_context(
-                conversation_id,
-                project_id,
-                limit=max_full_chats,
-            )
-
-            if summary_rows:
-                with db_session() as conn:
-                    span_map = _conversation_span_map(conn, [str(r["id"]) for r in summary_rows])
-
-                    for row in summary_rows:
-                        cid = str(row.get("id") or "").strip()
-                        if not cid:
-                            continue
-
-                        artifact_id = conversation_summary_artifact_id(cid)
-                        if artifact_id in included_artifact_ids:
-                            continue
-
-                        art = load_artifact_row_for_context(conn, artifact_id)
-                        if not art or not (art.get("content_text") or "").strip():
-                            continue
-
-                        included_artifact_ids.add(artifact_id)
-
-                        started_at, ended_at = span_map.get(cid, (None, None))
-                        title = (row.get("title") or art.get("title") or cid).strip()
-
-                        whole_artifact_messages.append(
-                            _conversation_summary_to_input_message(
-                                conversation_id=cid,
-                                title=title,
-                                summary_text=art.get("content_text") or "",
-                                started_at=started_at,
-                                ended_at=ended_at,
-                                artifact_id=artifact_id,
-                            )
-                        )
-
-                        dt_range = _format_conversation_range(started_at, ended_at)
-                        if dt_range:
-                            included_chat_summary_labels.append(f"{title} [{dt_range}; summary]")
-                        else:
-                            included_chat_summary_labels.append(f"{title} [summary]")
-                        #if dt_range:
-                        #    included_chat_labels.append(f"{title} [{dt_range}; summary]")
-                        #else:
-                        #    included_chat_labels.append(f"{title} [summary]")
-
-        if do_include_memories:
-            scoped_memories = _order_scoped_memories_for_context(
-                list_memories(limit=max(max_full_memories * 4, 200)),
-                project_id,
-                limit=max(max_full_memories * 4, 200),
-            )
-
-            pinned_memories = [m for m in scoped_memories if int(m.get("importance") or 0) >= 10]
-            memory_candidates = scoped_memories[:max_full_memories] if do_include_memories else pinned_memories
-
-            if memory_candidates:
-                with db_session() as conn:
-                    for m in memory_candidates:
-                        try:
-                            artifact_id = memory_artifact_id(str(m["id"]))
-                        except Exception:
-                            continue
-
-                        if artifact_id in included_artifact_ids:
-                            continue
-
-                        art = load_artifact_row_for_context(conn, artifact_id)
-                        if not art or not (art.get("content_text") or "").strip():
-                            continue
-
-                        included_artifact_ids.add(artifact_id)
-                        label = "SCOPED MEMORY ARTIFACT" if int(m.get("importance") or 0) < 10 else "PINNED MEMORY ARTIFACT"
-                        whole_artifact_messages.append(_artifact_to_input_message(art, label=label))
-
-                        scope_type = (m.get("scope_type") or "global")
-                        scope_id = m.get("scope_id")
-                        title = (art.get("title") or f"Memory {m.get('id')}").strip()
-                        importance = int(m.get("importance") or 0)
-                        included_memory_labels.append(
-                            f"{title} [importance={importance}; {scope_type}{':' + str(scope_id) if scope_id is not None else ''}]"
-                        )        
-        if (False): # do_include_memories
-            scoped_memories = _order_scoped_memories_for_context(
-                list_memories(limit=max(max_full_memories * 4, 200)),
-                project_id,
-                limit=max_full_memories,
-            )
-
-            with db_session() as conn:
-                for m in scoped_memories:
-                    try:
-                        artifact_id = memory_artifact_id(str(m["id"]))
-                    except Exception:
-                        continue
-
-                    if artifact_id in included_artifact_ids:
-                        continue
-
-                    art = load_artifact_row_for_context(conn, artifact_id)
-                    if not art or not (art.get("content_text") or "").strip():
-                        continue
-
-                    included_artifact_ids.add(artifact_id)
-                    label = f"SCOPED MEMORY ARTIFACT"
-                    whole_artifact_messages.append(_artifact_to_input_message(art, label=label))
-
-                    scope_type = (m.get("scope_type") or "global")
-                    scope_id = m.get("scope_id")
-                    title = (art.get("title") or f"Memory {m.get('id')}").strip()
-                    included_memory_labels.append(
-                        f"{title} [{scope_type}{':' + str(scope_id) if scope_id is not None else ''}]"
-                    )
-
-        if do_include_chats:
-            scoped_conversation_ids = _select_scoped_conversation_ids_for_context(
-                conversation_id,
-                project_id,
-                limit=max_full_chats,
-            )
-
-            with db_session() as conn:
-                for cid in scoped_conversation_ids:
-                    try:
-                        ensure_conversation_transcript_artifact_fresh(
-                            cid,
-                            force_full=False,
-                            reason="build_context.include_chat",
-                        )
-                    except Exception as exc:
-                        log_warn("Transcript lazy repair failed for included chat %s: %s", cid, exc)
-
-                    try:
-                        artifact_id = conversation_transcript_artifact_id(cid)
-                    except Exception:
-                        continue
-
-                    if artifact_id in included_artifact_ids:
-                        continue
-
-                    art = load_artifact_row_for_context(conn, artifact_id)
-                    if not art or not (art.get("content_text") or "").strip():
-                        continue
-
-                    included_artifact_ids.add(artifact_id)
-                    label = "SCOPED CHAT TRANSCRIPT"
-                    whole_artifact_messages.append(_artifact_to_input_message(art, label=label))
-
-                    title = (art.get("title") or cid).strip()
-                    included_chat_labels.append(title)
-
     retrieved_rows_raw: list[dict] = []
     retrieved_rows: list[dict] = []
     retrieved_block = ""
@@ -1329,16 +1128,6 @@ def build_context(
 
     emb_cfg = load_embedding_config()
     vec_cfg = load_vector_config()
-
-    # obsolete and we have moved on
-    if (False):
-        if do_fts_rag:
-            chunks_resp = retrieve_chunks_for_message(
-                conversation_id=conversation_id,
-                user_message=user_text,
-                limit=8,
-                cfg=query_cfg,
-            )
 
     rag_limit = 24 # was 8, but why bigger now?
     max_chars = 2200 #1200
@@ -1463,63 +1252,6 @@ def build_context(
                             title = (art.get("title") or f"Memory {item.get('source_id')}").strip()
                             included_memory_labels.append(f"{title} [expanded]")
 
-                        if (False):
-                            kind = item.get("kind") or "ARTIFACT"
-                            included_artifact_ids.add(artifact_id)
-                            expanded_artifact_ids.add(artifact_id)
-
-                            whole_artifact_messages.append(
-                                _artifact_to_input_message(art, label=f"EXPANDED {kind} ARTIFACT")
-                            )
-
-                            if kind == "FILE":
-                                title = (art.get("title") or item.get("filename") or artifact_id).strip()
-                                included_file_artifact_labels.append(title)
-
-                            elif kind == "MEMORY":
-                                title = (art.get("title") or f"Memory {item.get('source_id')}").strip()
-                                included_memory_labels.append(f"{title} [expanded]")
-
-                            elif kind == "CHAT":
-                                center_chunk_index = int(item.get("chunk_index") or 0)
-                                window_rows = _load_transcript_chunk_window(
-                                    conn,
-                                    artifact_id=artifact_id,
-                                    center_chunk_index=center_chunk_index,
-                                    before=query_expand_chat_window_before,
-                                    after=query_expand_chat_window_after,
-                                )
-                                if not window_rows:
-                                    continue
-
-                                # Replace the generic whole-artifact expansion for chats with a local window.
-                                whole_artifact_messages.pop()  # remove the generic EXPANDED CHAT ARTIFACT we just appended
-                                whole_artifact_messages.append(
-                                    _chat_window_to_input_message(item, window_rows)
-                                )
-
-                                title = (
-                                    (item.get("conversation_title") or "").strip()
-                                    or (art.get("title") or "").strip()
-                                    or str(item.get("conversation_id") or artifact_id)
-                                )
-                                dt_range = _format_conversation_range(
-                                    item.get("conversation_started_at"),
-                                    item.get("conversation_ended_at"),
-                                )
-                                if dt_range:
-                                    included_chat_labels.append(f"{title} [{dt_range}; expanded window]")
-                                else:
-                                    included_chat_labels.append(f"{title} [expanded window]")
-
-                        if (False): #elif kind == "CHAT":
-                            title = (
-                                (item.get("conversation_title") or "").strip()
-                                or (art.get("title") or "").strip()
-                                or str(item.get("conversation_id") or artifact_id)
-                            )
-                            included_chat_labels.append(f"{title} [expanded]")
-
                 if expanded_artifact_ids:
                     suppressed = [
                         r for r in retrieved_rows
@@ -1609,22 +1341,6 @@ def build_context(
 
     file_messages: list[dict] = []
     normalized_file_messages: list[dict] = []
-    if (False):
-        # FILE CONTNENTS
-        # check include_files and don't do this step if it is false
-        file_messages = _build_file_messages_for_conversation(conversation_id) if do_include_files else []
-        # Normalize any file_messages that are purely text parts
-        normalized_file_messages = []
-        # These file messages MUST already be in a format your app uses.
-        # If they currently use [{"type":"input_text",...}] convert that to plain text.
-        for m in file_messages:
-            c = m.get("content")
-            if isinstance(c, list) and c and isinstance(c[0], dict):
-                # If it's your old "input_text" wrapper, collapse to string
-                if all(p.get("type") in ("input_text", "text") and "text" in p for p in c):
-                    normalized_file_messages.append({"role": m.get("role", "user"), "content": "\n".join(p["text"] for p in c)})
-                    continue
-            normalized_file_messages.append(m)
 
     # These are only needed for the /context debug endpoint, not for actual chat turns.
     assembled_input_count = None
@@ -1735,36 +1451,6 @@ def build_model_input(
     typed_history = ctx["history_rows_typed"]
     *prior_msgs, last_msg = typed_history
     return [system_message] + whole_artifact_messages + normalized_file_messages + prior_msgs + [last_msg]
-if (False):
-    def build_model_input(
-            conversation_id: str, 
-            user_text: str, 
-            ctx_cfg: ContextConfig | None = None,
-            query_cfg: RetrievalConfig | None = None,
-            ctx: dict | None = None
-        ) -> list[dict]:
-        """
-        Build a Responses-API compatible input.
-        Use string `content` for all text messages (max compatibility).
-        Keep file/image messages as typed parts ONLY when needed.
-        """
-        ctx_cfg = ctx_cfg or load_context_config()
-        query_cfg = query_cfg or load_retrieval_config()
-        
-        ctx = ctx or build_context(conversation_id, user_text, ctx_cfg, query_cfg, include_preview=False)
-
-        history_rows = ctx.get("history_rows") or []
-        system_message = {"role": "system", "content": ctx["system_text"]}
-        normalized_file_messages = ctx.get("file_messages") or []
-        whole_artifact_messages = ctx.get("whole_artifact_messages") or []
-
-        if not history_rows:
-            return [system_message] + whole_artifact_messages + normalized_file_messages    
-            # return [system_message] + normalized_file_messages
-        typed_history = ctx["history_rows_typed"]
-        *prior_msgs, last_msg = typed_history
-        return [system_message] + prior_msgs + whole_artifact_messages + normalized_file_messages + [last_msg]
-        # return [system_message] + prior_msgs + normalized_file_messages + [last_msg]
 
 def build_context_panel_payload(
     conversation_id: str,
