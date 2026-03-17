@@ -3,9 +3,7 @@ from typing import Any
 from openai import OpenAI
 from ..config import (
     EmbeddingConfig,
-    OpenAIConfig,
     load_embedding_config,
-    load_openai_config,
     load_provider_defs,
 )
 from .types import ProviderDef
@@ -13,7 +11,6 @@ from .types import ProviderDef
 
 def _resolve_embedding_provider_def(
     emb_cfg: EmbeddingConfig,
-    oai_cfg: OpenAIConfig,
 ) -> ProviderDef:
     providers = load_provider_defs()
     requested = (emb_cfg.provider or "openai").strip()
@@ -22,15 +19,6 @@ def _resolve_embedding_provider_def(
     if provider_def is not None:
         return provider_def
 
-    if requested == "openai":
-        return ProviderDef(
-            id="openai",
-            type="openai",
-            api_key=oai_cfg.open_ai_apikey,
-            base_url="https://api.openai.com/v1",
-            enabled=True,
-        )
-
     raise RuntimeError(f"Embedding provider is not configured: {requested}")
 
 
@@ -38,18 +26,16 @@ class OpenAIEmbeddingProvider:
     def __init__(
         self,
         emb_cfg: EmbeddingConfig | None = None,
-        oai_cfg: OpenAIConfig | None = None,
     ) -> None:
         self.emb_cfg = emb_cfg or load_embedding_config()
-        self.oai_cfg = oai_cfg or load_openai_config()
 
-        self.provider_def = _resolve_embedding_provider_def(self.emb_cfg, self.oai_cfg)
+        self.provider_def = _resolve_embedding_provider_def(self.emb_cfg)
 
         api_key = (self.provider_def.api_key or "").strip()
         if not api_key and self.provider_def.type in ("ollama", "lmstudio", "openai_compat"):
             api_key = "local-not-needed"
         if not api_key and self.provider_def.type == "openai":
-            api_key = self.oai_cfg.open_ai_apikey
+            raise RuntimeError(f"OpenAI Embeddings API key is not configured")
 
         kwargs: dict[str, Any] = {}
         if api_key:

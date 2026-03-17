@@ -186,11 +186,10 @@ def load_provider_defs() -> dict[str, ProviderDef]:
             )
 
     if not out:
-        oai = load_openai_config()
         out["openai"] = ProviderDef(
             id="openai",
             type="openai",
-            api_key=oai.open_ai_apikey,
+            api_key="", # There is no longer a backup source to get the API key
             base_url="https://api.openai.com/v1",
             enabled=True,
         )
@@ -223,12 +222,11 @@ def load_deployment_defs() -> dict[str, DeploymentDef]:
             )
 
     if not out:
-        oai = load_openai_config()
         out["chat_default"] = DeploymentDef(
             id="chat_default",
             provider="openai",
-            model=oai.open_ai_model,
-            display_name="OpenAI Chat Default",
+            model="gpt-5.4", # bad to hardcode this, but it's a last resort
+            display_name="OpenAI Chat (Hardcoded 5.4 Fail-safe)",
             capabilities=("chat", "stream", "catalog"),
             enabled=True,
             tags=("default",),
@@ -236,13 +234,13 @@ def load_deployment_defs() -> dict[str, DeploymentDef]:
         out["summary_default"] = DeploymentDef(
             id="summary_default",
             provider="openai",
-            model=oai.summary_model,
-            display_name="OpenAI Summary Default",
+            model="gpt-5-mini", # bad to hardcode this, but it's a last resort
+            display_name="OpenAI Summary (Hardcoded 5-mini Fail-safe)",
             capabilities=("chat",),
             enabled=True,
             tags=("summary",),
         )
-
+        # TODO out["embeddings"] = DeploymentDef()
     return out
 
 def _cfg_str(*paths: tuple[str, ...], env_name: str, default: str) -> str:
@@ -303,16 +301,6 @@ class CoreConfig:
     limit_api_conversation_messages: int = 5000
 
 CORE_DEFAULTS: CoreConfig = CoreConfig()
-
-
-@dataclass(frozen=True)
-class OpenAIConfig:
-    open_ai_apikey: str = ""
-    open_ai_model: str = "gpt-5.4"
-    summary_model: str = "gpt-5-mini"
-
-
-OPENAI_DEFAULTS: OpenAIConfig = OpenAIConfig()
 
 
 @dataclass(frozen=True)
@@ -587,29 +575,6 @@ def load_ui_config() -> UIConfig:
             ("ui", "debug_boot"),
             env_name="UI_DEBUG_BOOT",
             default=UI_DEFAULTS.debug_boot,
-        ),
-    )
-
-
-def load_openai_config() -> OpenAIConfig:
-    return OpenAIConfig(
-        open_ai_apikey=_cfg_str(
-            ("providers", "openai", "api_key"),
-            ("openai", "api_key"),
-            env_name="OPENAI_API_KEY",
-            default=OPENAI_DEFAULTS.open_ai_apikey,
-        ),
-        open_ai_model=_cfg_str(
-            ("providers", "openai", "model"),
-            ("openai", "model"),
-            env_name="OPENAI_MODEL",
-            default=OPENAI_DEFAULTS.open_ai_model,
-        ),
-        summary_model=_cfg_str(
-            ("providers", "openai", "summary_model"),
-            ("openai", "summary_model"),
-            env_name="SUMMARY_MODEL",
-            default=OPENAI_DEFAULTS.summary_model,
         ),
     )
 

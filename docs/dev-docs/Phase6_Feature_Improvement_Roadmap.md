@@ -1,8 +1,8 @@
-# WyrmGPT Phase 5 Roadmap
+# WyrmGPT Phase 6 Roadmap
 
 Code-checked against `WyrmGPT.20260313.d.zip` and reconciled with the current TODO docs on March 13, 2026.
 
-This is the **real** Phase 5 roadmap, not the fantasy brochure version.
+This is the **real** Phase 6 roadmap, not the fantasy brochure version.
 
 It assumes the following are already basically real enough to build on:
 
@@ -15,17 +15,18 @@ It assumes the following are already basically real enough to build on:
 - personalization pins + memories
 - A/B chat and canonical answer selection
 - context preview/debug surface
+- a vendor agnostic provider/deployment model
 
-The job of Phase 5 is **not** to rewrite the app from orbit.
+The job of Phase 6 is **not** to rewrite the app from orbit.
 The job is to make WyrmGPT more trustworthy, more useful, and more complete as a real personal knowledge cockpit.
 
 ---
 
 ## The blunt thesis
 
-If I were steering this ship, I would **not** spend Phase 5 on shiny provider tourism, premature multi-user SaaS hardening, or six new backend abstractions for their own sake.
+If I were steering this ship, I would **not** spend Phase 6 on shiny provider tourism, premature multi-user SaaS hardening, or six new backend abstractions for their own sake.
 
-Phase 5 should focus on the things the current app is still weak at in day-to-day use:
+Phase 6 should focus on the things the current app is still weak at in day-to-day use:
 
 1. ingestion truth for images, scanned PDFs, ZIP bundles, and URLs
 2. retrieval truth for privacy boundaries and expansion behavior
@@ -37,9 +38,9 @@ That is the straightest line from “cool scaffold” to “real working system.
 
 ---
 
-## What Phase 5 is for
+## What Phase 6 is for
 
-Phase 5 should deliver four concrete outcomes:
+Phase 6 should deliver four concrete outcomes:
 
 ### 1. WyrmGPT understands more of what you feed it
 Right now text-heavy files work reasonably well, but screenshots, scanned PDFs, and ZIP archives are still second-class citizens.
@@ -55,28 +56,31 @@ Once the corpus gets big, the user needs better control over what is in it, what
 
 ---
 
-## What should *not* be the center of Phase 5
+## What should *not* be the center of Phase 6
 
 These are real future items, but they should not dominate this phase:
 
-- broad alternate chat provider support
-- full local-LLM migration
 - multi-user auth/productization as if this were already a hosted SaaS
 - tool/plugin explosion
 - major frontend rewrite
 - heroic schema upheaval unless absolutely needed
 
-Those are later problems. Some of them are Phase 6 problems. Some are “only if we actually need them” problems.
+Those are later problems. Some of them are “Phase Next” problems. Some are “only if we actually need them” problems.
+
+Additionally, these were already partially completed in Phase 5:
+
+- full local-LLM migration
+- broad alternate chat provider support
 
 ---
 
-## Phase 5 structure
+## Phase 6 structure
 
-Phase 5 should have **five workstreams**, executed in this order.
+Phase 6 should have **five workstreams**, executed in this order.
 
 ---
 
-# Workstream 5A — Retrieval Truth and Safety
+# Workstream 6A — Retrieval Truth and Safety
 
 ## Why this comes first
 
@@ -101,7 +105,7 @@ Otherwise you are just making a larger, smarter mess.
 
 ## Deliverables
 
-### 5A.1 Fix project privacy boundaries for retrieval
+### 6A.1 Fix project privacy boundaries for retrieval
 Make transcript retrieval obey project privacy rules cleanly and consistently.
 
 That means:
@@ -109,19 +113,19 @@ That means:
 - global projects can still contribute by design
 - recent-conversation retrieval and transcript retrieval use the same rules, not two half-different truths
 
-### 5A.2 Finish the “summary first, transcript second” policy
+### 6A.2 Finish the “summary first, transcript second” policy
 For other conversations in the same project, use summaries as the default lightweight recall path.
 Escalate to transcript chunks only when retrieval actually justifies it.
 
 This cuts noise and cost while improving relevance.
 
-### 5A.3 Implement conversation-window expansion
+### 6A.3 Implement conversation-window expansion
 Do not always escalate from a matching chunk to “include the whole transcript.”
 Add a local chat-window expansion mode around the hit.
 
 This is one of the highest-value quality upgrades in the whole roadmap.
 
-### 5A.4 Either finish LLM query expansion or kill the fake seam
+### 6A.4 Either finish LLM query expansion or kill the fake seam
 Right now the system can suggest that LLM expansion would help, but it does not really complete the loop.
 
 Choose one:
@@ -130,7 +134,7 @@ Choose one:
 
 Do **not** keep the haunted half-feature.
 
-### 5A.5 Make retrieval debug output fully honest
+### 6A.5 Make retrieval debug output fully honest
 The context/debug panel should cleanly distinguish:
 - scope resolution
 - summary inclusion
@@ -143,7 +147,7 @@ The user should be able to tell what happened without divination.
 
 ## Acceptance criteria
 
-Phase 5A is done when:
+Phase 6A is done when:
 - private project material cannot be made to bleed into unrelated contexts by accident
 - project-other-conversation recall prefers summaries unless a transcript/window is justified
 - retrieval can include a local conversation window around a hit
@@ -152,12 +156,12 @@ Phase 5A is done when:
 
 ---
 
-# Workstream 5B — Rich Ingestion: OCR, Scanned PDFs, ZIP Expansion, URLs
+# Workstream 6B — Rich Ingestion: OCR, Scanned PDFs, ZIP Expansion, URLs
 
 ## Why this comes second
 
 Now that retrieval rules are cleaner, broaden what can enter the corpus usefully.
-This is the biggest “make the app actually smarter” move after Phase 5A.
+This is the biggest “make the app actually smarter” move after Phase 6A.
 
 ## Problems this solves
 
@@ -176,7 +180,7 @@ This is the biggest “make the app actually smarter” move after Phase 5A.
 
 ## Deliverables
 
-### 5B.1 OCR pipeline for images and scanned PDFs
+### 6B.1 OCR pipeline for images and scanned PDFs
 Add real text extraction for:
 - screenshots
 - photos of documents where practical
@@ -192,7 +196,7 @@ Better version:
 - optional caption/summary sidecar for images
 - separate storage of raw OCR text vs user-facing artifact summary
 
-### 5B.2 Proper image artifact metadata
+### 6B.2 Proper image artifact metadata
 For image uploads, store more than just placeholder text.
 Add artifact metadata such as:
 - image dimensions
@@ -201,7 +205,7 @@ Add artifact metadata such as:
 - caption/description if generated
 - provenance saying whether text came from OCR, captioning, or both
 
-### 5B.3 Real ZIP decomposition
+### 6B.3 Real ZIP decomposition
 Finish the TODO in the artifactor so ZIP files can be treated as real bundles.
 
 That means:
@@ -210,7 +214,7 @@ That means:
 - maintain provenance to the parent ZIP
 - expose the contents in UI/file management cleanly enough that it is not spooky
 
-### 5B.4 URL ingestion as a first-class workflow
+### 6B.4 URL ingestion as a first-class workflow
 Add the ability to ingest a URL into the artifact pipeline deliberately, not as a weird side quest.
 
 At minimum:
@@ -221,13 +225,13 @@ At minimum:
 
 This should reuse the same chunking/index pipeline as files.
 
-### 5B.5 Re-ingest / refresh semantics
+### 6B.5 Re-ingest / refresh semantics
 For OCR’d files, ZIP children, and URLs, define a sane refresh/reingest behavior.
 The user needs to know whether a refresh updates existing artifacts, creates new ones, or both.
 
 ## Acceptance criteria
 
-Phase 5B is done when:
+Phase 6B is done when:
 - screenshots and scanned PDFs become searchable text sources
 - image uploads produce meaningful artifact text/metadata
 - ZIP uploads can be expanded into searchable child content
@@ -236,7 +240,7 @@ Phase 5B is done when:
 
 ---
 
-# Workstream 5C — Web Retrieval That Actually Exists
+# Workstream 6C — Web Retrieval That Actually Exists
 
 ## Why this is third
 
@@ -257,7 +261,7 @@ Do not bolt live web into a messy retrieval system. Do it after 5A and after URL
 
 ## Deliverables
 
-### 5C.1 Explicit web retrieval mode
+### 6C.1 Explicit web retrieval mode
 Add a real retrieval mode for external results.
 Prefer this to be deliberate and inspectable, not magical and uncontrollable.
 
@@ -266,7 +270,7 @@ Possible modes:
 - auto when query appears to need current-world knowledge
 - always on for this prompt
 
-### 5C.2 Cached web result artifacts with TTL
+### 6C.2 Cached web result artifacts with TTL
 Treat web results as ephemeral corpus entries.
 They should:
 - be clearly labeled external
@@ -274,7 +278,7 @@ They should:
 - have a TTL / freshness policy
 - be eligible for promotion into durable artifacts or memories later
 
-### 5C.3 Merge internal and external results sanely
+### 6C.3 Merge internal and external results sanely
 Internal canon and web results should not be shoved together without labels.
 
 The retrieval layer should preserve provenance such as:
@@ -283,14 +287,14 @@ The retrieval layer should preserve provenance such as:
 - freshness timestamp
 - score/rank origin
 
-### 5C.4 UI truth for web use
+### 6C.4 UI truth for web use
 The user should be able to see:
 - whether web was used
 - what sources were fetched
 - which external chunks made final context
 - whether anything was cached/promoted
 
-### 5C.5 Recency/source quality policy
+### 6C.5 Recency/source quality policy
 Even the first web implementation needs some quality rules.
 At minimum:
 - prefer reputable sources over sludge
@@ -299,7 +303,7 @@ At minimum:
 
 ## Acceptance criteria
 
-Phase 5C is done when:
+Phase 6C is done when:
 - the app can intentionally retrieve current external information during normal chat flow
 - external chunks are cached and labeled distinctly from internal canon
 - web use is visible in the context/debug surface
@@ -307,11 +311,11 @@ Phase 5C is done when:
 
 ---
 
-# Workstream 5D — Corpus Control and Librarian UX
+# Workstream 6D — Corpus Control and Librarian UX
 
 ## Why this is fourth
 
-Once you broaden ingestion and retrieval, the user needs better steering controls. Otherwise Phase 5 just creates a larger black box.
+Once you broaden ingestion and retrieval, the user needs better steering controls. Otherwise Phase 6 just creates a larger black box.
 
 ## Problems this solves
 
@@ -329,7 +333,7 @@ Once you broaden ingestion and retrieval, the user needs better steering control
 
 ## Deliverables
 
-### 5D.1 Chunk/source inspection UI
+### 6D.1 Chunk/source inspection UI
 Let the user inspect retrieved chunks and source records more directly.
 
 At minimum:
@@ -341,7 +345,7 @@ At minimum:
 - provenance
 - retrieval channels (`fts`, `vector`, `web`, etc.)
 
-### 5D.2 Exclude / demote / promote controls
+### 6D.2 Exclude / demote / promote controls
 The user needs light-weight editorial control.
 
 Add the ability to:
@@ -349,7 +353,7 @@ Add the ability to:
 - lower or raise significance
 - promote web/file/chat-derived content into a more durable artifact or memory class
 
-### 5D.3 Better memory management
+### 6D.3 Better memory management
 Finish the missing grown-up memory operations:
 - archive toggle
 - pin/unpin clarity
@@ -357,13 +361,13 @@ Finish the missing grown-up memory operations:
 - better filter/search
 - clearer distinction between “behavior pin” and “retrievable fact memory”
 
-### 5D.4 File/artifact management truth
+### 6D.4 File/artifact management truth
 Make it possible to see, from the UI:
 - which files produced which artifacts
 - which artifacts produced which chunks
 - whether a file is stale, OCR’d, URL-derived, ZIP-expanded, or transcript-derived
 
-### 5D.5 Operational repair actions
+### 6D.5 Operational repair actions
 Useful buttons beat secret scripts.
 Expose some safe maintenance actions in the UI or a visible admin panel, such as:
 - refresh artifact text
@@ -373,7 +377,7 @@ Expose some safe maintenance actions in the UI or a visible admin panel, such as
 
 ## Acceptance criteria
 
-Phase 5D is done when:
+Phase 6D is done when:
 - users can inspect and edit retrieval-relevant metadata without cracking open SQLite
 - memory/pin workflow feels deliberate instead of half-evolved
 - file/artifact/chunk provenance is navigable in the UI
@@ -381,7 +385,7 @@ Phase 5D is done when:
 
 ---
 
-# Workstream 5E — Operational Cleanup, Performance, and Packaging Truth
+# Workstream 6E — Operational Cleanup, Performance, and Packaging Truth
 
 ## Why this is last
 
@@ -406,12 +410,12 @@ Do this after the feature-bearing work, so cleanup reflects reality instead of a
 
 ## Deliverables
 
-### 5E.1 Clean out dead branches and compatibility cruft
+### 6E.1 Clean out dead branches and compatibility cruft
 Remove or quarantine clearly dead `if (False)` paths and stale fallback logic in hot-path modules.
 
 Do not do this blindly. Do it after feature work lands.
 
-### 5E.2 Make indexing/embedding maintenance more automatic
+### 6E.2 Make indexing/embedding maintenance more automatic
 The system should rely less on “remember to run script X.”
 
 Targets:
@@ -419,7 +423,7 @@ Targets:
 - stale artifact/chunk state is detectable
 - maintenance commands are documented and preferably surfaced in UI/admin tooling
 
-### 5E.3 Performance pass on import/reindex/OCR pipelines
+### 6E.3 Performance pass on import/reindex/OCR pipelines
 Now that corpus size has exploded, profile the real slow paths:
 - import and re-import
 - transcript refresh/reindex
@@ -429,15 +433,15 @@ Now that corpus size has exploded, profile the real slow paths:
 
 Optimize the ones that actually matter instead of cargo-cult tuning.
 
-### 5E.4 Documentation truth pass
-At the end of Phase 5, update:
+### 6E.4 Documentation truth pass
+At the end of Phase 6, update:
 - user guide
 - architecture guide
 - caveats / deployment notes
 - import/export docs
 - any README claims that have drifted
 
-### 5E.5 Packaging and “average human install” honesty
+### 6E.5 Packaging and “average human install” honesty
 Not necessarily a full installer yet, but move closer to a reproducible setup path.
 At minimum:
 - docs for optional OCR dependencies
@@ -446,7 +450,7 @@ At minimum:
 
 ## Acceptance criteria
 
-Phase 5E is done when:
+Phase 6E is done when:
 - the hot-path modules are less haunted by obvious dead code
 - maintenance of artifacts/chunks/embeddings feels more systematic
 - large-corpus workflows are measurably less miserable
@@ -459,7 +463,7 @@ Phase 5E is done when:
 If you want this as a concrete build order rather than a theory lecture, do it like this:
 
 ### Milestone 1 — Retrieval honesty
-Deliver 5A first.
+Deliver 6A first.
 
 This gives you:
 - safer retrieval boundaries
@@ -468,7 +472,7 @@ This gives you:
 - less bullshit in the debug surface
 
 ### Milestone 2 — Rich ingestion
-Deliver 5B next.
+Deliver 6B next.
 
 This gives you:
 - screenshots and scans that finally matter
@@ -476,7 +480,7 @@ This gives you:
 - URLs as real inputs instead of copied text blobs
 
 ### Milestone 3 — Live web grounding
-Deliver 5C third.
+Deliver 6C third.
 
 This gives you:
 - current-world truth when needed
@@ -484,7 +488,7 @@ This gives you:
 - a stronger answer to “why use this instead of the official UI?”
 
 ### Milestone 4 — Corpus librarian controls
-Deliver 5D fourth.
+Deliver 6D fourth.
 
 This gives you:
 - real editorial power over the corpus
@@ -492,7 +496,7 @@ This gives you:
 - less dependence on direct DB poking
 
 ### Milestone 5 — Cleanup and operational hardening
-Deliver 5E last.
+Deliver 6E last.
 
 This gives you:
 - a less cursed codebase
@@ -501,9 +505,9 @@ This gives you:
 
 ---
 
-## A realistic “Phase 5 done” definition
+## A realistic “Phase 6 done” definition
 
-You should consider Phase 5 complete when all of the following are true:
+You should consider Phase 6 complete when all of the following are true:
 
 - private/global retrieval scope behaves predictably and visibly
 - conversation recall uses summaries and local windows intelligently
@@ -522,7 +526,7 @@ If those are true, WyrmGPT has crossed from “promising local scaffold” into 
 
 Here is the firm opinionated part.
 
-Do **not** let Phase 5 turn into a junk drawer.
+Do **not** let Phase 6 turn into a junk drawer.
 
 If a proposed task does not clearly advance one of these:
 - retrieval truth
@@ -531,7 +535,7 @@ If a proposed task does not clearly advance one of these:
 - corpus control
 - operational maintainability
 
-then it probably does not belong in Phase 5.
+then it probably does not belong in Phase 6.
 
 That includes seductive side quests like broad provider tourism, grand tool ecosystems, or pretending this should already be a shared multi-user hosted product.
 
@@ -540,14 +544,14 @@ That is the right next move.
 
 ---
 
-## Suggested Phase 5 epics, in short names
+## Suggested Phase 6 epics, in short names
 
 If you want ticket buckets or GitHub milestones, I would name them like this:
 
-1. **P5A — Retrieval Truth**
-2. **P5B — Rich Ingestion**
-3. **P5C — Web Grounding**
-4. **P5D — Corpus Librarian**
-5. **P5E — Hardening and Cleanup**
+1. **P6A — Retrieval Truth**
+2. **P6B — Rich Ingestion**
+3. **P6C — Web Grounding**
+4. **P6D — Corpus Librarian**
+5. **P6E — Hardening and Cleanup**
 
 That structure is clear, honest, and survives handoff better than cute names.

@@ -29,7 +29,7 @@ from .providers.types import ModelCatalog, ModelInput, ProviderDef
 # Big Include Blocks for config and db
 from .config import (
     load_provider_defs, load_deployment_defs,
-    load_core_config, load_openai_config, load_ui_config,
+    load_core_config, load_ui_config,
     ContextConfig, load_context_config,
     RetrievalConfig, load_retrieval_config,
     SummaryConfig, load_summary_config,
@@ -142,13 +142,6 @@ STATIC_DIR = HERE / "static"
 SOURCES_ROOT = DATA_DIR / "sources"
 # This is where APIs for supported toools (retrievers, file parsers, etc.) would live; you can add subdirs as needed
 TOOLS_DIR = HERE / "tools"
-
-if (False):
-    oai_cfg = load_openai_config()
-    # TODO phase this out in favor of provider configs
-    MODEL = oai_cfg.open_ai_model
-    # TODO decide if TITLE_MODEL should have its own setting
-    TITLE_MODEL = oai_cfg.summary_model
 
 # -------------------------
 # API Contracts
