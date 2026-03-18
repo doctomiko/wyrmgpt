@@ -693,6 +693,8 @@ textarea {
   gap: 6px;
 }
 
+/* placeholder --foobar */
+
 #chatAboveTop {
   display: flex;
   align-items: flex-start;   /* let children align at the top when title wraps */
