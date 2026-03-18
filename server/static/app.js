@@ -812,9 +812,23 @@ async function fetchJsonDebug(url, opts) {
 
 // #region Error handling helpers
 
+function coerceMetaObject(meta) {
+  if (!meta) return null;
+  if (typeof meta === "string") {
+    try {
+      const parsed = JSON.parse(meta);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+  return (typeof meta === "object") ? meta : null;
+}
+
 function isErrorBubble(msg) {
+  const meta = coerceMetaObject(msg?.meta);
   return (
-    (msg && msg.meta && msg.meta.kind === "error") ||
+    (meta && meta.kind === "error") ||
     msg?.kind === "error" ||
     msg?.is_error === true ||
     (typeof msg?.content === "string" && msg.content.startsWith("[Model ") && msg.content.includes(" error]"))
@@ -933,7 +947,7 @@ function addAssistantMsgWithModel(modelId, initialText, createdAtIso, metaObj = 
   const bubble = document.createElement("div");
   bubble.className = "msg assistant";
   // preserve error color coding
-  if (metaObj && metaObj.kind === "error") bubble.classList.add("error");
+  if (isErrorBubble({ role: "assistant", content: initialText, meta: metaObj })) bubble.classList.add("error");
 
   const body = document.createElement("div");
   body.className = "msgBody";
@@ -1103,8 +1117,8 @@ function renderABRow(msgA, msgB, canonicalA, canonicalB) {
   msgAEl.innerHTML = renderMarkdown(stripZeit(msgA.content));
   msgBEl.innerHTML = renderMarkdown(stripZeit(msgB.content));
 
-  if (msgA.meta && msgA.meta.kind === "error") msgAEl.classList.add("error");
-  if (msgB.meta && msgB.meta.kind === "error") msgBEl.classList.add("error");
+  if (isErrorBubble(msgA)) msgAEl.classList.add("error");
+  if (isErrorBubble(msgB)) msgBEl.classList.add("error");
 
   // Wire info buttons for reload/history
   infoAEl.onclick = () => openMetaInfo(labelAEl.textContent || "A", msgA.meta || {});
