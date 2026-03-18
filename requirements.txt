@@ -1,5 +1,6 @@
-fastapi
+bs4
 chardet
+fastapi
 openai
 pydantic
 pypdf

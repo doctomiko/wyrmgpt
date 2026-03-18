@@ -76,18 +76,51 @@ def autolink_text(text: str) -> str:
 
     return text
 
+
+def extract_explicit_urls(text: str) -> list[str]:
+    """
+    Return explicit http/https URLs found in raw text.
+    Conservative on purpose: this is for auto-ingest, not autolinking.
+    """
+    if not text:
+        return []
+
+    out: list[str] = []
+    seen: set[str] = set()
+
+    for m in _URL_RE.finditer(text):
+        url = (m.group(0) or "").strip()
+
+        # Trim common trailing punctuation from prose/chat.
+        url = url.rstrip('.,;:!?)\\]}>\'"')
+
+        if not url:
+            continue
+        if url in seen:
+            continue
+
+        seen.add(url)
+        out.append(url)
+
+    return out
+
+
 def underline(text: str) -> str:
     # House underline marker
     return f"__{text}__"
 
+
 def bold(text: str) -> str:
     return f"**{text}**"
+
 
 def italics(text: str) -> str:
     return f"*{text}*"
 
+
 def italics_alt(text: str) -> str:
     return f"_{text}_"
+
 
 def _convert_double_underscore_to_bold_if_marked(text: str) -> str:
     """

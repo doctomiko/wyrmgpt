@@ -18,15 +18,16 @@ from pydantic import BaseModel
 
 from .logging_helper import log_warn
 from .context import _get_prompt, build_context, build_context_panel_payload, build_model_input
-from .markdown_helper import apply_house_markdown_normalization, autolink_text
-from .summary_helper import summarize_conversation_text, suggest_conversation_title_from_transcript
-
+from .markdown_helper import apply_house_markdown_normalization, autolink_text, extract_explicit_urls
 from .query_retrieval import retrieve_chunks_for_message
+from .summary_helper import summarize_conversation_text, suggest_conversation_title_from_transcript
+from .web_ingest import ingest_urls_from_user_message
+
+# Big Include Blocks for config and db
 from .providers.registry import ProviderRegistry
 from .providers.base import ChatProvider, ModelCatalogProvider
 from .providers.openai_provider import OpenAIProvider, ProviderExecutionError, extract_error_message
 from .providers.types import ModelCatalog, ModelInput, ProviderDef
-# Big Include Blocks for config and db
 from .config import (
     load_provider_defs, load_deployment_defs,
     load_core_config, load_ui_config,
@@ -865,11 +866,30 @@ def chat(req: ChatRequest, model: str | None = None):
     heal = ensure_files_artifacted_for_conversation(conversation_id=cid, limit_per_scope=5, include_global=False)
     if heal["created"]:
         print("self-heal artifacts: cid=%s heal=%s", cid, heal)
-    full = postprocess_text(req.message)
+
+    raw_user_message = req.message or ""
+    full = postprocess_text(raw_user_message)
+    user_message_id: int | None = None
     if full:
-        add_message(cid, "user", full)
-    # End to "Call" above.
+        user_message_id = add_message(cid, "user", full)
+    try:
+        ingest_urls_from_user_message(
+            conversation_id=cid,
+            request_message_id=user_message_id,
+            raw_message=raw_user_message,
+            max_urls=3,
+            fetch_method="python",
+        )
+    except Exception as e:
+        log_warn(f"URL ingest failed for conversation {cid}: {e}")
     raw_input = build_model_input(cid, full)
+
+    if (False):
+        full = postprocess_text(req.message)
+        if full:
+            add_message(cid, "user", full)
+        # End to "Call" above.
+        raw_input = build_model_input(cid, full)
 
     requested_model = (req.model or model or "").strip()
     if PROVIDER_REGISTRY is None:
@@ -1009,11 +1029,32 @@ async def chat_ab(req: ABChatRequest):
     if heal["created"]:
         print("self-heal artifacts: cid=%s heal=%s", cid, heal)
 
-    full = postprocess_text(req.message)
-    if full:
-        add_message(cid, "user", full)
+    raw_user_message = req.message or ""
+    full = postprocess_text(raw_user_message)
 
-    model_input = build_model_input(cid, req.message)
+    user_message_id: int | None = None
+    if full:
+        user_message_id = add_message(cid, "user", full)
+
+    try:
+        ingest_urls_from_user_message(
+            conversation_id=cid,
+            request_message_id=user_message_id,
+            raw_message=raw_user_message,
+            max_urls=3,
+            fetch_method="python",
+        )
+    except Exception as e:
+        log_warn(f"URL ingest failed for conversation {cid}: {e}")
+
+    raw_input = build_model_input(cid, full)
+
+    if (False):
+        full = postprocess_text(req.message)
+        if full:
+            add_message(cid, "user", full)
+        raw_input = build_model_input(cid, req.message)
+
     model_a = (req.model_a or "").strip()
     model_b = (req.model_b or model_a).strip()
 
@@ -1030,10 +1071,10 @@ async def chat_ab(req: ABChatRequest):
     async with anyio.create_task_group() as tg:
         async def run_a():
             nonlocal a_res
-            a_res = await call_model_with_recovery(target_a, model_input)
+            a_res = await call_model_with_recovery(target_a, raw_input)
         async def run_b():
             nonlocal b_res
-            b_res = await call_model_with_recovery(target_b, model_input)
+            b_res = await call_model_with_recovery(target_b, raw_input)
         tg.start_soon(run_a)
         tg.start_soon(run_b)
     # At this point, both are done
