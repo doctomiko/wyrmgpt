@@ -6398,7 +6398,31 @@ def list_conversation_history_with_scaffold_events(
             (cid,),
         ).fetchall()
 
-    messages = [dict(r) for r in msg_rows]
+    #messages = [dict(r) for r in msg_rows]
+    messages: list[dict] = []
+    for r in msg_rows:
+        row = dict(r)
+
+        raw_meta = row.get("meta")
+        if raw_meta is not None:
+            try:
+                row["meta"] = json.loads(raw_meta)
+            except Exception:
+                row["meta"] = None
+        else:
+            row["meta"] = None
+
+        raw_author_meta = row.get("author_meta")
+        if raw_author_meta is not None:
+            try:
+                row["author_meta"] = json.loads(raw_author_meta)
+            except Exception:
+                row["author_meta"] = None
+        else:
+            row["author_meta"] = None
+
+        messages.append(row)
+
     events = [dict(r) for r in event_rows]
 
     events_by_message: dict[int, list[dict]] = {}
