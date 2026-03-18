@@ -1091,6 +1091,7 @@ def _migrate_schema_v20(conn) -> None:
     """
     CREATE INDEX IF NOT EXISTS idx_web_search_results_snapshot
         ON web_search_results(fetched_snapshot_id);
+        global_project_id = get_global_project_id()
     """
     )
 
@@ -1787,13 +1788,20 @@ def _ensure_project_exists(conn: sqlite3.Connection, project_id: int) -> None:
     if not row:
         raise ValueError(f"Project not found: {project_id}")
 
-def list_projects() -> list[dict]:
+def list_projects(
+    include_global: bool = False,
+    include_unassigned: bool = True,
+) -> list[dict]:
+    pseudo_global_id: int | None = None
+    if include_global or include_unassigned:
+        pseudo_global_id = get_global_project_id()
+
     with db_session() as conn:
         rows = conn.execute(
             "SELECT * FROM projects WHERE (is_hidden IS NULL OR is_hidden = 0) AND (is_global IS NULL OR is_global = 0) ORDER BY name COLLATE NOCASE"
         ).fetchall()
         #"SELECT id, name, description, created_at, updated_at FROM projects ORDER BY name COLLATE NOCASE"
-    return [
+    out = [
         {
             "id": int(r["id"]),
             "name": r["name"],
@@ -1802,11 +1810,28 @@ def list_projects() -> list[dict]:
             "system_prompt": r["system_prompt"],
             "override_core_prompt": bool(r["override_core_prompt"]),
             "default_advanced_mode": bool(r["default_advanced_mode"]),
+            "is_pseudo_global": False,
             "created_at": r["created_at"],
             "updated_at": r["updated_at"],
         }
         for r in rows
     ]
+    if pseudo_global_id is not None:
+        out.append(
+            {
+                "id": int(pseudo_global_id),
+                "name": "Unassigned Chats",
+                "visibility": "global",
+                "description": "Chats not explicitly assigned to a project.",
+                "system_prompt": None,
+                "override_core_prompt": False,
+                "default_advanced_mode": False,
+                "is_pseudo_global": True,
+                "created_at": None,
+                "updated_at": None,
+            }
+        )
+    return out
 
 def get_global_project_id() -> int:
     """
@@ -1841,7 +1866,9 @@ def get_conversation_project_id(conn, conversation_id: str) -> int | None:
     if not row:
         return None
     pid = row["project_id"]
-    return int(pid) if pid not in (None, "") else None
+    if pid not in (None, ""):
+        return int(pid)
+    return get_global_project_id()
 
 def get_or_create_project(name: str, visibility: str = "private") -> dict:
     name = (name or "").strip()
@@ -2139,8 +2166,9 @@ def list_conversations(
                 "title": r["title"] or "New chat",
                 "created_at": r["created_at"],
                 "updated_at": r["updated_at"],
-                "project_id": (int(r["project_id"]) if r["project_id"] is not None else None),
-                "project_name": r["project_name"],
+                "project_id": (int(r["project_id"]) if r["project_id"] is not None else int(global_project_id)),
+                "project_name": r["project_name"] or "Unassigned Chats",
+                "is_unassigned_pseudo": r["project_id"] is None,
                 "archived": bool(r["archived"]),
                 "summary_excerpt": _summary_excerpt(r["summary_text"] or ""),
             }
@@ -2182,6 +2210,7 @@ def get_conversation_context(conversation_id: str, preview_limit: int = 20) -> d
         raise KeyError("Conversation not found.")
 
     with db_session() as conn:
+        global_project_id = get_global_project_id()
         row = conn.execute(
             """
             SELECT c.project_id, p.name AS project_name, c.archived -- , c.summary_json
@@ -2200,8 +2229,8 @@ def get_conversation_context(conversation_id: str, preview_limit: int = 20) -> d
         "conversation_id": conversation_id,
         "title": title,
         "project_id": int(row["project_id"]) if row and row["project_id"] is not None else None,
-        "project_name": row["project_name"] if row else None,
-        "archived": bool(row["archived"]) if row and row["archived"] is not None else False,
+        "project_id": int(row["project_id"]) if row and row["project_id"] is not None else int(global_project_id),
+        "project_name": row["project_name"] if row and row["project_name"] else "Unassigned Chats",
         # "summary_json": row["summary_json"] if row else None,
         "preview_limit": int(preview_limit),
         "messages_preview": preview,
@@ -2210,6 +2239,7 @@ def get_conversation_context(conversation_id: str, preview_limit: int = 20) -> d
 def get_context_sources(conversation_id: str) -> dict:
     with db_session() as conn:
         row = conn.execute(
+        global_project_id = get_global_project_id()
             """
             SELECT
               c.id AS conversation_id,
@@ -2233,8 +2263,8 @@ def get_context_sources(conversation_id: str) -> dict:
             # "summary_json": row["summary_json"],
             "project_id": row["project_id"],
             "project_name": row["project_name"],
-            "project_system_prompt": row["project_system_prompt"],
-            "override_core_prompt": row["override_core_prompt"],
+            "project_id": int(row["project_id"]) if row["project_id"] is not None else int(global_project_id),
+            "project_name": row["project_name"] or "Unassigned Chats",
         }
 
 # endregion
