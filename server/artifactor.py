@@ -217,25 +217,13 @@ def _extract_text_from_html(html: str) -> tuple[str, str]:
     return (title, text)
 
 
-def artifact_web_snapshot(
+def build_web_artifact_payload(
     *,
-    snapshot_id: int,
-    conversation_id: str,
-) -> str | None:
-    snap = get_web_source_snapshot_by_id(snapshot_id)
-    if not snap:
-        raise ValueError(f"web snapshot not found: {snapshot_id}")
-
-    source_id = snap.get("source_id")
-    if not source_id:
-        raise ValueError(f"web snapshot has no source_id: {snapshot_id}")
-
-    source = get_web_source_by_id(int(source_id))
-    if not source:
-        raise ValueError(f"web source not found: {source_id}")
-
-    raw_html = snap.get("raw_html") or ""
-    raw_text = snap.get("raw_text") or ""
+    snapshot: dict,
+    source: dict,
+) -> dict | None:
+    raw_html = snapshot.get("raw_html") or ""
+    raw_text = snapshot.get("raw_text") or ""
 
     if raw_html.strip():
         title, text = _extract_text_from_html(raw_html)
@@ -243,19 +231,58 @@ def artifact_web_snapshot(
         title = source.get("canonical_url") or "Web Page"
         text = (raw_text or "").strip()
 
-    if not text.strip():
+    text = (text or "").strip()
+    if not text:
         return None
 
-    with db_session() as conn:
-        artifact_id = upsert_artifact_text(
-            conn,
-            source_kind="web:snapshot",
-            source_id=str(snapshot_id),
-            title=title or source.get("canonical_url") or "Web Page",
-            scope_type="conversation",
-            scope_id=conversation_id,
-            text=text,
-        )
+    return {
+        "title": (title or source.get("canonical_url") or "Web Page").strip(),
+        "text": text,
+        "source_kind": "web:snapshot",
+        "source_id": str(snapshot["id"]),
+    }
 
-    reindex_artifact_by_id(artifact_id)
-    return artifact_id
+
+if (False):
+    def artifact_web_snapshot(
+        *,
+        snapshot_id: int,
+        conversation_id: str,
+    ) -> str | None:
+        snap = get_web_source_snapshot_by_id(snapshot_id)
+        if not snap:
+            raise ValueError(f"web snapshot not found: {snapshot_id}")
+
+        source_id = snap.get("source_id")
+        if not source_id:
+            raise ValueError(f"web snapshot has no source_id: {snapshot_id}")
+
+        source = get_web_source_by_id(int(source_id))
+        if not source:
+            raise ValueError(f"web source not found: {source_id}")
+
+        raw_html = snap.get("raw_html") or ""
+        raw_text = snap.get("raw_text") or ""
+
+        if raw_html.strip():
+            title, text = _extract_text_from_html(raw_html)
+        else:
+            title = source.get("canonical_url") or "Web Page"
+            text = (raw_text or "").strip()
+
+        if not text.strip():
+            return None
+
+        with db_session() as conn:
+            artifact_id = upsert_artifact_text(
+                conn,
+                source_kind="web:snapshot",
+                source_id=str(snapshot_id),
+                title=title or source.get("canonical_url") or "Web Page",
+                scope_type="conversation",
+                scope_id=conversation_id,
+                text=text,
+            )
+
+        reindex_artifact_by_id(artifact_id)
+        return artifact_id

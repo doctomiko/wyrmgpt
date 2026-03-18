@@ -9,21 +9,16 @@ from functools import lru_cache
 from .logging_helper import log_debug, log_warn
 from .providers.registry import ProviderRegistry
 from .db import (
-    get_app_setting,
-    get_conversation_summary_text,
+    get_app_setting, get_conversation_summary_text,
     get_messages, get_context_sources,
-    list_memory_pins, list_artifacts_for_file,
-    # list_files_for_conversation,
-    # list_files_for_project,
-    # list_all_files,
+    list_memory_pins, list_memories, list_conversations,
     ensure_artifacts_for_files, gather_scoped_files,
     ensure_conversation_transcript_artifact_fresh,
-    list_memories, list_conversations,
-    load_artifact_row_for_context,
+    load_artifact_row_for_context, list_artifacts_for_file,
     memory_artifact_id, conversation_summary_artifact_id,
-    conversation_transcript_artifact_id,
-    db_session,
-    #hydrate_artifact_content_text,        
+    conversation_transcript_artifact_id, db_session,
+    list_conversation_retained_artifacts,
+    retain_conversation_artifact_conn,
 )
 
 from .config import (
@@ -701,6 +696,25 @@ def _artifact_to_input_message(art: dict, *, label: str) -> dict:
     return {"role": "user", "content": text}
 
 
+def _retained_artifact_summary_to_input_message(row: dict) -> dict:
+    title = (row.get("artifact_title") or "").strip()
+    artifact_id = (row.get("artifact_id") or "").strip()
+    state = (row.get("retention_state") or "").strip()
+    summary = (row.get("carry_summary_text") or "").strip()
+
+    lines = ["RETAINED ARTIFACT NOTE"]
+    if title:
+        lines.append(f"Title: {title}")
+    if artifact_id:
+        lines.append(f"Artifact ID: {artifact_id}")
+    if state:
+        lines.append(f"Retention state: {state}")
+    lines.append("")
+    lines.append(summary)
+
+    return {"role": "user", "content": "\n".join(lines).strip()}
+
+
 def _order_scoped_memories_for_context(
     memories: list[dict],
     project_id: int | None,
@@ -1185,6 +1199,78 @@ def build_context(
                 title = (art.get("title") or cid).strip()
                 included_chat_labels.append(title)
 
+    # Conversation-retained artifacts:
+    # artifacts previously pulled into this conversation should be reconsidered
+    # on later turns, not forgotten immediately.
+    included_retained_labels: list[str] = []
+    current_message_id = None
+    
+    if history_rows:
+        raw_message_id = history_rows[-1].get("id")
+        if raw_message_id is not None:
+            try:
+                current_message_id = int(str(raw_message_id))
+            except (TypeError, ValueError):
+                current_message_id = None
+
+    retained_rows = list_conversation_retained_artifacts(
+        conversation_id,
+        include_dropped=False,
+    )
+
+    if retained_rows:
+        with db_session() as conn:
+            for rr in retained_rows:
+                artifact_id = (rr.get("artifact_id") or "").strip()
+                if not artifact_id or artifact_id in included_artifact_ids:
+                    continue
+
+                state = (rr.get("retention_state") or "").strip().lower()
+                carry_summary = (rr.get("carry_summary_text") or "").strip()
+                title = (rr.get("artifact_title") or artifact_id).strip()
+
+                # Cheapest future path:
+                # if a retained artifact has a carry-forward summary and is no longer
+                # strongly active, inject the summary note instead of the whole artifact.
+                if state in ("latent",) and carry_summary:
+                    whole_artifact_messages.append(
+                        _retained_artifact_summary_to_input_message(rr)
+                    )
+                    included_retained_labels.append(f"{title} [retained summary; {state}]")
+                    continue
+
+                # For now, explicit/active retained artifacts get re-included whole.
+                # This is intentionally conservative so the bot stops forgetting
+                # user-injected pages and expanded artifacts across nearby turns.
+                if state in ("forced", "pinned", "active"):
+                    art = load_artifact_row_for_context(conn, artifact_id)
+                    if not art or not (art.get("content_text") or "").strip():
+                        continue
+
+                    included_artifact_ids.add(artifact_id)
+                    whole_artifact_messages.append(
+                        _artifact_to_input_message(
+                            art,
+                            label=f"RETAINED {state.upper()} ARTIFACT",
+                        )
+                    )
+                    included_retained_labels.append(f"{title} [retained whole; {state}]")
+
+                    retain_conversation_artifact_conn(
+                        conn,
+                        conversation_id=conversation_id,
+                        artifact_id=artifact_id,
+                        origin_kind=(rr.get("origin_kind") or "retrieval_expand"),
+                        retention_state=state,
+                        carry_summary_text=carry_summary or None,
+                        inclusion_kind="whole",
+                        retrieval_channel="retained",
+                        message_id=current_message_id,
+                        note_text="Reincluded from conversation retained working set",
+                        meta_json=None,
+                        increment_include_count=True,
+                    )
+
     retrieved_rows_raw: list[dict] = []
     retrieved_rows: list[dict] = []
     retrieved_block = ""
@@ -1286,6 +1372,24 @@ def build_context(
                             whole_artifact_messages.append(
                                 _chat_window_to_input_message(item, window_rows)
                             )
+                            retain_conversation_artifact_conn(
+                                conn,
+                                conversation_id=conversation_id,
+                                artifact_id=artifact_id,
+                                origin_kind="conversation_expand",
+                                retention_state="active",
+                                carry_summary_text=(item.get("conversation_summary_excerpt") or "").strip() or None,
+                                inclusion_kind="chunk",
+                                retrieval_channel="expansion",
+                                message_id=current_message_id,
+                                note_text="Expanded transcript window retained for conversation continuity",
+                                meta_json={
+                                    "chunk_index": center_chunk_index,
+                                    "before": query_expand_chat_window_before,
+                                    "after": query_expand_chat_window_after,
+                                },
+                                increment_include_count=True,
+                            )
 
                             title = (
                                 (item.get("conversation_title") or "").strip()
@@ -1308,6 +1412,24 @@ def build_context(
 
                         whole_artifact_messages.append(
                             _artifact_to_input_message(art, label=f"EXPANDED {kind} ARTIFACT")
+                        )
+                        retain_conversation_artifact_conn(
+                            conn,
+                            conversation_id=conversation_id,
+                            artifact_id=artifact_id,
+                            origin_kind="retrieval_expand" if kind != "FILE" else "file_attach",
+                            retention_state="active",
+                            carry_summary_text=None,
+                            inclusion_kind="whole",
+                            retrieval_channel="expansion",
+                            message_id=current_message_id,
+                            note_text=f"Expanded {kind.lower()} artifact retained for conversation continuity",
+                            meta_json={
+                                "kind": kind,
+                                "source_kind": item.get("source_kind"),
+                                "source_id": item.get("source_id"),
+                            },
+                            increment_include_count=True,
                         )
 
                         if kind == "FILE":
@@ -1480,8 +1602,9 @@ def build_context(
         "included_memory_labels": included_memory_labels,
         "included_chat_labels": included_chat_labels,
         "included_chat_summary_labels": included_chat_summary_labels,
-        "scoped_files": scoped_files,
         "included_file_artifact_labels": included_file_artifact_labels,
+        "included_retained_labels": included_retained_labels,
+        "scoped_files": scoped_files,
         "whole_artifact_messages": whole_artifact_messages,
         "expansion_candidates": expansion_candidates,
         "expanded_artifact_ids": sorted(expanded_artifact_ids),        
@@ -1567,6 +1690,7 @@ def build_context_panel_payload(
     included_memory_labels = ctx.get("included_memory_labels") or []
     included_chat_labels = ctx.get("included_chat_labels") or []
     included_chat_summary_labels = ctx.get("included_chat_summary_labels") or []
+    included_retained_labels = ctx.get("included_retained_labels") or []
 
     token_stats = estimate_tokens_for_messages(full_input, model=ctx_cfg.estimate_model)
 
@@ -1582,6 +1706,7 @@ def build_context_panel_payload(
         "included_memory_labels": included_memory_labels,
         "included_chat_labels": included_chat_labels,
         "included_chat_summary_labels": included_chat_summary_labels,
+        "included_retained_labels": included_retained_labels,
         "llm_input_messages": full_input,
     }
 

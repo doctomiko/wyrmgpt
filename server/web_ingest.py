@@ -6,13 +6,14 @@ from datetime import datetime, timedelta, timezone
 from .logging_helper import log_warn
 from .markdown_helper import extract_explicit_urls
 from .db import (
-    db_session,
-    get_conversation_project_id,
-    upsert_web_source_conn,
-    insert_web_source_snapshot_conn,
+    db_session, get_conversation_project_id,
+    upsert_web_source_conn, insert_web_source_snapshot_conn,
+    get_web_snapshot_bundle_conn, upsert_artifact_text,
+    retain_conversation_artifact_conn,
 )
+from .artifactor import build_web_artifact_payload
+#from .artifactor import artifact_web_snapshot
 from .web_fetch import fetch_web_url
-from .artifactor import artifact_web_snapshot
 
 
 DEFAULT_WEB_TTL_SECONDS = 7 * 24 * 60 * 60
@@ -77,13 +78,76 @@ def ingest_urls_from_user_message(
                 )
                 created_snapshots += 1
 
-                artifact_id = artifact_web_snapshot(
-                    snapshot_id=snapshot_id,
-                    conversation_id=conversation_id,
+                snapshot, source = get_web_snapshot_bundle_conn(conn, snapshot_id)
+
+                payload = build_web_artifact_payload(
+                    snapshot=snapshot,
+                    source=source,
                 )
+
+                artifact_id = None
+                if payload:
+                    artifact_id = upsert_artifact_text(
+                        conn,
+                        source_kind=payload["source_kind"],
+                        source_id=payload["source_id"],
+                        title=payload["title"],
+                        scope_type="conversation",
+                        scope_id=conversation_id,
+                        text=payload["text"],
+                    )
+
                 if artifact_id:
                     artifact_ids.append(artifact_id)
 
+                    retain_conversation_artifact_conn(
+                        conn,
+                        conversation_id=conversation_id,
+                        artifact_id=artifact_id,
+                        origin_kind="user_url",
+                        retention_state="forced",
+                        carry_summary_text=None,
+                        inclusion_kind="whole",
+                        retrieval_channel="manual",
+                        message_id=request_message_id,
+                        note_text=f"Explicit URL injected by user: {url}",
+                        meta_json={
+                            "url": url,
+                            "source_id": source_id,
+                            "snapshot_id": snapshot_id,
+                            "fetch_method": fetch_method,
+                        },
+                        increment_include_count=True,
+                    )
+
+                if (False):
+                    artifact_id = artifact_web_snapshot(
+                        snapshot_id=snapshot_id,
+                        conversation_id=conversation_id,
+                    )
+                    if artifact_id:
+                        artifact_ids.append(artifact_id)
+
+                        retain_conversation_artifact_conn(
+                            conn,
+                            conversation_id=conversation_id,
+                            artifact_id=artifact_id,
+                            origin_kind="user_url",
+                            retention_state="forced",
+                            carry_summary_text=None,
+                            inclusion_kind="whole",
+                            retrieval_channel="manual",
+                            message_id=request_message_id,
+                            note_text=f"Explicit URL injected by user: {url}",
+                            meta_json={
+                                "url": url,
+                                "source_id": source_id,
+                                "snapshot_id": snapshot_id,
+                                "fetch_method": fetch_method,
+                            },
+                            increment_include_count=True,
+                        )
+                    
             except Exception as e:
                 errors.append(f"{url}: {type(e).__name__}: {e}")
                 log_warn(f"URL ingest failed for {url}: {e}")

@@ -57,6 +57,7 @@ const convMenuRenameBtn = document.getElementById("menuRename");
 const convMenuSuggestTitleBtn = document.getElementById("menuSuggest");
 const convMenuMoveToBtn = document.getElementById("menuMoveTo");
 const convMenuManageFilesBtn = document.getElementById("menuConvViewFiles");
+const convMenuCitationsBtn = document.getElementById("menuConvCitations");
 const convMenuExportTranscriptBtn = document.getElementById("menuExportTranscript");
 const convMenuSummarizeBtn = document.getElementById("menuSummarize");
 const convMenuArchiveBtn = document.getElementById("menuArchive");
@@ -72,6 +73,7 @@ const projMenuSettingsBtn = document.getElementById("projSettings");
 const projMenuToggleVisibility = document.getElementById("projToggleVisibility");
 const projMenuFileUploadBtn = document.getElementById("projUpload");
 const projMenuManageFilesBtn = document.getElementById("projFiles");
+const projMenuCitationsBtn = document.getElementById("projCitations");
 // #endregion
 
 // MODAL DIALOGS
@@ -168,6 +170,14 @@ const artifactsDebugModal = document.getElementById("artifactsDebugModal");
 const artifactsDebugCloseBtn = document.getElementById("artifactsDebugClose");
 const artifactsDebugPre = document.getElementById("artifactsDebugPre");
 // #endregion
+// #region Citations Modal
+const citationsModal = document.getElementById("citationsModal");
+const citationsModalTitleEl = document.getElementById("citationsModalTitle");
+const citationsListEl = document.getElementById("citationsList");
+const citationsCloseBtn = document.getElementById("citationsClose");
+const citationsCloseBottomBtn = document.getElementById("citationsCloseBottom");
+const citationsBackdrop = citationsModal ? citationsModal.querySelector(".modalBackdrop") : null;
+// #endregion
 
 // ----------------------------------
 // Global variables we'll need later
@@ -200,6 +210,9 @@ let filesModalMode = null; // "conversation" | "project" | "global" | "all"
 let filesModalConversationId = null;
 let filesModalProjectId = null;
 let hasAnyFiles = false;
+let citationsModalMode = null; // "conversation" | "project"
+let citationsModalConversationId = null;
+let citationsModalProjectId = null;
 // Context preview and trigger state:
 let contextRefreshTimer = null;
 let contextRefreshing = false;
@@ -507,8 +520,113 @@ function closeArtifactsDebug() {
   artifactsDebugModal.classList.add("hidden");
 }
 
+function closeCitationsModal() {
+  citationsModalMode = null;
+  citationsModalConversationId = null;
+  citationsModalProjectId = null;
+  if (citationsModal) citationsModal.classList.add("hidden");
+}
+
+function renderCitationScopeItems(data) {
+  if (!citationsListEl) return;
+  const items = Array.isArray(data?.items) ? data.items : [];
+  citationsListEl.innerHTML = "";
+
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "citationEmpty";
+    empty.textContent = "No citations found in this scope yet.";
+    citationsListEl.appendChild(empty);
+    return;
+  }
+
+  for (const item of items) {
+    const card = document.createElement("div");
+    card.className = "citationCard";
+
+    const title = document.createElement("div");
+    title.className = "citationCardTitle";
+    title.textContent = item.title || "Untitled source";
+
+    const meta = document.createElement("div");
+    meta.className = "citationCardMeta";
+    const metaBits = [];
+    if (item.citation_count != null) metaBits.push(`${item.citation_count} citation${Number(item.citation_count) === 1 ? "" : "s"}`);
+    if (Array.isArray(item.retrieval_channels) && item.retrieval_channels.length) {
+      metaBits.push(item.retrieval_channels.join(", "));
+    }
+    if (item.latest_created_at) metaBits.push(formatReadableDateTime(item.latest_created_at));
+    meta.textContent = metaBits.join(" · ");
+
+    const excerpt = document.createElement("div");
+    excerpt.className = "citationExcerpt";
+    excerpt.textContent = item.summary_excerpt || item.excerpt || "";
+
+    const path = document.createElement("div");
+    path.className = "citationPath";
+
+    if (item.origin_url) {
+      const a = document.createElement("a");
+      a.href = item.origin_url;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.textContent = item.origin_label || item.origin_url;
+      path.appendChild(a);
+    } else if (item.origin_conversation_id) {
+      const btn = document.createElement("button");
+      btn.className = "citationJumpBtn";
+      btn.textContent = item.origin_conversation_title || item.origin_conversation_id;
+      btn.addEventListener("click", async () => {
+        closeCitationsModal();
+        await selectConversation(item.origin_conversation_id);
+      });
+      path.appendChild(btn);
+    } else if (item.origin_path) {
+      const code = document.createElement("code");
+      code.textContent = item.origin_path;
+      path.appendChild(code);
+    } else {
+      path.textContent = item.origin_label || item.source_kind || "Artifact";
+    }
+
+    card.appendChild(title);
+    if (meta.textContent) card.appendChild(meta);
+    if (excerpt.textContent) card.appendChild(excerpt);
+    card.appendChild(path);
+    citationsListEl.appendChild(card);
+  }
+}
+
+async function openCitationsModalForConversation(cid) {
+  citationsModalMode = "conversation";
+  citationsModalConversationId = cid;
+  citationsModalProjectId = null;
+  citationsModalTitleEl.textContent = "Conversation Citations";
+  citationsListEl.innerHTML = "Loading…";
+  hideAllTransientUI({ except: [citationsModal] });
+  citationsModal.classList.remove("hidden");
+
+  const data = await fetchJsonDebug(`/api/conversation/${encodeURIComponent(cid)}/citations`);
+  citationsModalTitleEl.textContent = `Conversation Citations — ${data?.scope_label || cid}`;
+  renderCitationScopeItems(data);
+}
+
+async function openCitationsModalForProject(pid) {
+  citationsModalMode = "project";
+  citationsModalProjectId = pid;
+  citationsModalConversationId = null;
+  citationsModalTitleEl.textContent = "Project Citations";
+  citationsListEl.innerHTML = "Loading…";
+  hideAllTransientUI({ except: [citationsModal] });
+  citationsModal.classList.remove("hidden");
+
+  const data = await fetchJsonDebug(`/api/projects/${encodeURIComponent(pid)}/citations`);
+  citationsModalTitleEl.textContent = `Project Citations — ${data?.scope_label || pid}`;
+  renderCitationScopeItems(data);
+}
+
 async function loadMessages(cid) {
-  return await fetchJsonDebug(`/api/conversation/${cid}/messages`);
+  return await fetchJsonDebug(`/api/conversation/${cid}/messages?mode=thread`);
 }
 
 // #endregion
@@ -862,10 +980,59 @@ function clearChat() {
   chatWindow.innerHTML = "";
 }
 
+function addScaffoldEventCard(evRow) {
+  const wrap = document.createElement("div");
+  wrap.className = "scaffoldCard";
+
+  const title = document.createElement("div");
+  title.className = "scaffoldTitle";
+  title.textContent = evRow.title || `Scaffold: ${evRow.event_kind || "event"}`;
+
+  const meta = document.createElement("div");
+  meta.className = "scaffoldMeta";
+  const parts = [];
+  if (evRow.status) parts.push(`status=${evRow.status}`);
+  if (evRow.created_at) parts.push(formatReadableDateTime(evRow.created_at));
+  meta.textContent = parts.join(" · ");
+
+  const body = document.createElement("div");
+  body.className = "scaffoldBody";
+  body.innerHTML = renderMarkdown(stripZeit(evRow.body_text || ""));
+
+  wrap.appendChild(title);
+  if (meta.textContent) wrap.appendChild(meta);
+  if ((evRow.body_text || "").trim()) wrap.appendChild(body);
+
+  const detailsBits = [];
+  if (evRow.input_json) detailsBits.push(`Input:${typeof evRow.input_json === "string" ? evRow.input_json : JSON.stringify(evRow.input_json, null, 2)}`);
+  if (evRow.output_json) detailsBits.push(`Output:${typeof evRow.output_json === "string" ? evRow.output_json : JSON.stringify(evRow.output_json, null, 2)}`);
+  if (detailsBits.length) {
+    const details = document.createElement("details");
+    details.className = "scaffoldDetails";
+    const summary = document.createElement("summary");
+    summary.textContent = "Planner details";
+    const pre = document.createElement("pre");
+    pre.className = "ctxPre";
+    pre.textContent = detailsBits.join("");
+    details.appendChild(summary);
+    details.appendChild(pre);
+    wrap.appendChild(details);
+  }
+
+  chatWindow.appendChild(wrap);
+  chatWindow.scrollTop = chatWindow.scrollHeight;
+  return wrap;
+}
+
 function renderMessagesWithAB(rows) {
   let i = 0;
   while (i < rows.length) {
     const msg = rows[i];
+    if (msg.row_type === "scaffold_event") {
+      addScaffoldEventCard(msg);
+      i += 1;
+      continue;
+    }
     const meta = msg.meta || {};
 
     // First try: explicit A/B grouping via meta.ab_group
@@ -4143,6 +4310,21 @@ if (convMenuManageFilesBtn) {
   });
 }
 
+if (convMenuCitationsBtn) {
+  convMenuCitationsBtn.addEventListener("click", () => {
+    convMenuEl.classList.add("hidden");
+    const cid = menuTargetConversationId || conversationId;
+    if (!cid) {
+      alert("No conversation selected.");
+      return;
+    }
+    openCitationsModalForConversation(cid).catch(e => {
+      console.error("openCitationsModalForConversation failed", e);
+      alert("Failed to load conversation citations.");
+    });
+  });
+}
+
 if (projMenuManageFilesBtn) {
   projMenuManageFilesBtn.addEventListener("click", () => {
     projMenuEl.classList.add("hidden");
@@ -4152,6 +4334,21 @@ if (projMenuManageFilesBtn) {
       return;
     }
     openFilesModalForProject(pid);
+  });
+}
+
+if (projMenuCitationsBtn) {
+  projMenuCitationsBtn.addEventListener("click", () => {
+    projMenuEl.classList.add("hidden");
+    const pid = menuTargetProjectId;
+    if (!pid) {
+      alert("No project selected.");
+      return;
+    }
+    openCitationsModalForProject(pid).catch(e => {
+      console.error("openCitationsModalForProject failed", e);
+      alert("Failed to load project citations.");
+    });
   });
 }
 
@@ -4177,6 +4374,15 @@ if (filesSaveBtn) {
 }
 if (filesBackdrop) {
   filesBackdrop.addEventListener("click", closeFilesModal);
+}
+if (citationsCloseBtn) {
+  citationsCloseBtn.addEventListener("click", closeCitationsModal);
+}
+if (citationsCloseBottomBtn) {
+  citationsCloseBottomBtn.addEventListener("click", closeCitationsModal);
+}
+if (citationsBackdrop) {
+  citationsBackdrop.addEventListener("click", closeCitationsModal);
 }
 
 // #endregion

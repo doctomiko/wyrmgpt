@@ -97,7 +97,7 @@ def db_session() -> Iterator[sqlite3.Connection]:
 
 # region Schema Management and Migrations
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 # region Migration helpers
 
@@ -1244,6 +1244,214 @@ def _migrate_schema_v21(conn) -> None:
     """
     )
 
+def _migrate_schema_v22(conn) -> None:
+    conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS artifact_derivatives (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        artifact_id TEXT NOT NULL,
+
+        -- what kind of derivative is this?
+        derivative_kind TEXT NOT NULL,         -- summary | index | notes | commentary | analysis | plan
+        focus_kind TEXT NOT NULL DEFAULT 'general',   -- general | scenes | characters | developmental_edit | style | consistency | redundancy | worldbuilding | etc
+        format_kind TEXT NOT NULL DEFAULT 'text',     -- text | json | markdown
+
+        title TEXT,
+        content_text TEXT,
+        content_json TEXT,
+
+        -- freshness / provenance
+        source_artifact_content_hash TEXT,
+        model_deployment_id TEXT,
+        model_name TEXT,
+        generator_kind TEXT NOT NULL DEFAULT 'summary_model',   -- summary_model | planner | manual | imported
+        status TEXT NOT NULL DEFAULT 'ready',                   -- ready | stale | failed | pending
+
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+
+        UNIQUE(artifact_id, derivative_kind, focus_kind, format_kind),
+
+        FOREIGN KEY (artifact_id) REFERENCES artifacts(id) ON DELETE CASCADE
+    );
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_artifact_derivatives_artifact
+        ON artifact_derivatives(artifact_id);
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_artifact_derivatives_kind_focus
+        ON artifact_derivatives(derivative_kind, focus_kind);
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_artifact_derivatives_status
+        ON artifact_derivatives(status);
+    """
+    )
+
+    conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS artifact_derivative_sections (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        artifact_derivative_id INTEGER NOT NULL,
+        ordinal INTEGER NOT NULL,
+
+        section_kind TEXT NOT NULL DEFAULT 'section',      -- section | scene | chapter | heading
+        source_mode TEXT NOT NULL DEFAULT 'heading',       -- heading | inferred_scene | manual
+        label TEXT,
+        summary_text TEXT,
+
+        chunk_start INTEGER NOT NULL,
+        chunk_end INTEGER NOT NULL,
+
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+
+        UNIQUE(artifact_derivative_id, ordinal),
+
+        FOREIGN KEY (artifact_derivative_id) REFERENCES artifact_derivatives(id) ON DELETE CASCADE
+    );
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_artifact_derivative_sections_derivative
+        ON artifact_derivative_sections(artifact_derivative_id);
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_artifact_derivative_sections_chunk_range
+        ON artifact_derivative_sections(chunk_start, chunk_end);
+    """
+    )
+
+    conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS conversation_scaffold_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_id TEXT NOT NULL,
+        message_id INTEGER,
+
+        event_kind TEXT NOT NULL,                 -- planner | artifact_map_refresh | reading_progress | capacity_gate
+        status TEXT NOT NULL DEFAULT 'ready',     -- ready | running | done | failed
+        title TEXT,
+        body_text TEXT,
+        input_json TEXT,
+        output_json TEXT,
+
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+
+        FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+        FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE SET NULL
+    );
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_conversation_scaffold_events_conversation
+        ON conversation_scaffold_events(conversation_id);
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_conversation_scaffold_events_message
+        ON conversation_scaffold_events(message_id);
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_conversation_scaffold_events_kind
+        ON conversation_scaffold_events(event_kind);
+    """
+    )
+
+    conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS artifact_reading_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_id TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+
+        mode TEXT NOT NULL DEFAULT 'reading',         -- reading | reference | mixed
+        status TEXT NOT NULL DEFAULT 'active',        -- active | paused | complete | dropped
+        strategy_json TEXT,
+
+        current_section_ordinal INTEGER,
+        current_chunk_position INTEGER,
+        summary_so_far TEXT,
+
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+
+        UNIQUE(conversation_id, artifact_id),
+
+        FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+        FOREIGN KEY (artifact_id) REFERENCES artifacts(id) ON DELETE CASCADE
+    );
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_artifact_reading_sessions_conversation
+        ON artifact_reading_sessions(conversation_id);
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_artifact_reading_sessions_artifact
+        ON artifact_reading_sessions(artifact_id);
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_artifact_reading_sessions_status
+        ON artifact_reading_sessions(status);
+    """
+    )
+
+    conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS artifact_reading_steps (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL,
+        ordinal INTEGER NOT NULL,
+
+        label TEXT,
+        chunk_start INTEGER NOT NULL,
+        chunk_end INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',      -- pending | active | done | skipped
+        notes TEXT,
+
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+
+        UNIQUE(session_id, ordinal),
+
+        FOREIGN KEY (session_id) REFERENCES artifact_reading_sessions(id) ON DELETE CASCADE
+    );
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_artifact_reading_steps_session
+        ON artifact_reading_steps(session_id);
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_artifact_reading_steps_status
+        ON artifact_reading_steps(status);
+    """
+    )
+
 MIGRATIONS: list[tuple[int, Callable]] = [
     (8, _migrate_schema_v8),
     (9, _migrate_schema_v9),
@@ -1259,6 +1467,7 @@ MIGRATIONS: list[tuple[int, Callable]] = [
     (19, _migrate_schema_v19),
     (20, _migrate_schema_v20),
     (21, _migrate_schema_v21),
+    (22, _migrate_schema_v22),
 ]
 
 # endregion
@@ -5142,6 +5351,32 @@ def list_citations_for_message(message_id: int) -> list[dict]:
 # TODO more RAG general than Web RAG, maybe move it later
 # region Conversation Retained Artifacts / Artifact Events
 
+def get_web_snapshot_bundle_conn(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+) -> tuple[dict, dict]:
+    snap_row = conn.execute(
+        "SELECT * FROM web_source_snapshots WHERE id = ?",
+        (int(snapshot_id),),
+    ).fetchone()
+    if not snap_row:
+        raise ValueError(f"web snapshot not found: {snapshot_id}")
+    snap = dict(snap_row)
+
+    source_id = snap.get("source_id")
+    if not source_id:
+        raise ValueError(f"web snapshot has no source_id: {snapshot_id}")
+
+    source_row = conn.execute(
+        "SELECT * FROM web_sources WHERE id = ?",
+        (int(source_id),),
+    ).fetchone()
+    if not source_row:
+        raise ValueError(f"web source not found: {source_id}")
+
+    return snap, dict(source_row)
+
+
 def get_conversation_retained_artifact(
     conversation_id: str,
     artifact_id: str,
@@ -5588,6 +5823,938 @@ def list_conversation_artifact_events(
     with db_session() as conn:
         rows = conn.execute(sql, tuple(params)).fetchall()
         return [dict(r) for r in rows]
+
+# endregion
+# region Artifact Derivatives / Sections / Scaffold Events / Citation Views
+
+def get_artifact_derivative(
+    artifact_id: str,
+    *,
+    derivative_kind: str,
+    focus_kind: str = "general",
+    format_kind: str = "text",
+) -> dict | None:
+    aid = (artifact_id or "").strip()
+    if not aid:
+        return None
+
+    with db_session() as conn:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM artifact_derivatives
+            WHERE artifact_id = ?
+              AND derivative_kind = ?
+              AND focus_kind = ?
+              AND format_kind = ?
+            """,
+            (
+                aid,
+                (derivative_kind or "").strip(),
+                (focus_kind or "general").strip(),
+                (format_kind or "text").strip(),
+            ),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def list_artifact_derivatives(
+    artifact_id: str,
+    *,
+    derivative_kind: str | None = None,
+    focus_kind: str | None = None,
+    include_failed: bool = True,
+) -> list[dict]:
+    aid = (artifact_id or "").strip()
+    if not aid:
+        return []
+
+    sql = """
+        SELECT *
+        FROM artifact_derivatives
+        WHERE artifact_id = ?
+    """
+    params: list[Any] = [aid]
+
+    dk = (derivative_kind or "").strip()
+    if dk:
+        sql += " AND derivative_kind = ?"
+        params.append(dk)
+
+    fk = (focus_kind or "").strip()
+    if fk:
+        sql += " AND focus_kind = ?"
+        params.append(fk)
+
+    if not include_failed:
+        sql += " AND status <> 'failed'"
+
+    sql += " ORDER BY derivative_kind ASC, focus_kind ASC, format_kind ASC, updated_at DESC, id DESC"
+
+    with db_session() as conn:
+        rows = conn.execute(sql, tuple(params)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def upsert_artifact_derivative_conn(
+    conn: sqlite3.Connection,
+    *,
+    artifact_id: str,
+    derivative_kind: str,
+    focus_kind: str = "general",
+    format_kind: str = "text",
+    title: str | None = None,
+    content_text: str | None = None,
+    content_json: str | dict | list | None = None,
+    source_artifact_content_hash: str | None = None,
+    model_deployment_id: str | None = None,
+    model_name: str | None = None,
+    generator_kind: str = "summary_model",
+    status: str = "ready",
+) -> int:
+    aid = (artifact_id or "").strip()
+    dk = (derivative_kind or "").strip()
+    fk = (focus_kind or "general").strip()
+    fmt = (format_kind or "text").strip()
+
+    if not aid:
+        raise ValueError("artifact_id is required")
+    if not dk:
+        raise ValueError("derivative_kind is required")
+    if not fmt:
+        raise ValueError("format_kind is required")
+
+    title = (title or "").strip() or None
+    content_text = (content_text or "").strip() or None
+    generator_kind = (generator_kind or "summary_model").strip()
+    status = (status or "ready").strip()
+
+    if content_json is None:
+        content_json_text = None
+    elif isinstance(content_json, str):
+        content_json_text = content_json.strip() or None
+    else:
+        content_json_text = json.dumps(content_json, ensure_ascii=False)
+
+    now = _utc_now_iso()
+
+    row = conn.execute(
+        """
+        SELECT id
+        FROM artifact_derivatives
+        WHERE artifact_id = ?
+          AND derivative_kind = ?
+          AND focus_kind = ?
+          AND format_kind = ?
+        """,
+        (aid, dk, fk, fmt),
+    ).fetchone()
+
+    if row:
+        derivative_id = int(row["id"])
+        conn.execute(
+            """
+            UPDATE artifact_derivatives
+            SET
+                title = COALESCE(?, title),
+                content_text = ?,
+                content_json = ?,
+                source_artifact_content_hash = ?,
+                model_deployment_id = ?,
+                model_name = ?,
+                generator_kind = ?,
+                status = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                title,
+                content_text,
+                content_json_text,
+                source_artifact_content_hash,
+                model_deployment_id,
+                model_name,
+                generator_kind,
+                status,
+                now,
+                derivative_id,
+            ),
+        )
+        return derivative_id
+
+    cur = conn.execute(
+        """
+        INSERT INTO artifact_derivatives
+        (
+            artifact_id,
+            derivative_kind,
+            focus_kind,
+            format_kind,
+            title,
+            content_text,
+            content_json,
+            source_artifact_content_hash,
+            model_deployment_id,
+            model_name,
+            generator_kind,
+            status,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            aid,
+            dk,
+            fk,
+            fmt,
+            title,
+            content_text,
+            content_json_text,
+            source_artifact_content_hash,
+            model_deployment_id,
+            model_name,
+            generator_kind,
+            status,
+            now,
+            now,
+        ),
+    )
+    row_id = cur.lastrowid
+    if row_id is None:
+        raise RuntimeError("Failed to insert artifact_derivatives row")
+    return int(row_id)
+
+
+def upsert_artifact_derivative(
+    *,
+    artifact_id: str,
+    derivative_kind: str,
+    focus_kind: str = "general",
+    format_kind: str = "text",
+    title: str | None = None,
+    content_text: str | None = None,
+    content_json: str | dict | list | None = None,
+    source_artifact_content_hash: str | None = None,
+    model_deployment_id: str | None = None,
+    model_name: str | None = None,
+    generator_kind: str = "summary_model",
+    status: str = "ready",
+) -> int:
+    with db_session() as conn:
+        return upsert_artifact_derivative_conn(
+            conn,
+            artifact_id=artifact_id,
+            derivative_kind=derivative_kind,
+            focus_kind=focus_kind,
+            format_kind=format_kind,
+            title=title,
+            content_text=content_text,
+            content_json=content_json,
+            source_artifact_content_hash=source_artifact_content_hash,
+            model_deployment_id=model_deployment_id,
+            model_name=model_name,
+            generator_kind=generator_kind,
+            status=status,
+        )
+
+
+def replace_artifact_derivative_sections_conn(
+    conn: sqlite3.Connection,
+    *,
+    artifact_derivative_id: int,
+    sections: list[dict],
+) -> int:
+    conn.execute(
+        "DELETE FROM artifact_derivative_sections WHERE artifact_derivative_id = ?",
+        (int(artifact_derivative_id),),
+    )
+
+    now = _utc_now_iso()
+    written = 0
+
+    for idx, s in enumerate(sections or [], start=1):
+        ordinal = int(s.get("ordinal") or idx)
+        section_kind = (s.get("section_kind") or "section").strip()
+        source_mode = (s.get("source_mode") or "heading").strip()
+        label = (s.get("label") or "").strip() or None
+        summary_text = (s.get("summary_text") or "").strip() or None
+
+        chunk_start = s.get("chunk_start")
+        chunk_end = s.get("chunk_end")
+        if chunk_start is None or chunk_end is None:
+            raise ValueError(f"section #{idx} is missing chunk_start/chunk_end")
+
+        conn.execute(
+            """
+            INSERT INTO artifact_derivative_sections
+            (
+                artifact_derivative_id,
+                ordinal,
+                section_kind,
+                source_mode,
+                label,
+                summary_text,
+                chunk_start,
+                chunk_end,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(artifact_derivative_id),
+                ordinal,
+                section_kind,
+                source_mode,
+                label,
+                summary_text,
+                int(chunk_start),
+                int(chunk_end),
+                now,
+                now,
+            ),
+        )
+        written += 1
+
+    return written
+
+
+def replace_artifact_derivative_sections(
+    *,
+    artifact_derivative_id: int,
+    sections: list[dict],
+) -> int:
+    with db_session() as conn:
+        return replace_artifact_derivative_sections_conn(
+            conn,
+            artifact_derivative_id=artifact_derivative_id,
+            sections=sections,
+        )
+
+
+def list_artifact_derivative_sections(
+    artifact_derivative_id: int,
+) -> list[dict]:
+    with db_session() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM artifact_derivative_sections
+            WHERE artifact_derivative_id = ?
+            ORDER BY ordinal ASC, id ASC
+            """,
+            (int(artifact_derivative_id),),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def create_conversation_scaffold_event_conn(
+    conn: sqlite3.Connection,
+    *,
+    conversation_id: str,
+    message_id: int | None = None,
+    event_kind: str,
+    status: str = "ready",
+    title: str | None = None,
+    body_text: str | None = None,
+    input_json: str | dict | list | None = None,
+    output_json: str | dict | list | None = None,
+) -> int:
+    cid = (conversation_id or "").strip()
+    ek = (event_kind or "").strip()
+    st = (status or "ready").strip()
+    if not cid:
+        raise ValueError("conversation_id is required")
+    if not ek:
+        raise ValueError("event_kind is required")
+
+    title = (title or "").strip() or None
+    body_text = (body_text or "").strip() or None
+
+    if input_json is None:
+        input_json_text = None
+    elif isinstance(input_json, str):
+        input_json_text = input_json.strip() or None
+    else:
+        input_json_text = json.dumps(input_json, ensure_ascii=False)
+
+    if output_json is None:
+        output_json_text = None
+    elif isinstance(output_json, str):
+        output_json_text = output_json.strip() or None
+    else:
+        output_json_text = json.dumps(output_json, ensure_ascii=False)
+
+    now = _utc_now_iso()
+    cur = conn.execute(
+        """
+        INSERT INTO conversation_scaffold_events
+        (
+            conversation_id,
+            message_id,
+            event_kind,
+            status,
+            title,
+            body_text,
+            input_json,
+            output_json,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            cid,
+            int(message_id) if message_id is not None else None,
+            ek,
+            st,
+            title,
+            body_text,
+            input_json_text,
+            output_json_text,
+            now,
+            now,
+        ),
+    )
+    row_id = cur.lastrowid
+    if row_id is None:
+        raise RuntimeError("Failed to insert conversation_scaffold_events row")
+    return int(row_id)
+
+
+def create_conversation_scaffold_event(
+    *,
+    conversation_id: str,
+    message_id: int | None = None,
+    event_kind: str,
+    status: str = "ready",
+    title: str | None = None,
+    body_text: str | None = None,
+    input_json: str | dict | list | None = None,
+    output_json: str | dict | list | None = None,
+) -> int:
+    with db_session() as conn:
+        return create_conversation_scaffold_event_conn(
+            conn,
+            conversation_id=conversation_id,
+            message_id=message_id,
+            event_kind=event_kind,
+            status=status,
+            title=title,
+            body_text=body_text,
+            input_json=input_json,
+            output_json=output_json,
+        )
+
+
+def update_conversation_scaffold_event_conn(
+    conn: sqlite3.Connection,
+    *,
+    event_id: int,
+    status: str | None = None,
+    title: str | None = None,
+    body_text: str | None = None,
+    input_json: str | dict | list | None = None,
+    output_json: str | dict | list | None = None,
+) -> None:
+    row = conn.execute(
+        "SELECT * FROM conversation_scaffold_events WHERE id = ?",
+        (int(event_id),),
+    ).fetchone()
+    if not row:
+        raise ValueError(f"conversation scaffold event not found: {event_id}")
+
+    current = dict(row)
+
+    if input_json is None:
+        input_json_text = current.get("input_json")
+    elif isinstance(input_json, str):
+        input_json_text = input_json.strip() or None
+    else:
+        input_json_text = json.dumps(input_json, ensure_ascii=False)
+
+    if output_json is None:
+        output_json_text = current.get("output_json")
+    elif isinstance(output_json, str):
+        output_json_text = output_json.strip() or None
+    else:
+        output_json_text = json.dumps(output_json, ensure_ascii=False)
+
+    conn.execute(
+        """
+        UPDATE conversation_scaffold_events
+        SET
+            status = COALESCE(?, status),
+            title = COALESCE(?, title),
+            body_text = COALESCE(?, body_text),
+            input_json = ?,
+            output_json = ?,
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            (status or "").strip() or None,
+            (title or "").strip() or None,
+            (body_text or "").strip() or None,
+            input_json_text,
+            output_json_text,
+            _utc_now_iso(),
+            int(event_id),
+        ),
+    )
+
+
+def update_conversation_scaffold_event(
+    *,
+    event_id: int,
+    status: str | None = None,
+    title: str | None = None,
+    body_text: str | None = None,
+    input_json: str | dict | list | None = None,
+    output_json: str | dict | list | None = None,
+) -> None:
+    with db_session() as conn:
+        update_conversation_scaffold_event_conn(
+            conn,
+            event_id=event_id,
+            status=status,
+            title=title,
+            body_text=body_text,
+            input_json=input_json,
+            output_json=output_json,
+        )
+
+
+def list_conversation_scaffold_events(
+    conversation_id: str,
+    *,
+    message_id: int | None = None,
+    event_kind: str | None = None,
+    limit: int | None = None,
+) -> list[dict]:
+    cid = (conversation_id or "").strip()
+    if not cid:
+        return []
+
+    sql = """
+        SELECT *
+        FROM conversation_scaffold_events
+        WHERE conversation_id = ?
+    """
+    params: list[Any] = [cid]
+
+    if message_id is not None:
+        sql += " AND message_id = ?"
+        params.append(int(message_id))
+
+    ek = (event_kind or "").strip()
+    if ek:
+        sql += " AND event_kind = ?"
+        params.append(ek)
+
+    sql += " ORDER BY created_at ASC, id ASC"
+
+    if limit is not None and int(limit) > 0:
+        sql += " LIMIT ?"
+        params.append(int(limit))
+
+    with db_session() as conn:
+        rows = conn.execute(sql, tuple(params)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def list_conversation_history_with_scaffold_events(
+    conversation_id: str,
+) -> list[dict]:
+    """
+    Returns messages interleaved with scaffold events.
+
+    Scaffold events tied to a message_id are placed immediately after that message.
+    Orphan scaffold events (message_id is NULL or not found) are appended in created_at order.
+    """
+    cid = (conversation_id or "").strip()
+    if not cid:
+        return []
+
+    with db_session() as conn:
+        msg_rows = conn.execute(
+            """
+            SELECT *
+            FROM messages
+            WHERE conversation_id = ?
+            ORDER BY id ASC
+            """,
+            (cid,),
+        ).fetchall()
+
+        event_rows = conn.execute(
+            """
+            SELECT *
+            FROM conversation_scaffold_events
+            WHERE conversation_id = ?
+            ORDER BY created_at ASC, id ASC
+            """,
+            (cid,),
+        ).fetchall()
+
+    messages = [dict(r) for r in msg_rows]
+    events = [dict(r) for r in event_rows]
+
+    events_by_message: dict[int, list[dict]] = {}
+    orphan_events: list[dict] = []
+
+    message_ids = {int(m["id"]) for m in messages if m.get("id") is not None}
+
+    for e in events:
+        mid = e.get("message_id")
+        if mid is None:
+            orphan_events.append(e)
+            continue
+
+        try:
+            mid_int = int(mid)
+        except (TypeError, ValueError):
+            orphan_events.append(e)
+            continue
+
+        if mid_int not in message_ids:
+            orphan_events.append(e)
+            continue
+
+        events_by_message.setdefault(mid_int, []).append(e)
+
+    out: list[dict] = []
+    for m in messages:
+        row = dict(m)
+        row["row_type"] = "message"
+        out.append(row)
+
+        mid = m.get("id")
+        if mid is None:
+            continue
+
+        for e in events_by_message.get(int(mid), []):
+            erow = dict(e)
+            erow["row_type"] = "scaffold_event"
+            out.append(erow)
+
+    for e in orphan_events:
+        erow = dict(e)
+        erow["row_type"] = "scaffold_event"
+        out.append(erow)
+
+    return out
+
+
+def replace_citations_for_message_conn(
+    conn: sqlite3.Connection,
+    *,
+    assistant_message_id: int,
+    citations: list[dict],
+) -> int:
+    conn.execute(
+        "DELETE FROM citations WHERE assistant_message_id = ?",
+        (int(assistant_message_id),),
+    )
+    return insert_citations_conn(
+        conn,
+        assistant_message_id=assistant_message_id,
+        citations=citations,
+    )
+
+
+def replace_citations_for_message(
+    *,
+    assistant_message_id: int,
+    citations: list[dict],
+) -> int:
+    with db_session() as conn:
+        return replace_citations_for_message_conn(
+            conn,
+            assistant_message_id=assistant_message_id,
+            citations=citations,
+        )
+
+
+def list_citations_for_conversation(
+    conversation_id: str,
+) -> list[dict]:
+    cid = (conversation_id or "").strip()
+    if not cid:
+        return []
+
+    with db_session() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                c.*,
+                m.conversation_id,
+                a.title AS artifact_title
+            FROM citations c
+            JOIN messages m ON m.id = c.assistant_message_id
+            LEFT JOIN artifacts a ON a.id = c.artifact_id
+            WHERE m.conversation_id = ?
+            ORDER BY c.assistant_message_id ASC, c.retrieval_rank ASC, c.id ASC
+            """,
+            (cid,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def list_citations_for_project(
+    project_id: int,
+) -> list[dict]:
+    with db_session() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                c.*,
+                m.conversation_id,
+                conv.project_id,
+                a.title AS artifact_title
+            FROM citations c
+            JOIN messages m ON m.id = c.assistant_message_id
+            JOIN conversations conv ON conv.id = m.conversation_id
+            LEFT JOIN artifacts a ON a.id = c.artifact_id
+            WHERE conv.project_id = ?
+            ORDER BY c.assistant_message_id ASC, c.retrieval_rank ASC, c.id ASC
+            """,
+            (int(project_id),),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def _short_snippet(text: str | None, limit: int = 280) -> str:
+    raw = " ".join((text or "").replace("", "").replace("", " ").split()).strip()
+    if not raw:
+        return ""
+    if len(raw) <= limit:
+        return raw
+    return raw[: max(40, limit - 1)].rstrip() + "…"
+
+
+def _get_artifact_general_summary_conn(conn: sqlite3.Connection, artifact_id: str) -> str:
+    row = conn.execute(
+        """
+        SELECT content_text
+        FROM artifact_derivatives
+        WHERE artifact_id = ?
+          AND derivative_kind = 'summary'
+          AND focus_kind = 'general'
+          AND status = 'ready'
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+        """,
+        ((artifact_id or "").strip(),),
+    ).fetchone()
+    if not row:
+        return ""
+    return (row["content_text"] or "").strip()
+
+
+def _resolve_artifact_origin_conn(conn: sqlite3.Connection, art: dict) -> dict:
+    source_kind = (art.get("source_kind") or "").strip()
+    source_id = str(art.get("source_id") or "").strip()
+
+    out = {
+        "origin_kind": "artifact",
+        "origin_label": art.get("title") or art.get("id") or "Artifact",
+        "origin_url": None,
+        "origin_path": None,
+        "origin_conversation_id": None,
+        "origin_conversation_title": None,
+    }
+
+    if source_kind.startswith("web:") and source_id:
+        row = conn.execute(
+            """
+            SELECT s.id AS snapshot_id,
+                   s.final_url,
+                   ws.canonical_url
+            FROM web_source_snapshots s
+            LEFT JOIN web_sources ws ON ws.id = s.source_id
+            WHERE s.id = ?
+            """,
+            (source_id,),
+        ).fetchone()
+        if row:
+            url = (row["final_url"] or row["canonical_url"] or "").strip() or None
+            out.update(
+                {
+                    "origin_kind": "web",
+                    "origin_label": url or out["origin_label"],
+                    "origin_url": url,
+                }
+            )
+        return out
+
+    if source_kind.startswith("file:") and source_id:
+        row = conn.execute(
+            """
+            SELECT id, name, path, url
+            FROM files
+            WHERE id = ?
+              AND (is_deleted IS NULL OR is_deleted = 0)
+            """,
+            (source_id,),
+        ).fetchone()
+        if row:
+            out.update(
+                {
+                    "origin_kind": "file",
+                    "origin_label": row["name"] or out["origin_label"],
+                    "origin_url": row["url"],
+                    "origin_path": row["path"],
+                }
+            )
+        return out
+
+    if source_kind.startswith("conversation:") and source_id:
+        row = conn.execute(
+            """
+            SELECT id, title
+            FROM conversations
+            WHERE id = ?
+            """,
+            (source_id,),
+        ).fetchone()
+        if row:
+            out.update(
+                {
+                    "origin_kind": "conversation",
+                    "origin_label": row["title"] or source_id,
+                    "origin_conversation_id": row["id"],
+                    "origin_conversation_title": row["title"] or source_id,
+                }
+            )
+        return out
+
+    return out
+
+
+def _build_citation_scope_cards_from_rows_conn(conn: sqlite3.Connection, rows: list[dict]) -> list[dict]:
+    grouped: dict[str, dict] = {}
+
+    for r in rows:
+        artifact_id = (r.get("artifact_id") or "").strip()
+        source_kind = (r.get("source_kind") or "").strip()
+        source_id = str(r.get("source_id") or "").strip()
+        key = artifact_id or f"{source_kind}:{source_id}"
+
+        item = grouped.get(key)
+        if item is None:
+            art = None
+            if artifact_id:
+                art_row = conn.execute(
+                    """
+                    SELECT *
+                    FROM artifacts
+                    WHERE id = ?
+                      AND (is_deleted IS NULL OR is_deleted = 0)
+                    """,
+                    (artifact_id,),
+                ).fetchone()
+                if art_row:
+                    art = dict(art_row)
+                    _hydrate_artifact_content_text(art)
+
+            title = (r.get("artifact_title") or (art or {}).get("title") or source_id or source_kind or "Source").strip()
+            summary_text = _get_artifact_general_summary_conn(conn, artifact_id) if artifact_id else ""
+            excerpt = (
+                _short_snippet(summary_text, 240)
+                or _short_snippet(r.get("matched_text"), 240)
+                or _short_snippet((art or {}).get("content_text"), 240)
+            )
+
+            origin = _resolve_artifact_origin_conn(conn, art or {
+                "id": artifact_id,
+                "title": title,
+                "source_kind": source_kind,
+                "source_id": source_id,
+            })
+
+            item = {
+                "group_key": key,
+                "artifact_id": artifact_id or None,
+                "title": title,
+                "excerpt": excerpt,
+                "summary_excerpt": _short_snippet(summary_text, 420),
+                "source_kind": source_kind or (art or {}).get("source_kind"),
+                "source_id": source_id or (art or {}).get("source_id"),
+                "origin_kind": origin["origin_kind"],
+                "origin_label": origin["origin_label"],
+                "origin_url": origin["origin_url"],
+                "origin_path": origin["origin_path"],
+                "origin_conversation_id": origin["origin_conversation_id"],
+                "origin_conversation_title": origin["origin_conversation_title"],
+                "citation_count": 0,
+                "message_ids": [],
+                "retrieval_channels": set(),
+                "latest_created_at": None,
+            }
+            grouped[key] = item
+
+        item["citation_count"] += 1
+        mid = r.get("assistant_message_id")
+        if mid is not None and mid not in item["message_ids"]:
+            item["message_ids"].append(mid)
+        chan = (r.get("retrieval_channel") or "").strip()
+        if chan:
+            item["retrieval_channels"].add(chan)
+        created_at = r.get("created_at")
+        if created_at and (item["latest_created_at"] is None or str(created_at) > str(item["latest_created_at"])):
+            item["latest_created_at"] = created_at
+
+    out: list[dict] = []
+    for item in grouped.values():
+        item["retrieval_channels"] = sorted(item["retrieval_channels"])
+        out.append(item)
+
+    out.sort(key=lambda x: (-(x.get("citation_count") or 0), x.get("title") or ""))
+    return out
+
+
+def list_citation_scope_cards_for_conversation(conversation_id: str) -> list[dict]:
+    cid = (conversation_id or "").strip()
+    if not cid:
+        return []
+
+    with db_session() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                c.*,
+                a.title AS artifact_title
+            FROM citations c
+            JOIN messages m ON m.id = c.assistant_message_id
+            LEFT JOIN artifacts a ON a.id = c.artifact_id
+            WHERE m.conversation_id = ?
+            ORDER BY c.assistant_message_id ASC, c.retrieval_rank ASC, c.id ASC
+            """,
+            (cid,),
+        ).fetchall()
+        return _build_citation_scope_cards_from_rows_conn(conn, [dict(r) for r in rows])
+
+
+def list_citation_scope_cards_for_project(project_id: int) -> list[dict]:
+    with db_session() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                c.*,
+                a.title AS artifact_title
+            FROM citations c
+            JOIN messages m ON m.id = c.assistant_message_id
+            JOIN conversations conv ON conv.id = m.conversation_id
+            LEFT JOIN artifacts a ON a.id = c.artifact_id
+            WHERE conv.project_id = ?
+            ORDER BY c.assistant_message_id ASC, c.retrieval_rank ASC, c.id ASC
+            """,
+            (int(project_id),),
+        ).fetchall()
+        return _build_citation_scope_cards_from_rows_conn(conn, [dict(r) for r in rows])
+
 
 # endregion
 

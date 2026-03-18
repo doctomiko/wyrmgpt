@@ -50,6 +50,9 @@ from .db import (
     # Chat Messages
     add_message, get_messages,
     get_messages_raw, scope_rank,
+    list_conversation_history_with_scaffold_events,
+    list_citation_scope_cards_for_conversation,
+    list_citation_scope_cards_for_project,
     save_conversation_summary_artifact,
     update_ab_canonical,
     # Converstaions
@@ -1168,7 +1171,7 @@ def api_conversations(
 def api_conversation_messages(
     conversation_id: str,
     limit: int = core_cfg.limit_api_conversation_messages,
-    mode: str = "raw",   # "raw" (default, what app.js wants) or "canonical"
+    mode: str = "raw",   # "raw" | "thread" | "canonical"
 ):
     """
     app.js calls this as: GET /api/conversation/{cid}/messages
@@ -1178,6 +1181,8 @@ def api_conversation_messages(
     """
     if mode == "canonical":
         return JSONResponse(get_messages(conversation_id, limit=limit))
+    if mode == "thread":
+        return JSONResponse(list_conversation_history_with_scaffold_events(conversation_id))
     return JSONResponse(get_messages_raw(conversation_id, limit=limit))
 
 @app.post("/api/conversations/{conversation_id}/project")
@@ -1423,6 +1428,38 @@ def api_conversation_artifacts_debug(conversation_id: str):
 # endregion
 
 # region Memory Endpoints
+
+
+@app.get("/api/conversation/{conversation_id}/citations")
+def api_conversation_citations(conversation_id: str):
+    title = get_conversation_title(conversation_id)
+    items = list_citation_scope_cards_for_conversation(conversation_id)
+    return JSONResponse(
+        {
+            "scope_type": "conversation",
+            "scope_id": conversation_id,
+            "scope_label": title or conversation_id,
+            "items": items,
+        }
+    )
+
+
+@app.get("/api/projects/{project_id}/citations")
+def api_project_citations(project_id: int):
+    projects = list_projects(include_global=True)
+    project = next((p for p in projects if int(p["id"]) == int(project_id)), None)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+
+    items = list_citation_scope_cards_for_project(project_id)
+    return JSONResponse(
+        {
+            "scope_type": "project",
+            "scope_id": int(project_id),
+            "scope_label": project.get("name") or f"Project {project_id}",
+            "items": items,
+        }
+    )
 
 @app.get("/api/memories")
 def api_list_memories(limit: int = 200):
