@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from contextlib import contextmanager
 from typing import Any, Callable, Iterable, Iterator
+from urllib.parse import urlsplit, urlunsplit
 
 from .logging_helper import log_debug
 from .config import (
@@ -34,7 +35,7 @@ DB_PATH = SQL_DIR / "wyrmgpt.sqlite3"
 _VALID_TABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 IMPORT_CFG = load_import_config()
 SIDECAR_THRESHOLD_BYTES = IMPORT_CFG.artifact_sidecar_threshold_bytes # 500 * 1024 # 500KB default threshold for when to use sidecar files for artifact content
@@ -914,6 +915,232 @@ def _migrate_schema_v19(conn) -> None:
     """
     )
 
+def _migrate_schema_v20(conn) -> None:
+    conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS web_sources (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        canonical_url TEXT NOT NULL,
+        domain TEXT,
+        project_id INTEGER,
+        created_by TEXT NOT NULL DEFAULT 'user',   -- user | search | crawler
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(canonical_url),
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_web_sources_project
+        ON web_sources(project_id);
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_web_sources_domain
+        ON web_sources(domain);
+    """
+    )
+
+    conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS web_source_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id INTEGER NOT NULL,
+        fetched_at TEXT NOT NULL,
+        fetch_method TEXT NOT NULL DEFAULT 'python',   -- python | curl | wget | brave
+        http_status INTEGER,
+        final_url TEXT,
+        content_type TEXT,
+        etag TEXT,
+        last_modified TEXT,
+        headers_json TEXT,
+        raw_html TEXT,
+        raw_text TEXT,
+        ttl_seconds INTEGER,
+        expires_at TEXT,
+        is_pinned INTEGER NOT NULL DEFAULT 0,
+        refresh_requested INTEGER NOT NULL DEFAULT 0,
+        error_text TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (source_id) REFERENCES web_sources(id) ON DELETE CASCADE
+    );
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_web_source_snapshots_source_fetched
+        ON web_source_snapshots(source_id, fetched_at DESC);
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_web_source_snapshots_expires
+        ON web_source_snapshots(expires_at);
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_web_source_snapshots_refresh_requested
+        ON web_source_snapshots(refresh_requested);
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_web_source_snapshots_pinned
+        ON web_source_snapshots(is_pinned);
+    """
+    )
+
+    conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS web_searches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER,
+        conversation_id TEXT,
+        request_message_id INTEGER,
+        provider TEXT NOT NULL,                  -- brave | google | local | etc
+        query_text TEXT NOT NULL,
+        mode TEXT NOT NULL DEFAULT 'auto',       -- auto | explicit | always
+        result_count INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+        FOREIGN KEY (request_message_id) REFERENCES messages(id) ON DELETE SET NULL
+    );
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_web_searches_project
+        ON web_searches(project_id);
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_web_searches_conversation
+        ON web_searches(conversation_id);
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_web_searches_request_message
+        ON web_searches(request_message_id);
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_web_searches_created
+        ON web_searches(created_at);
+    """
+    )
+
+    conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS web_search_results (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        search_id INTEGER NOT NULL,
+        rank INTEGER NOT NULL,
+        title TEXT,
+        url TEXT NOT NULL,
+        canonical_url TEXT,
+        domain TEXT,
+        snippet TEXT,
+        provider_result_id TEXT,
+        source_id INTEGER,                       -- nullable until promoted/resolved
+        selected_for_fetch INTEGER NOT NULL DEFAULT 0,
+        fetched_snapshot_id INTEGER,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (search_id) REFERENCES web_searches(id) ON DELETE CASCADE,
+        FOREIGN KEY (source_id) REFERENCES web_sources(id) ON DELETE SET NULL,
+        FOREIGN KEY (fetched_snapshot_id) REFERENCES web_source_snapshots(id) ON DELETE SET NULL,
+        UNIQUE(search_id, rank)
+    );
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_web_search_results_search
+        ON web_search_results(search_id);
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_web_search_results_url
+        ON web_search_results(url);
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_web_search_results_canonical_url
+        ON web_search_results(canonical_url);
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_web_search_results_source
+        ON web_search_results(source_id);
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_web_search_results_snapshot
+        ON web_search_results(fetched_snapshot_id);
+    """
+    )
+
+    conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS citations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        assistant_message_id INTEGER NOT NULL,
+        corpus_chunk_id INTEGER,
+        artifact_id TEXT,
+        source_kind TEXT,
+        source_id TEXT,
+        retrieval_channel TEXT,                  -- fts | vector | web | manual
+        retrieval_rank INTEGER,
+        retrieval_score REAL,
+        matched_text TEXT,
+        highlight_start INTEGER,
+        highlight_end INTEGER,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (assistant_message_id) REFERENCES messages(id) ON DELETE CASCADE,
+        FOREIGN KEY (corpus_chunk_id) REFERENCES corpus_chunks(id) ON DELETE SET NULL,
+        FOREIGN KEY (artifact_id) REFERENCES artifacts(id) ON DELETE SET NULL
+    );
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_citations_message
+        ON citations(assistant_message_id);
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_citations_chunk
+        ON citations(corpus_chunk_id);
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_citations_artifact
+        ON citations(artifact_id);
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_citations_source
+        ON citations(source_kind, source_id);
+    """
+    )
+
 MIGRATIONS: list[tuple[int, Callable]] = [
     (8, _migrate_schema_v8),
     (9, _migrate_schema_v9),
@@ -927,6 +1154,7 @@ MIGRATIONS: list[tuple[int, Callable]] = [
     (17, _migrate_schema_v17),
     (18, _migrate_schema_v18),
     (19, _migrate_schema_v19),
+    (20, _migrate_schema_v20),
 ]
 
 # endregion
@@ -4160,6 +4388,649 @@ def search_corpus(*, scope_keys: list[str], query: str, limit: int = 10) -> list
         return [dict(r) for r in rows]
 
 # endregion
+
+# endregion
+
+# ----------------------------
+# Web RAG data layer
+# ----------------------------
+
+# region Web Sources / Snapshots / Searches / Citations
+
+def _normalize_web_url(url: str) -> str:
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+
+    # Assume https if scheme omitted
+    if "://" not in raw:
+        raw = "https://" + raw
+
+    try:
+        parts = urlsplit(raw)
+    except Exception:
+        return raw
+
+    scheme = (parts.scheme or "https").lower()
+    netloc = (parts.netloc or "").strip().lower()
+    path = parts.path or ""
+    query = parts.query or ""
+
+    # Drop URL fragments; they are not part of fetch identity.
+    fragment = ""
+
+    # Remove default ports from canonical form.
+    if netloc.endswith(":80") and scheme == "http":
+        netloc = netloc[:-3]
+    elif netloc.endswith(":443") and scheme == "https":
+        netloc = netloc[:-4]
+
+    # Normalize empty path to "/"
+    if not path:
+        path = "/"
+
+    return urlunsplit((scheme, netloc, path, query, fragment))
+
+
+def _domain_from_web_url(url: str) -> str:
+    try:
+        return (urlsplit(url).netloc or "").strip().lower()
+    except Exception:
+        return ""
+
+
+def get_web_source_by_id(source_id: int) -> dict | None:
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT * FROM web_sources WHERE id = ?",
+            (int(source_id),),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_web_source_by_url(url: str) -> dict | None:
+    canonical_url = _normalize_web_url(url)
+    if not canonical_url:
+        return None
+
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT * FROM web_sources WHERE canonical_url = ?",
+            (canonical_url,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def upsert_web_source_conn(
+    conn: sqlite3.Connection,
+    *,
+    url: str,
+    project_id: int | None = None,
+    created_by: str = "user",
+) -> int:
+    canonical_url = _normalize_web_url(url)
+    if not canonical_url:
+        raise ValueError("url is required")
+
+    domain = _domain_from_web_url(canonical_url)
+    now = _utc_now_iso()
+
+    row = conn.execute(
+        "SELECT id, project_id FROM web_sources WHERE canonical_url = ?",
+        (canonical_url,),
+    ).fetchone()
+
+    if row:
+        source_id = int(row["id"])
+        # Preserve existing project_id if already set; otherwise fill it.
+        existing_project_id = row["project_id"]
+        if existing_project_id is None and project_id is not None:
+            conn.execute(
+                """
+                UPDATE web_sources
+                SET project_id = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (int(project_id), now, source_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE web_sources SET updated_at = ? WHERE id = ?",
+                (now, source_id),
+            )
+        return source_id
+
+    cur = conn.execute(
+        """
+        INSERT INTO web_sources
+        (canonical_url, domain, project_id, created_by, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (canonical_url, domain or None, project_id, created_by, now, now),
+    )
+    row_id = cur.lastrowid
+    if row_id is None:
+        raise RuntimeError("INSERT did not produce a rowid")
+    return int(row_id)
+
+
+def upsert_web_source(
+    *,
+    url: str,
+    project_id: int | None = None,
+    created_by: str = "user",
+) -> int:
+    with db_session() as conn:
+        return upsert_web_source_conn(
+            conn,
+            url=url,
+            project_id=project_id,
+            created_by=created_by,
+        )
+
+
+def insert_web_source_snapshot_conn(
+    conn: sqlite3.Connection,
+    *,
+    source_id: int,
+    fetch_method: str = "python",
+    http_status: int | None = None,
+    final_url: str | None = None,
+    content_type: str | None = None,
+    etag: str | None = None,
+    last_modified: str | None = None,
+    headers_json: str | None = None,
+    raw_html: str | None = None,
+    raw_text: str | None = None,
+    ttl_seconds: int | None = None,
+    expires_at: str | None = None,
+    is_pinned: bool = False,
+    refresh_requested: bool = False,
+    error_text: str | None = None,
+    fetched_at: str | None = None,
+) -> int:
+    now = _utc_now_iso()
+    fetched = (fetched_at or "").strip() or now
+
+    cur = conn.execute(
+        """
+        INSERT INTO web_source_snapshots
+        (
+            source_id,
+            fetched_at,
+            fetch_method,
+            http_status,
+            final_url,
+            content_type,
+            etag,
+            last_modified,
+            headers_json,
+            raw_html,
+            raw_text,
+            ttl_seconds,
+            expires_at,
+            is_pinned,
+            refresh_requested,
+            error_text,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            int(source_id),
+            fetched,
+            (fetch_method or "python").strip(),
+            http_status,
+            final_url,
+            content_type,
+            etag,
+            last_modified,
+            headers_json,
+            raw_html,
+            raw_text,
+            ttl_seconds,
+            expires_at,
+            1 if is_pinned else 0,
+            1 if refresh_requested else 0,
+            error_text,
+            now,
+            now,
+        ),
+    )
+    row_id = cur.lastrowid
+    if row_id is None:
+        raise RuntimeError("INSERT did not produce a rowid")
+    return int(row_id)
+
+
+def insert_web_source_snapshot(
+    *,
+    source_id: int,
+    fetch_method: str = "python",
+    http_status: int | None = None,
+    final_url: str | None = None,
+    content_type: str | None = None,
+    etag: str | None = None,
+    last_modified: str | None = None,
+    headers_json: str | None = None,
+    raw_html: str | None = None,
+    raw_text: str | None = None,
+    ttl_seconds: int | None = None,
+    expires_at: str | None = None,
+    is_pinned: bool = False,
+    refresh_requested: bool = False,
+    error_text: str | None = None,
+    fetched_at: str | None = None,
+) -> int:
+    with db_session() as conn:
+        return insert_web_source_snapshot_conn(
+            conn,
+            source_id=source_id,
+            fetch_method=fetch_method,
+            http_status=http_status,
+            final_url=final_url,
+            content_type=content_type,
+            etag=etag,
+            last_modified=last_modified,
+            headers_json=headers_json,
+            raw_html=raw_html,
+            raw_text=raw_text,
+            ttl_seconds=ttl_seconds,
+            expires_at=expires_at,
+            is_pinned=is_pinned,
+            refresh_requested=refresh_requested,
+            error_text=error_text,
+            fetched_at=fetched_at,
+        )
+
+
+def get_web_source_snapshot_by_id(snapshot_id: int) -> dict | None:
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT * FROM web_source_snapshots WHERE id = ?",
+            (int(snapshot_id),),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_latest_web_source_snapshot(source_id: int) -> dict | None:
+    with db_session() as conn:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM web_source_snapshots
+            WHERE source_id = ?
+            ORDER BY is_pinned DESC, fetched_at DESC, id DESC
+            LIMIT 1
+            """,
+            (int(source_id),),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_latest_usable_web_source_snapshot(source_id: int) -> dict | None:
+    """
+    Prefer pinned snapshots. Otherwise prefer the latest snapshot that is not expired.
+    If everything is expired, fall back to the newest snapshot.
+    """
+    now = _utc_now_iso()
+    with db_session() as conn:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM web_source_snapshots
+            WHERE source_id = ?
+              AND is_pinned = 1
+            ORDER BY fetched_at DESC, id DESC
+            LIMIT 1
+            """,
+            (int(source_id),),
+        ).fetchone()
+        if row:
+            return dict(row)
+
+        row = conn.execute(
+            """
+            SELECT *
+            FROM web_source_snapshots
+            WHERE source_id = ?
+              AND (expires_at IS NULL OR expires_at = '' OR expires_at > ?)
+            ORDER BY fetched_at DESC, id DESC
+            LIMIT 1
+            """,
+            (int(source_id), now),
+        ).fetchone()
+        if row:
+            return dict(row)
+
+        row = conn.execute(
+            """
+            SELECT *
+            FROM web_source_snapshots
+            WHERE source_id = ?
+            ORDER BY fetched_at DESC, id DESC
+            LIMIT 1
+            """,
+            (int(source_id),),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def request_web_source_refresh(source_id: int) -> None:
+    with db_session() as conn:
+        conn.execute(
+            """
+            UPDATE web_source_snapshots
+            SET refresh_requested = 1,
+                updated_at = ?
+            WHERE source_id = ?
+            """,
+            (_utc_now_iso(), int(source_id)),
+        )
+
+
+def set_web_source_snapshot_pinned(snapshot_id: int, pinned: bool) -> None:
+    with db_session() as conn:
+        conn.execute(
+            """
+            UPDATE web_source_snapshots
+            SET is_pinned = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (1 if pinned else 0, _utc_now_iso(), int(snapshot_id)),
+        )
+
+
+def create_web_search_conn(
+    conn: sqlite3.Connection,
+    *,
+    query_text: str,
+    provider: str,
+    mode: str = "auto",
+    project_id: int | None = None,
+    conversation_id: str | None = None,
+    request_message_id: int | None = None,
+) -> int:
+    q = (query_text or "").strip()
+    if not q:
+        raise ValueError("query_text is required")
+
+    now = _utc_now_iso()
+    cur = conn.execute(
+        """
+        INSERT INTO web_searches
+        (project_id, conversation_id, request_message_id, provider, query_text, mode, result_count, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
+        """,
+        (
+            project_id,
+            (conversation_id or "").strip() or None,
+            request_message_id,
+            (provider or "").strip() or "unknown",
+            q,
+            (mode or "auto").strip(),
+            now,
+            now,
+        ),
+    )
+    row_id = cur.lastrowid
+    if row_id is None:
+        raise RuntimeError("INSERT did not produce a rowid")
+    return int(row_id)
+
+
+def create_web_search(
+    *,
+    query_text: str,
+    provider: str,
+    mode: str = "auto",
+    project_id: int | None = None,
+    conversation_id: str | None = None,
+    request_message_id: int | None = None,
+) -> int:
+    with db_session() as conn:
+        return create_web_search_conn(
+            conn,
+            query_text=query_text,
+            provider=provider,
+            mode=mode,
+            project_id=project_id,
+            conversation_id=conversation_id,
+            request_message_id=request_message_id,
+        )
+
+
+def replace_web_search_results_conn(
+    conn: sqlite3.Connection,
+    *,
+    search_id: int,
+    results: list[dict],
+) -> int:
+    now = _utc_now_iso()
+    conn.execute(
+        "DELETE FROM web_search_results WHERE search_id = ?",
+        (int(search_id),),
+    )
+
+    written = 0
+    for idx, r in enumerate(results or [], start=1):
+        rank = int(r.get("rank") or idx)
+        url = (r.get("url") or "").strip()
+        if not url:
+            continue
+
+        canonical_url = _normalize_web_url(r.get("canonical_url") or url)
+        domain = (r.get("domain") or "").strip() or _domain_from_web_url(canonical_url)
+        title = (r.get("title") or "").strip() or None
+        snippet = (r.get("snippet") or "").strip() or None
+        provider_result_id = (r.get("provider_result_id") or "").strip() or None
+        source_id = r.get("source_id")
+        fetched_snapshot_id = r.get("fetched_snapshot_id")
+        selected_for_fetch = 1 if r.get("selected_for_fetch") else 0
+
+        conn.execute(
+            """
+            INSERT INTO web_search_results
+            (
+                search_id,
+                rank,
+                title,
+                url,
+                canonical_url,
+                domain,
+                snippet,
+                provider_result_id,
+                source_id,
+                selected_for_fetch,
+                fetched_snapshot_id,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(search_id),
+                rank,
+                title,
+                url,
+                canonical_url or None,
+                domain or None,
+                snippet,
+                provider_result_id,
+                source_id,
+                selected_for_fetch,
+                fetched_snapshot_id,
+                now,
+                now,
+            ),
+        )
+        written += 1
+
+    conn.execute(
+        """
+        UPDATE web_searches
+        SET result_count = ?,
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (written, now, int(search_id)),
+    )
+    return written
+
+
+def replace_web_search_results(
+    *,
+    search_id: int,
+    results: list[dict],
+) -> int:
+    with db_session() as conn:
+        return replace_web_search_results_conn(
+            conn,
+            search_id=search_id,
+            results=results,
+        )
+
+
+def get_web_search(search_id: int) -> dict | None:
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT * FROM web_searches WHERE id = ?",
+            (int(search_id),),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def list_web_search_results(search_id: int) -> list[dict]:
+    with db_session() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM web_search_results
+            WHERE search_id = ?
+            ORDER BY rank ASC, id ASC
+            """,
+            (int(search_id),),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def insert_citations_conn(
+    conn: sqlite3.Connection,
+    *,
+    assistant_message_id: int,
+    citations: list[dict],
+) -> int:
+    """
+    citations items may include:
+      corpus_chunk_id, artifact_id, source_kind, source_id,
+      retrieval_channel, retrieval_rank, retrieval_score,
+      matched_text, highlight_start, highlight_end
+    If corpus_chunk_id is present, missing source/artifact fields are backfilled from corpus/artifact rows.
+    """
+    if not citations:
+        return 0
+
+    now = _utc_now_iso()
+    written = 0
+
+    for item in citations:
+        corpus_chunk_id = item.get("corpus_chunk_id")
+        artifact_id = (item.get("artifact_id") or "").strip() or None
+        source_kind = (item.get("source_kind") or "").strip() or None
+        source_id = item.get("source_id")
+        retrieval_channel = (item.get("retrieval_channel") or "").strip() or None
+        retrieval_rank = item.get("retrieval_rank")
+        retrieval_score = item.get("retrieval_score")
+        matched_text = (item.get("matched_text") or "").strip() or None
+        highlight_start = item.get("highlight_start")
+        highlight_end = item.get("highlight_end")
+
+        if corpus_chunk_id is not None:
+            row = conn.execute(
+                """
+                SELECT c.id, c.artifact_id, c.source_kind, c.source_id
+                FROM corpus_chunks c
+                WHERE c.id = ?
+                """,
+                (int(corpus_chunk_id),),
+            ).fetchone()
+            if row:
+                if not artifact_id:
+                    artifact_id = row["artifact_id"]
+                if not source_kind:
+                    source_kind = row["source_kind"]
+                if source_id in (None, ""):
+                    source_id = row["source_id"]
+
+        if source_id is not None:
+            source_id = str(source_id)
+
+        conn.execute(
+            """
+            INSERT INTO citations
+            (
+                assistant_message_id,
+                corpus_chunk_id,
+                artifact_id,
+                source_kind,
+                source_id,
+                retrieval_channel,
+                retrieval_rank,
+                retrieval_score,
+                matched_text,
+                highlight_start,
+                highlight_end,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(assistant_message_id),
+                int(corpus_chunk_id) if corpus_chunk_id is not None else None,
+                artifact_id,
+                source_kind,
+                source_id,
+                retrieval_channel,
+                int(retrieval_rank) if retrieval_rank is not None else None,
+                float(retrieval_score) if retrieval_score is not None else None,
+                matched_text,
+                int(highlight_start) if highlight_start is not None else None,
+                int(highlight_end) if highlight_end is not None else None,
+                now,
+            ),
+        )
+        written += 1
+
+    return written
+
+
+def insert_citations(
+    *,
+    assistant_message_id: int,
+    citations: list[dict],
+) -> int:
+    with db_session() as conn:
+        return insert_citations_conn(
+            conn,
+            assistant_message_id=assistant_message_id,
+            citations=citations,
+        )
+
+
+def list_citations_for_message(message_id: int) -> list[dict]:
+    with db_session() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM citations
+            WHERE assistant_message_id = ?
+            ORDER BY retrieval_rank ASC, id ASC
+            """,
+            (int(message_id),),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 # endregion
 

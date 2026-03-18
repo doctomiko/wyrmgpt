@@ -693,13 +693,22 @@ textarea {
   gap: 6px;
 }
 
-/* Top Bar above chat window */
-#chatTop {
+#chatAboveTop {
   display: flex;
   align-items: flex-start;   /* let children align at the top when title wraps */
   /* align-items: center; */
-  vertical-align: middle;
+  vertical-align: top;
   justify-content: space-between;
+  min-height: 40px;   /* keep a baseline */
+  height: auto;       /* allow it to grow when the title wraps */
+  padding: 8px 12px;
+  gap: 6px;
+  border: none;
+  background: rgba(0,0,0,0.20);
+}
+
+/* Top Bar above chat window */
+#chatTop {
   min-height: 40px;   /* keep a baseline */
   height: auto;       /* allow it to grow when the title wraps */
   padding: 8px 12px;
@@ -708,14 +717,9 @@ textarea {
   background: rgba(0,0,0,0.20);
 }
 
-#chatTitleWrapper {
-  flex: 1 1 auto;            /* title takes the leftover space */
-  min-width: 0;
-}
-
 .chatTitle {
   font-weight: 700;
-  flex: 1 1 auto;
+  /* flex: 1 1 auto; / * title takes the leftover space */
   min-width: 0;
   overflow-wrap: break-word;    /* break long words if needed */
   /*
@@ -728,11 +732,6 @@ textarea {
   white-space: normal;          /* allow wrapping */
 }
 
-#modelSelectA,
-#modelSelectB {
-  flex: 0 0 auto;            /* don’t stretch; keep natural width */
-}
-
 /* if we ever need this again it should be here */
 .chatTopActions {
   display: flex;
@@ -741,6 +740,10 @@ textarea {
   position: relative;
 }
 
+#modelSelectA,
+#modelSelectB {
+  flex: 0 0 auto;            /* don’t stretch; keep natural width */
+}
 
 /* burger menu at the top */
 .sideHeaderButtons {
