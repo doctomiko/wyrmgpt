@@ -499,57 +499,6 @@ def estimate_tokens_for_messages(messages: list[dict], model: str | None = None)
         "num_images": num_images,
     }
 
-if (False):
-    def estimate_tokens_for_messages(messages: list[dict], model: str = CHEAP_MODEL) -> dict:
-        """
-        Rough token estimate for a list of messages.
-
-        Counts:
-        - total characters in text
-        - approximate token count using tiktoken if available
-        - number of image inputs (we just count them; their actual billing is resolution-based)
-        """
-        total_chars = 0
-        num_images = 0
-        text_pieces: list[str] = []
-
-        for msg in messages:
-            content = msg.get("content")
-
-            # Legacy: plain string content
-            if isinstance(content, str):
-                total_chars += len(content)
-                text_pieces.append(content)
-                continue
-
-            # Responses-style: list of input items
-            if isinstance(content, list):
-                for item in content:
-                    if not isinstance(item, dict):
-                        continue
-                    itype = item.get("type")
-                    if itype == "input_text":
-                        text = item.get("text") or ""
-                        total_chars += len(text)
-                        text_pieces.append(text)
-                    elif itype == "input_image":
-                        num_images += 1
-
-        approx_tokens = None
-        if tiktoken is not None and text_pieces:
-            try:
-                enc = tiktoken.encoding_for_model(model)
-            except Exception:
-                enc = tiktoken.get_encoding("cl100k_base")
-            joined = "\n".join(text_pieces)
-            approx_tokens = len(enc.encode(joined))
-
-        return {
-            "total_chars": total_chars,
-            "approx_text_tokens": approx_tokens,
-            "num_images": num_images,
-        }
-
 
 def estimate_context_tokens(
     conversation_id: str,
@@ -575,29 +524,6 @@ def estimate_context_tokens(
         context = full_input
 
     return estimate_tokens_for_messages(context, model=model)
-
-if (False):
-    def estimate_context_tokens(
-        conversation_id: str,
-        ctx_cfg: ContextConfig, #history_limit: int = 200,
-        addtl_user_text: str = "",
-        model: str = FULL_MODEL,
-        drop_last_user_message: bool = False,
-    ) -> dict:
-        """
-        Estimate tokens for the context that will be sent with the next user message,
-        excluding that next user message itself.
-        """
-        full_input = build_model_input(conversation_id, addtl_user_text, ctx_cfg)
-        if not full_input:
-            return {"total_chars": 0, "approx_text_tokens": 0, "num_images": 0}
-
-        # Optionally, Drop the last message (most recent user turn) so this is “context load”, not “what they’re about to send”.
-        if drop_last_user_message and full_input[-1].get("role") == "user":
-            context = full_input[:-1]
-        else:
-            context = full_input
-        return estimate_tokens_for_messages(context, model=model)
 
 
 def _indent_block(text: str, prefix: str = "  ") -> str:

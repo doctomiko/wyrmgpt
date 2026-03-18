@@ -323,9 +323,6 @@ _MODELS_TTL_SECONDS = 300  # 5 minutes
 _DEPLOYMENTS_CACHE: dict[str, Any] | None = None
 _DEPLOYMENTS_CACHE_TS: float = 0.0
 
-# TODO make this part of OpenAIConfig
-_ALLOWED_MODEL_PREFIXES = ("gpt-", "o1", "o3", "o4")
-
 # endregion
 
 # region Misc Helper functions
@@ -2164,10 +2161,6 @@ def api_models():
 
             for m in model_infos:
                 mid = m.id
-
-                # Only filter OpenAI models by OpenAI-ish prefixes.
-                if provider_def.type == "openai" and _ALLOWED_MODEL_PREFIXES and not mid.startswith(_ALLOWED_MODEL_PREFIXES):
-                    continue
 
                 items.append(
                     {

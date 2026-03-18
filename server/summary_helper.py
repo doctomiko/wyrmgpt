@@ -1,15 +1,7 @@
 from __future__ import annotations
-#from http import client
-from openai import OpenAI, APIStatusError
-
-
 import re
 from typing import List, Any, Callable
-from .config import SummaryConfig, load_openai_config
-
-oai_cfg = load_openai_config()
-
-#from openai import OpenAI, APIStatusError
+from .config import SummaryConfig
 
 def extract_response_text(resp) -> str:
     """
