@@ -1450,6 +1450,11 @@ function makeConversationItem(c) {
   m.textContent = formatReadableDateTime(c.created_at); //convMetaText(c);
   // You can swap created_at for updated_at later if you add it to the API.
   item.appendChild(m);
+  if (!sideBarConvListEl) {
+    updateChatTitle();
+    return;
+  }
+
 
   if (c.summary_excerpt) {
     const s = document.createElement("div");
@@ -3617,7 +3622,7 @@ function renderProjects(projects, conversations) {
   // Group conversations by project_id, preserving whatever order /api/conversations returned
   const byPid = new Map();
   (conversations || []).forEach(c => {
-    if (c.project_id == null) return;
+    if (pid == null) return;
     const pid = c.project_id;
     if (!byPid.has(pid)) byPid.set(pid, []);
     byPid.get(pid).push(c);
@@ -3654,6 +3659,9 @@ function renderProjects(projects, conversations) {
     header.appendChild(count);
 
     // Left-click toggles expand/collapse
+      if (p.is_pseudo_global) {
+        return;
+      }
     header.addEventListener("click", (ev) => {
       // Don’t toggle if this was a right-click opening the project menu
       const next = !getProjectExpanded(p.id, containsActive);
@@ -3695,6 +3703,8 @@ function renderProjects(projects, conversations) {
   });
 }
 
+
+  updateChatTitle();
 async function updateProject(projectId, fields) {
   const res = await fetch(`/api/projects/${projectId}`, {
     method: "PUT",

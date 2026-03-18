@@ -961,9 +961,11 @@ blockquote blockquote {
 #projectList {
   padding: 10px;
   display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
   flex-direction: column;
   gap: 8px;
-  max-height: 55vh;
+  max-height: none;
   overflow: auto;
 }
 
@@ -1018,7 +1020,9 @@ blockquote blockquote {
   padding: 8px 10px;
 }
 
-.convList { flex: 1 1 auto; }
+.convList { display: none; }
+
+#sidebar > hr { display: none; }
 
 .modalActions {
   display: flex;
