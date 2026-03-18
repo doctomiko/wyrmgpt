@@ -35,8 +35,6 @@ DB_PATH = SQL_DIR / "wyrmgpt.sqlite3"
 _VALID_TABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
-SCHEMA_VERSION = 20
-
 IMPORT_CFG = load_import_config()
 SIDECAR_THRESHOLD_BYTES = IMPORT_CFG.artifact_sidecar_threshold_bytes # 500 * 1024 # 500KB default threshold for when to use sidecar files for artifact content
 
@@ -98,6 +96,8 @@ def db_session() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 # region Schema Management and Migrations
+
+SCHEMA_VERSION = 21
 
 # region Migration helpers
 
@@ -1141,6 +1141,109 @@ def _migrate_schema_v20(conn) -> None:
     """
     )
 
+def _migrate_schema_v21(conn) -> None:
+    conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS conversation_retained_artifacts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_id TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+
+        -- where/why this artifact entered the conversation working set
+        origin_kind TEXT NOT NULL DEFAULT 'retrieval_expand',    -- user_url | retrieval_expand | manual_force | search_fetch | conversation_expand | file_attach
+        retention_state TEXT NOT NULL DEFAULT 'active',          -- forced | active | latent | pinned | dropped
+        carry_summary_text TEXT,                                 -- compact summary/note for future rounds
+        last_inclusion_kind TEXT,                                -- whole | chunk | summary
+        include_count INTEGER NOT NULL DEFAULT 0,
+
+        -- message linkage for “when did this start / when was it last used?”
+        first_message_id INTEGER,
+        last_message_id INTEGER,
+
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+
+        UNIQUE(conversation_id, artifact_id),
+
+        FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+        FOREIGN KEY (artifact_id) REFERENCES artifacts(id) ON DELETE CASCADE,
+        FOREIGN KEY (first_message_id) REFERENCES messages(id) ON DELETE SET NULL,
+        FOREIGN KEY (last_message_id) REFERENCES messages(id) ON DELETE SET NULL
+    );
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_conversation_retained_artifacts_conversation
+        ON conversation_retained_artifacts(conversation_id);
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_conversation_retained_artifacts_artifact
+        ON conversation_retained_artifacts(artifact_id);
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_conversation_retained_artifacts_state
+        ON conversation_retained_artifacts(retention_state);
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_conversation_retained_artifacts_last_message
+        ON conversation_retained_artifacts(last_message_id);
+    """
+    )
+
+    conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS conversation_artifact_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_id TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+        message_id INTEGER,
+
+        event_kind TEXT NOT NULL,                 -- retained | included | refreshed | decayed | pinned | dropped
+        inclusion_kind TEXT,                      -- whole | chunk | summary
+        retrieval_channel TEXT,                   -- fts | vector | web | manual | expansion
+        note_text TEXT,
+        meta_json TEXT,
+
+        created_at TEXT NOT NULL,
+
+        FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+        FOREIGN KEY (artifact_id) REFERENCES artifacts(id) ON DELETE CASCADE,
+        FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE SET NULL
+    );
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_conversation_artifact_events_conversation
+        ON conversation_artifact_events(conversation_id);
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_conversation_artifact_events_artifact
+        ON conversation_artifact_events(artifact_id);
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_conversation_artifact_events_message
+        ON conversation_artifact_events(message_id);
+    """
+    )
+    conn.execute(
+    """
+    CREATE INDEX IF NOT EXISTS idx_conversation_artifact_events_kind
+        ON conversation_artifact_events(event_kind);
+    """
+    )
+
 MIGRATIONS: list[tuple[int, Callable]] = [
     (8, _migrate_schema_v8),
     (9, _migrate_schema_v9),
@@ -1155,6 +1258,7 @@ MIGRATIONS: list[tuple[int, Callable]] = [
     (18, _migrate_schema_v18),
     (19, _migrate_schema_v19),
     (20, _migrate_schema_v20),
+    (21, _migrate_schema_v21),
 ]
 
 # endregion
@@ -1303,6 +1407,7 @@ def init_schema() -> None:
             if current < version:
                 migrate_fn(conn)
                 current = version
+
         _end_schema_init(conn, original, current)        
 
 # endregion
@@ -5030,6 +5135,458 @@ def list_citations_for_message(message_id: int) -> list[dict]:
             """,
             (int(message_id),),
         ).fetchall()
+        return [dict(r) for r in rows]
+
+# endregion
+
+# TODO more RAG general than Web RAG, maybe move it later
+# region Conversation Retained Artifacts / Artifact Events
+
+def get_conversation_retained_artifact(
+    conversation_id: str,
+    artifact_id: str,
+) -> dict | None:
+    with db_session() as conn:
+        row = conn.execute(
+            """
+            SELECT cra.*, a.title AS artifact_title, a.source_kind AS artifact_source_kind, a.source_id AS artifact_source_id
+            FROM conversation_retained_artifacts cra
+            LEFT JOIN artifacts a ON a.id = cra.artifact_id
+            WHERE cra.conversation_id = ?
+              AND cra.artifact_id = ?
+            """,
+            ((conversation_id or "").strip(), (artifact_id or "").strip()),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def list_conversation_retained_artifacts(
+    conversation_id: str,
+    *,
+    include_dropped: bool = False,
+) -> list[dict]:
+    cid = (conversation_id or "").strip()
+    if not cid:
+        return []
+
+    sql = """
+        SELECT
+            cra.*,
+            a.title AS artifact_title,
+            a.source_kind AS artifact_source_kind,
+            a.source_id AS artifact_source_id
+        FROM conversation_retained_artifacts cra
+        LEFT JOIN artifacts a ON a.id = cra.artifact_id
+        WHERE cra.conversation_id = ?
+    """
+    params: list[Any] = [cid]
+
+    if not include_dropped:
+        sql += " AND cra.retention_state <> 'dropped'"
+
+    sql += """
+        ORDER BY
+            CASE cra.retention_state
+                WHEN 'pinned' THEN 0
+                WHEN 'forced' THEN 1
+                WHEN 'active' THEN 2
+                WHEN 'latent' THEN 3
+                WHEN 'dropped' THEN 9
+                ELSE 5
+            END,
+            cra.updated_at DESC,
+            cra.id DESC
+    """
+
+    with db_session() as conn:
+        rows = conn.execute(sql, tuple(params)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def upsert_conversation_retained_artifact_conn(
+    conn: sqlite3.Connection,
+    *,
+    conversation_id: str,
+    artifact_id: str,
+    origin_kind: str = "retrieval_expand",
+    retention_state: str = "active",
+    carry_summary_text: str | None = None,
+    last_inclusion_kind: str | None = None,
+    message_id: int | None = None,
+    increment_include_count: bool = False,
+) -> int:
+    cid = (conversation_id or "").strip()
+    aid = (artifact_id or "").strip()
+    if not cid:
+        raise ValueError("conversation_id is required")
+    if not aid:
+        raise ValueError("artifact_id is required")
+
+    now = _utc_now_iso()
+    row = conn.execute(
+        """
+        SELECT id, include_count, first_message_id
+        FROM conversation_retained_artifacts
+        WHERE conversation_id = ?
+          AND artifact_id = ?
+        """,
+        (cid, aid),
+    ).fetchone()
+
+    carry_summary_text = (carry_summary_text or "").strip() or None
+    origin_kind = (origin_kind or "retrieval_expand").strip()
+    retention_state = (retention_state or "active").strip()
+    last_inclusion_kind = (last_inclusion_kind or "").strip() or None
+
+    if row:
+        retained_id = int(row["id"])
+        include_count = int(row["include_count"] or 0)
+        if increment_include_count:
+            include_count += 1
+
+        first_message_id = row["first_message_id"]
+        if first_message_id is None and message_id is not None:
+            first_message_id = int(message_id)
+
+        conn.execute(
+            """
+            UPDATE conversation_retained_artifacts
+            SET
+                origin_kind = ?,
+                retention_state = ?,
+                carry_summary_text = COALESCE(?, carry_summary_text),
+                last_inclusion_kind = COALESCE(?, last_inclusion_kind),
+                include_count = ?,
+                first_message_id = ?,
+                last_message_id = COALESCE(?, last_message_id),
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                origin_kind,
+                retention_state,
+                carry_summary_text,
+                last_inclusion_kind,
+                include_count,
+                first_message_id,
+                int(message_id) if message_id is not None else None,
+                now,
+                retained_id,
+            ),
+        )
+        return retained_id
+
+    cur = conn.execute(
+        """
+        INSERT INTO conversation_retained_artifacts
+        (
+            conversation_id,
+            artifact_id,
+            origin_kind,
+            retention_state,
+            carry_summary_text,
+            last_inclusion_kind,
+            include_count,
+            first_message_id,
+            last_message_id,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            cid,
+            aid,
+            origin_kind,
+            retention_state,
+            carry_summary_text,
+            last_inclusion_kind,
+            1 if increment_include_count else 0,
+            int(message_id) if message_id is not None else None,
+            int(message_id) if message_id is not None else None,
+            now,
+            now,
+        ),
+    )
+    row_id = cur.lastrowid
+    if row_id is None:
+        raise RuntimeError("Failed to insert conversation_retained_artifacts row")
+    return int(row_id)
+
+
+def upsert_conversation_retained_artifact(
+    *,
+    conversation_id: str,
+    artifact_id: str,
+    origin_kind: str = "retrieval_expand",
+    retention_state: str = "active",
+    carry_summary_text: str | None = None,
+    last_inclusion_kind: str | None = None,
+    message_id: int | None = None,
+    increment_include_count: bool = False,
+) -> int:
+    with db_session() as conn:
+        return upsert_conversation_retained_artifact_conn(
+            conn,
+            conversation_id=conversation_id,
+            artifact_id=artifact_id,
+            origin_kind=origin_kind,
+            retention_state=retention_state,
+            carry_summary_text=carry_summary_text,
+            last_inclusion_kind=last_inclusion_kind,
+            message_id=message_id,
+            increment_include_count=increment_include_count,
+        )
+
+
+def set_conversation_retained_artifact_state_conn(
+    conn: sqlite3.Connection,
+    *,
+    conversation_id: str,
+    artifact_id: str,
+    retention_state: str,
+    message_id: int | None = None,
+) -> None:
+    cid = (conversation_id or "").strip()
+    aid = (artifact_id or "").strip()
+    state = (retention_state or "").strip()
+    if not cid:
+        raise ValueError("conversation_id is required")
+    if not aid:
+        raise ValueError("artifact_id is required")
+    if not state:
+        raise ValueError("retention_state is required")
+
+    conn.execute(
+        """
+        UPDATE conversation_retained_artifacts
+        SET
+            retention_state = ?,
+            last_message_id = COALESCE(?, last_message_id),
+            updated_at = ?
+        WHERE conversation_id = ?
+          AND artifact_id = ?
+        """,
+        (
+            state,
+            int(message_id) if message_id is not None else None,
+            _utc_now_iso(),
+            cid,
+            aid,
+        ),
+    )
+
+
+def set_conversation_retained_artifact_state(
+    *,
+    conversation_id: str,
+    artifact_id: str,
+    retention_state: str,
+    message_id: int | None = None,
+) -> None:
+    with db_session() as conn:
+        set_conversation_retained_artifact_state_conn(
+            conn,
+            conversation_id=conversation_id,
+            artifact_id=artifact_id,
+            retention_state=retention_state,
+            message_id=message_id,
+        )
+
+
+def insert_conversation_artifact_event_conn(
+    conn: sqlite3.Connection,
+    *,
+    conversation_id: str,
+    artifact_id: str,
+    event_kind: str,
+    message_id: int | None = None,
+    inclusion_kind: str | None = None,
+    retrieval_channel: str | None = None,
+    note_text: str | None = None,
+    meta_json: str | dict | list | None = None,
+) -> int:
+    cid = (conversation_id or "").strip()
+    aid = (artifact_id or "").strip()
+    ek = (event_kind or "").strip()
+    if not cid:
+        raise ValueError("conversation_id is required")
+    if not aid:
+        raise ValueError("artifact_id is required")
+    if not ek:
+        raise ValueError("event_kind is required")
+
+    inclusion_kind = (inclusion_kind or "").strip() or None
+    retrieval_channel = (retrieval_channel or "").strip() or None
+    note_text = (note_text or "").strip() or None
+
+    if meta_json is None:
+        meta_json_text = None
+    elif isinstance(meta_json, str):
+        meta_json_text = meta_json.strip() or None
+    else:
+        meta_json_text = json.dumps(meta_json, ensure_ascii=False)
+
+    cur = conn.execute(
+        """
+        INSERT INTO conversation_artifact_events
+        (
+            conversation_id,
+            artifact_id,
+            message_id,
+            event_kind,
+            inclusion_kind,
+            retrieval_channel,
+            note_text,
+            meta_json,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            cid,
+            aid,
+            int(message_id) if message_id is not None else None,
+            ek,
+            inclusion_kind,
+            retrieval_channel,
+            note_text,
+            meta_json_text,
+            _utc_now_iso(),
+        ),
+    )
+    row_id = cur.lastrowid
+    if row_id is None:
+        raise RuntimeError("Failed to insert conversation_artifact_events row")
+    return int(row_id)
+
+
+def insert_conversation_artifact_event(
+    *,
+    conversation_id: str,
+    artifact_id: str,
+    event_kind: str,
+    message_id: int | None = None,
+    inclusion_kind: str | None = None,
+    retrieval_channel: str | None = None,
+    note_text: str | None = None,
+    meta_json: str | dict | list | None = None,
+) -> int:
+    with db_session() as conn:
+        return insert_conversation_artifact_event_conn(
+            conn,
+            conversation_id=conversation_id,
+            artifact_id=artifact_id,
+            event_kind=event_kind,
+            message_id=message_id,
+            inclusion_kind=inclusion_kind,
+            retrieval_channel=retrieval_channel,
+            note_text=note_text,
+            meta_json=meta_json,
+        )
+
+
+def retain_conversation_artifact_conn(
+    conn: sqlite3.Connection,
+    *,
+    conversation_id: str,
+    artifact_id: str,
+    origin_kind: str = "retrieval_expand",
+    retention_state: str = "active",
+    carry_summary_text: str | None = None,
+    inclusion_kind: str | None = None,
+    retrieval_channel: str | None = None,
+    message_id: int | None = None,
+    note_text: str | None = None,
+    meta_json: str | dict | list | None = None,
+    increment_include_count: bool = False,
+) -> int:
+    retained_id = upsert_conversation_retained_artifact_conn(
+        conn,
+        conversation_id=conversation_id,
+        artifact_id=artifact_id,
+        origin_kind=origin_kind,
+        retention_state=retention_state,
+        carry_summary_text=carry_summary_text,
+        last_inclusion_kind=inclusion_kind,
+        message_id=message_id,
+        increment_include_count=increment_include_count,
+    )
+
+    insert_conversation_artifact_event_conn(
+        conn,
+        conversation_id=conversation_id,
+        artifact_id=artifact_id,
+        message_id=message_id,
+        event_kind="retained",
+        inclusion_kind=inclusion_kind,
+        retrieval_channel=retrieval_channel,
+        note_text=note_text,
+        meta_json=meta_json,
+    )
+    return retained_id
+
+
+def retain_conversation_artifact(
+    *,
+    conversation_id: str,
+    artifact_id: str,
+    origin_kind: str = "retrieval_expand",
+    retention_state: str = "active",
+    carry_summary_text: str | None = None,
+    inclusion_kind: str | None = None,
+    retrieval_channel: str | None = None,
+    message_id: int | None = None,
+    note_text: str | None = None,
+    meta_json: str | dict | list | None = None,
+    increment_include_count: bool = False,
+) -> int:
+    with db_session() as conn:
+        return retain_conversation_artifact_conn(
+            conn,
+            conversation_id=conversation_id,
+            artifact_id=artifact_id,
+            origin_kind=origin_kind,
+            retention_state=retention_state,
+            carry_summary_text=carry_summary_text,
+            inclusion_kind=inclusion_kind,
+            retrieval_channel=retrieval_channel,
+            message_id=message_id,
+            note_text=note_text,
+            meta_json=meta_json,
+            increment_include_count=increment_include_count,
+        )
+
+
+def list_conversation_artifact_events(
+    conversation_id: str,
+    *,
+    artifact_id: str | None = None,
+    limit: int | None = 100,
+) -> list[dict]:
+    cid = (conversation_id or "").strip()
+    if not cid:
+        return []
+
+    sql = """
+        SELECT *
+        FROM conversation_artifact_events
+        WHERE conversation_id = ?
+    """
+    params: list[Any] = [cid]
+
+    aid = (artifact_id or "").strip()
+    if aid:
+        sql += " AND artifact_id = ?"
+        params.append(aid)
+
+    sql += " ORDER BY id DESC"
+    if limit is not None and int(limit) > 0:
+        sql += " LIMIT ?"
+        params.append(int(limit))
+
+    with db_session() as conn:
+        rows = conn.execute(sql, tuple(params)).fetchall()
         return [dict(r) for r in rows]
 
 # endregion
