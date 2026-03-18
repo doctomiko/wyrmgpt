@@ -13,7 +13,9 @@ def _resolve_embedding_provider_def(
     emb_cfg: EmbeddingConfig,
 ) -> ProviderDef:
     providers = load_provider_defs()
-    requested = (emb_cfg.provider or "openai").strip()
+    requested = (emb_cfg.provider or "").strip()
+    if requested == "":
+        raise RuntimeError(f"emb_cfg: Embedding provider is not specified: {requested}")
 
     provider_def = providers.get(requested)
     if provider_def is not None:
