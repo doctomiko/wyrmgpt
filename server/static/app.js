@@ -626,7 +626,7 @@ async function openCitationsModalForProject(pid) {
 }
 
 async function loadMessages(cid) {
-  return await fetchJsonDebug(`/api/conversation/${cid}/messages?mode=thread`);
+  return await fetchJsonDebug(`/api/conversation/${cid}/messages`);
 }
 
 // #endregion
@@ -1481,11 +1481,6 @@ async function fetchConversations(limit = null) {
 }
 
 function renderConversations(conversations) {
-  if (!sideBarConvListEl) {
-    updateChatTitle();
-    return;
-  }
-
   sideBarConvListEl.innerHTML = "";
 
   const unassigned = (conversations || []).filter(c => c.project_id == null && !c.is_unassigned_pseudo);
@@ -4986,9 +4981,6 @@ window.addEventListener("beforeunload", () => {
     await loadPersonalization();
     bootLog("[boot] loadMemories");
     await loadMemories();
-    await refreshContext();
-
-    bootLog("[boot] refreshContext");
     await refreshContext();
 
     bootLog("[boot] refreshGlobalFilesState");
