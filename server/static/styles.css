@@ -26,7 +26,7 @@ body {
 
 @media (max-width: 1100px) {
   #layout { grid-template-columns: 260px 1fr; }
-  #memory { display: none; }
+  #rightSidePanel { display: none; }
 }
 
 .modal {
@@ -413,6 +413,7 @@ button:hover { filter: brightness(1.1); }
   display: grid;
   grid-template-rows: auto 1fr auto;
   overflow: hidden;
+  min-width: 0
 }
 
 main#chat {
@@ -424,7 +425,7 @@ main#chat {
 }
 
 .msg {
-  max-width: 980px;
+  max-width: min(980px, 100%);  
   width: fit-content;
   padding: 12px 12px;
   border: 1px solid var(--border);
@@ -740,11 +741,15 @@ textarea {
   gap: 8px;
   align-items: flex-start;
   position: relative;
+  min-width: 0
 }
 
 #modelSelectA,
 #modelSelectB {
   flex: 0 0 auto;            /* don’t stretch; keep natural width */
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
 }
 
 /* burger menu at the top */
@@ -820,6 +825,9 @@ textarea {
 /* Base styles for A/B messages */
 .abRow .abCol .abMsg {
   transition: opacity 0.15s ease, filter 0.15s ease, box-shadow 0.15s ease;
+}
+.abCol {
+  min-width: 0  
 }
 
 /* Non-canonical side: slightly muted */

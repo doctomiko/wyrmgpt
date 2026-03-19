@@ -24,7 +24,7 @@ const topMenuSearchChatHistoryToggle = document.getElementById("searchChatHistor
 
 // Conversation and Project List
 const sideBarProjListEl = document.getElementById("projectList");
-const sideBarConvListEl = document.getElementById("convList");
+//const sideBarConvListEl = document.getElementById("convList");
 
 // CENTER PAGE
 
@@ -1480,17 +1480,17 @@ async function fetchConversations(limit = null) {
   return list;
 }
 
+// This is now obsolete as it they are being added to the global project 
+/*
 function renderConversations(conversations) {
   sideBarConvListEl.innerHTML = "";
-
   const unassigned = (conversations || []).filter(c => c.project_id == null && !c.is_unassigned_pseudo);
-
   unassigned.forEach(c => {
     sideBarConvListEl.appendChild(makeConversationItem(c));
   });
-
   updateChatTitle();
 }
+*/
 
 function updateChatTitle() {
   const meta = conversationMap.get(conversationId);
@@ -2657,9 +2657,15 @@ function updateModelInfo(which) {
   infoEl.innerHTML = html;
 }
 
-async function refreshDeployments() {
+async function refreshDeployments(refreshUi = false) {
   const data = await fetchJsonDebug("/api/deployments");
   deployments = data.deployments || [];
+
+  if (refreshUi) {
+    renderModelDropdowns();
+    updateModelInfo("A");
+    updateModelInfo("B");
+  }
 }
 
 async function refreshModels() {
@@ -3411,7 +3417,7 @@ async function deleteConversationWithConfirmation(cid, title) {
 
     const [projects, conversations] = await Promise.all([fetchProjects(), fetchConversations()]);
     renderProjects(projects, conversations);
-    renderConversations(conversations);
+    //renderConversations(conversations);
 
     if (!conversationId) {
       if (conversations.length) await selectConversation(conversations[0].id);
@@ -3468,7 +3474,7 @@ async function moveConversationToProject(conversationId) {
 
     const [p2, c2] = await Promise.all([fetchProjects(), fetchConversations()]);
     renderProjects(p2, c2);
-    renderConversations(c2);
+    //renderConversations(c2);
     if (conversationId === window.conversationId) await refreshContext();
   };
 
@@ -3529,7 +3535,7 @@ async function refreshConversationLists() {
   }
   const conversations = await fetchConversations(1000000);
   renderProjects(projectsCache, conversations);
-  renderConversations(conversations);
+  //renderConversations(conversations);
   return conversations;
 }
 
@@ -4510,16 +4516,20 @@ if (convMenuRenameBtn) {
     const next = prompt("Rename chat:", current);
     if (next === null) return;
 
+    /*
     await fetch(`/api/conversation/${cid}/title`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ title: next.trim() })
     });
+    const conversations = await fetchConversations();
+    */
 
     hideConvMenu();
 
-    const conversations = await fetchConversations();
-    renderConversations(conversations);
+    //renderConversations(conversations);
+    // do the project aware version - not optimized for a single conversation
+    refreshConversationLists();
 
     // only refresh top title/context if we're renaming the active chat
     if (cid === conversationId) {
@@ -4544,8 +4554,12 @@ if (convMenuSuggestTitleBtn) {
 
     hideConvMenu();
 
+    /*
     const conversations = await fetchConversations();
     renderConversations(conversations);
+    */
+    // do the project aware version - not optimized for a single conversation
+    refreshConversationLists();
 
     if (cid === conversationId) {
       await refreshContext();
@@ -4571,7 +4585,7 @@ if (convMenuMoveToBtn) {
     // after move, refresh projects list too (counts / visibility)
     const [projects, conversations] = await Promise.all([fetchProjects(), fetchConversations()]);
     renderProjects(projects, conversations);
-    renderConversations(conversations);
+    //renderConversations(conversations);
   });
 }
 
@@ -4636,7 +4650,7 @@ if (projMenuNewChatBtn) {
         fetchConversations(),
       ]);
       renderProjects(projects, conversations);
-      renderConversations(conversations);
+      //renderConversations(conversations);
 
       await selectConversation(cid);
     } catch (e) {
@@ -4748,7 +4762,7 @@ if (projMenuToggleVisibility) {
     if (await updateProject(pid, { visibility: nextVisibility })) {
       const [p2, c2] = await Promise.all([fetchProjects(), fetchConversations()]);
       renderProjects(p2, c2);
-      renderConversations(c2);
+      //renderConversations(c2);
 
       try {
         await refreshContext();
@@ -4778,7 +4792,7 @@ if (topLeftNewProjBtn) {
       // refresh conversations and project lists so grouping updates
       const [projects, conversations] = await Promise.all([fetchProjects(), fetchConversations()]);
       renderProjects(projects, conversations);
-      renderConversations(conversations);
+      //renderConversations(conversations);
     } catch (e) {
       console.error("create project failed", e);
       alert("Error creating project.");
@@ -4823,7 +4837,7 @@ if (projMenuRenameBtn) {
     if (await updateProject(pid, { name: next.trim() })) {
       const [p2, c2] = await Promise.all([fetchProjects(), fetchConversations()]);
       renderProjects(p2, c2);
-      renderConversations(c2);
+      //renderConversations(c2);
     }
   });
 }
@@ -4841,7 +4855,7 @@ if (projMenuDescriptionBtn) {
     if (await updateProject(pid, { description: next })) {
       const [p2, c2] = await Promise.all([fetchProjects(), fetchConversations()]);
       renderProjects(p2, c2);
-      renderConversations(c2);
+      //renderConversations(c2);
     }
   });
 }
@@ -4931,7 +4945,10 @@ window.addEventListener("beforeunload", () => {
     // Now does both model selects if present
 
     bootLog("[boot] refreshModels");
-    await refreshModels();
+    // We no longer need this call to get the model list
+    // deployments handles all of this now.
+    //await refreshModels(true);
+    await refreshDeployments(true);
     // advancedMode restored already; just apply once
 
     bootLog("[boot] applyAdvancedVisibility");
@@ -4960,8 +4977,8 @@ window.addEventListener("beforeunload", () => {
 
     bootLog("[boot] renderProjects");
     renderProjects(projects, recentConversations);
-    bootLog("[boot] renderConversations");
-    renderConversations(recentConversations);
+    //bootLog("[boot] renderConversations");
+    //renderConversations(recentConversations);
 
     void (async () => {
       try {
@@ -4969,8 +4986,8 @@ window.addEventListener("beforeunload", () => {
         const allConversations = await fetchConversations(1000000);
         bootLog("[boot-bg] renderProjects/all");
         renderProjects(projectsCache, allConversations);
-        bootLog("[boot-bg] renderConversations/all");
-        renderConversations(allConversations);
+        //bootLog("[boot-bg] renderConversations/all");
+        //renderConversations(allConversations);
         updateChatTitle();
       } catch (e) {
         console.error("[boot-bg] FAILED", e);
