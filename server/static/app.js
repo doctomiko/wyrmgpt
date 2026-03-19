@@ -1450,12 +1450,6 @@ function makeConversationItem(c) {
   m.textContent = formatReadableDateTime(c.created_at); //convMetaText(c);
   // You can swap created_at for updated_at later if you add it to the API.
   item.appendChild(m);
-  if (!sideBarConvListEl) {
-    updateChatTitle();
-    return;
-  }
-
-
   if (c.summary_excerpt) {
     const s = document.createElement("div");
     s.className = "convSummary";
