@@ -10,7 +10,7 @@ if str(ROOT) not in sys.path:
 from server.db import (
     db_session,
     init_schema,
-    list_corpus_chunks_requiring_embeddings,
+    iter_corpus_chunks_requiring_embeddings_batches,
 )
 from server.config import load_embedding_config, load_vector_config
 from server.providers.openai_embeddings import OpenAIEmbeddingProvider
@@ -63,26 +63,29 @@ def main() -> None:
     provider = OpenAIEmbeddingProvider(emb_cfg=emb_cfg)
     store = QdrantLocalVectorStore(cfg=vec_cfg)
 
-    pending = list_corpus_chunks_requiring_embeddings(
+    batch_size = max(1, int(emb_cfg.batch_size or 64))
+    scan_batch_size = max(batch_size, batch_size * 8)
+    processed = 0
+    empty_marked = 0
+    total = 0
+    collection_ready = False
+    last_report = time.perf_counter()
+    found_any = False
+
+    print(
+        f"Scanning corpus chunks for embedding work "
+        f"(emit_batch_size={batch_size}, scan_batch_size={scan_batch_size})"
+    )
+
+    for batch in iter_corpus_chunks_requiring_embeddings_batches(
         embedding_provider=emb_cfg.provider,
         embedding_model=emb_cfg.model,
         vector_dim=int(emb_cfg.dimensions or 0),
-    )
-
-    total = len(pending)
-    print(f"Chunks needing embeddings: {total}")
-    if total == 0:
-        print("Nothing to do.")
-        return
-
-    batch_size = max(1, int(emb_cfg.batch_size or 64))
-    processed = 0
-    empty_marked = 0
-    collection_ready = False
-    last_report = time.perf_counter()
-
-    for start in range(0, total, batch_size):
-        batch = pending[start : start + batch_size]
+        emit_batch_size=batch_size,
+        scan_batch_size=scan_batch_size,
+    ):
+        found_any = True
+        total += len(batch)
         done, empties, ensured = process_batch(
             batch=batch,
             provider=provider,
@@ -90,94 +93,30 @@ def main() -> None:
             emb_cfg=emb_cfg,
             collection_ready=collection_ready,
         )
+
         processed += done
         empty_marked += empties
         collection_ready = collection_ready or ensured
 
         now = time.perf_counter()
-        if (now - last_report) >= 1.0 or processed + empty_marked >= total:
+        if (now - last_report) >= 1.0:
             elapsed = now - started
             rate = (processed + empty_marked) / elapsed if elapsed > 0 else 0.0
             print(
-                f"Processed {processed + empty_marked}/{total} "
+                f"Processed {processed + empty_marked} pending chunks "
                 f"(embedded={processed}, empty={empty_marked}, rate={rate:.1f}/s)"
             )
             last_report = now
+
+    if not found_any:
+        print("Nothing to do.")
+        return
 
     elapsed = time.perf_counter() - started
     print(
         f"Embedding rebuild complete. "
         f"embedded={processed}, empty={empty_marked}, total={total}, elapsed={elapsed:.1f}s"
     )
-
-if (False):
-    def main() -> None:
-        started = time.perf_counter()
-        init_schema()
-
-        emb_cfg = load_embedding_config()
-        vec_cfg = load_vector_config()
-
-        if emb_cfg.provider != "openai":
-            raise NotImplementedError(
-                f"Embedding provider not implemented in rebuild script yet: {emb_cfg.provider}"
-            )
-
-        if vec_cfg.backend != "qdrant_local":
-            raise NotImplementedError(
-                f"Vector backend not implemented in rebuild script yet: {vec_cfg.backend}"
-            )
-
-        provider = OpenAIEmbeddingProvider(emb_cfg=emb_cfg)
-        store = QdrantLocalVectorStore(cfg=vec_cfg)
-
-        pending = list_corpus_chunks_requiring_embeddings(
-            embedding_provider=emb_cfg.provider,
-            embedding_model=emb_cfg.model,
-            vector_dim=int(emb_cfg.dimensions or 0),
-        )
-
-        total = len(pending)
-        print(f"Chunks needing embeddings: {total}")
-        if total == 0:
-            print("Nothing to do.")
-            return
-
-        batch_size = max(1, int(emb_cfg.batch_size or 64))
-        processed = 0
-        empty_marked = 0
-        collection_ready = False
-        last_report = time.perf_counter()
-
-        for start in range(0, total, batch_size):
-            batch = pending[start : start + batch_size]
-            done, empties, ensured = process_batch(
-                batch=batch,
-                provider=provider,
-                store=store,
-                emb_cfg=emb_cfg,
-                collection_ready=collection_ready,
-            )
-            processed += done
-            empty_marked += empties
-            collection_ready = collection_ready or ensured
-
-            now = time.perf_counter()
-            if (now - last_report) >= 1.0 or processed + empty_marked >= total:
-                elapsed = now - started
-                rate = (processed + empty_marked) / elapsed if elapsed > 0 else 0.0
-                print(
-                    f"Processed {processed + empty_marked}/{total} "
-                    f"(embedded={processed}, empty={empty_marked}, rate={rate:.1f}/s)"
-                )
-                last_report = now
-
-        elapsed = time.perf_counter() - started
-        print(
-            f"Embedding rebuild complete. "
-            f"embedded={processed}, empty={empty_marked}, total={total}, elapsed={elapsed:.1f}s"
-        )
-
 
 def process_batch(
     *,

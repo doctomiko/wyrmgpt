@@ -4454,19 +4454,24 @@ def upsert_chunk_embedding_state(
         )
 
 
-def list_corpus_chunks_requiring_embeddings(
+def iter_corpus_chunks_requiring_embeddings_batches(
     *,
     embedding_provider: str,
     embedding_model: str,
     vector_dim: int = 0,
-    limit: int = 0,
-) -> list[dict]:
+    emit_batch_size: int = 100,
+    scan_batch_size: int = 1000,
+) -> Iterator[list[dict]]:
     desired_provider = (embedding_provider or "").strip()
     desired_model = (embedding_model or "").strip()
     desired_dim = max(0, int(vector_dim or 0))
+    emit_batch_size = max(1, int(emit_batch_size or 100))
+    scan_batch_size = max(emit_batch_size, int(scan_batch_size or 1000))
+
+    pending_batch: list[dict] = []
 
     with db_session() as conn:
-        rows = conn.execute(
+        cur = conn.execute(
             """
             SELECT
               c.id AS chunk_id,
@@ -4488,34 +4493,74 @@ def list_corpus_chunks_requiring_embeddings(
               ON ces.chunk_id = c.id
             ORDER BY c.id
             """
-        ).fetchall()
-
-    out: list[dict] = []
-    for row in rows:
-        item = dict(row)
-        text_hash = _sha256_hex((item.get("text") or "").strip())
-        item["text_hash"] = text_hash
-
-        embedded_text_hash = (item.get("embedded_text_hash") or "").strip()
-        embedded_provider = (item.get("embedded_provider") or "").strip()
-        embedded_model = (item.get("embedded_model") or "").strip()
-        embedded_dim = int(item.get("embedded_vector_dim") or 0)
-        embedding_status = (item.get("embedding_status") or "").strip().lower()
-
-        needs_embedding = (
-            not embedded_text_hash
-            or embedded_text_hash != text_hash
-            or embedded_provider != desired_provider
-            or embedded_model != desired_model
-            or (desired_dim > 0 and embedded_dim != desired_dim)
-            or embedding_status not in ("ready", "empty")
         )
 
-        if needs_embedding:
-            out.append(item)
-            if limit and len(out) >= int(limit):
+        while True:
+            rows = cur.fetchmany(scan_batch_size)
+            if not rows:
                 break
 
+            for row in rows:
+                item = dict(row)
+                text_hash = _sha256_hex((item.get("text") or "").strip())
+                item["text_hash"] = text_hash
+
+                embedded_text_hash = (item.get("embedded_text_hash") or "").strip()
+                embedded_provider = (item.get("embedded_provider") or "").strip()
+                embedded_model = (item.get("embedded_model") or "").strip()
+                embedded_dim = int(item.get("embedded_vector_dim") or 0)
+                embedding_status = (item.get("embedding_status") or "").strip().lower()
+
+                needs_embedding = (
+                    not embedded_text_hash
+                    or embedded_text_hash != text_hash
+                    or embedded_provider != desired_provider
+                    or embedded_model != desired_model
+                    or (desired_dim > 0 and embedded_dim != desired_dim)
+                    or embedding_status not in ("ready", "empty")
+                )
+
+                if not needs_embedding:
+                    continue
+
+                pending_batch.append(item)
+                if len(pending_batch) >= emit_batch_size:
+                    yield pending_batch
+                    pending_batch = []
+
+    if pending_batch:
+        yield pending_batch
+
+
+def list_corpus_chunks_requiring_embeddings(
+    *,
+    embedding_provider: str,
+    embedding_model: str,
+    vector_dim: int = 0,
+    limit: int = 0,
+) -> list[dict]:
+    out: list[dict] = []
+    if limit and int(limit) > 0:
+        for batch in iter_corpus_chunks_requiring_embeddings_batches(
+            embedding_provider=embedding_provider,
+            embedding_model=embedding_model,
+            vector_dim=vector_dim,
+            emit_batch_size=int(limit),
+            scan_batch_size=max(int(limit), 1000),
+        ):
+            out.extend(batch)
+            if limit and len(out) >= int(limit):
+                return out[: int(limit)]
+        return out
+
+    for batch in iter_corpus_chunks_requiring_embeddings_batches(
+        embedding_provider=embedding_provider,
+        embedding_model=embedding_model,
+        vector_dim=vector_dim,
+        emit_batch_size=1000,
+        scan_batch_size=1000,
+    ):
+        out.extend(batch)
     return out
 
 # endregion

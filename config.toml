@@ -192,6 +192,6 @@ tags = ["title"]
 provider = "openai"
 model = "text-embedding-3-large"
 dimensions = 0
-batch_size = 64
+batch_size = 256
 cache_enabled = true
 cache_dir = "./data/embedding_cache"
