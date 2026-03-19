@@ -2279,6 +2279,18 @@ async function send() {
   } else {
     await sendSingle(text, modelA);
   }
+
+  await refreshConversationLists();
+  const msgs = await loadMessages(conversationId);
+  clearChat();
+  if (!msgs.length) {
+    addMsg("assistant", "Empty chat. Say something mean to the void.");
+  } else {
+    renderMessagesWithAB(msgs);
+  }
+  lastContextQueryText = text;
+  await refreshContext();
+  scheduleTranscriptRefresh();
 }
 
 async function sendSingle(text, model) {
@@ -2305,6 +2317,15 @@ async function sendSingle(text, model) {
   if (headerCid) {
     conversationId = headerCid;
     localStorage.setItem("callie_mvp_conversation_id", conversationId);
+
+  const msgs = await loadMessages(conversationId);
+  clearChat();
+  if (!msgs.length) {
+    addMsg("assistant", "Empty chat. Say something mean to the void.");
+  } else {
+    renderMessagesWithAB(msgs);
+  }
+
   }
 
   const reader = res.body.getReader();
@@ -2318,13 +2339,6 @@ async function sendSingle(text, model) {
     assistantBody.innerHTML = renderMarkdown(stripZeit(buffer));
     chatWindow.scrollTop = chatWindow.scrollHeight;
   }
-
-  //const conversations = await fetchConversations();
-  //renderConversations(conversations);
-  await refreshConversationLists();
-  lastContextQueryText = text;
-  await refreshContext();
-  scheduleTranscriptRefresh();
 }
 
 async function sendAB(text, modelA, modelB) {
@@ -2427,6 +2441,15 @@ async function sendAB(text, modelA, modelB) {
       ? `${data.deployment_b} · ${data.model_b || choiceB.model || modelB}`
       : (data.model_b || choiceB.display_name || modelB);
 
+
+    const msgs = await loadMessages(conversationId);
+    clearChat();
+    if (!msgs.length) {
+      addMsg("assistant", "Empty chat. Say something mean to the void.");
+    } else {
+      renderMessagesWithAB(msgs);
+    }
+
     renderSlot(msgAEl, labelAEl, "A", labelA, data.a);
     renderSlot(msgBEl, labelBEl, "B", labelB, data.b);
 
@@ -2435,11 +2458,6 @@ async function sendAB(text, modelA, modelB) {
     detailsB = { slot: "B", model: data.model_b || modelB, ab_group: data.ab_group || null, result: data.b };
 
     markCanonical(rowEl, data.canonical_slot || "A");
-
-    await refreshConversationLists();
-    lastContextQueryText = text;
-    await refreshContext();
-    scheduleTranscriptRefresh();
   } catch (e) {
     console.error("Failed A/B send", e);
     msgAEl.classList.add("error");

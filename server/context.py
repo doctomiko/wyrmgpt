@@ -249,6 +249,19 @@ def _maybe_apply_artifact_reading_plan(
         whole_artifact_soft_cap_chars=max(2000, int(ctx_cfg.max_tokens or 6000) * 2),
     )
 
+    if plan.get("action") != "include_whole" and plan.get("needs_derivatives"):
+        from .artifact_derivative_builder import ensure_artifact_reading_derivatives
+
+        refreshed = ensure_artifact_reading_derivatives(artifact_id)
+        if refreshed:
+            readiness = refreshed
+            plan = plan_artifact_inclusion(
+                user_text=user_text,
+                readiness=readiness,
+                budget_remaining_chars=rough_budget_remaining_chars,
+                whole_artifact_soft_cap_chars=max(2000, int(ctx_cfg.max_tokens or 6000) * 2),
+            )
+
     if plan.get("action") == "include_whole":
         return False
 
