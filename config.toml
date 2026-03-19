@@ -38,21 +38,24 @@ preview_limit = 20
 # estimate_model = "gpt-5-mini"
 
 [retrieval]
-query_include = ["CHAT_SUMMARY", "FTS", "EMBEDDING"]
-query_expand_results = ["FILE", "MEMORY", "CHAT"]
+query_include = ["MEMORY", "CHAT_SUMMARY", "FTS", "EMBEDDING"]
+query_expand_results = ["CHAT"]
+# ["FILE", "MEMORY", "CHAT"]
+rag_limit = 10
+max_chars = 1500
 query_max_full_files = 50
 query_max_full_memories = 500
 query_max_full_chats = 5
-query_expand_min_artifact_hits = 2
+query_expand_min_artifact_hits = 3
 query_expand_chat_window_before = 1
 query_expand_chat_window_after = 1
-query_global_artifacts = true
+query_global_artifacts = false
 retrieval_cache_ttl_sec = 180.0
 retrieval_cache_max_entries = 64
 query_include_project_conversation_transcripts = true
-query_include_global_conversation_transcripts = true
-query_include_recent_conversation_transcripts = true
-recent_conversation_transcript_limit = 40
+query_include_global_conversation_transcripts = false
+query_include_recent_conversation_transcripts = false
+recent_conversation_transcript_limit = 20
 
 [query]
 max_terms = 14
@@ -88,7 +91,7 @@ collection_name = "wyrmgpt_chunks"
 local_path = "./data/qdrant"
 server_url = ""
 distance_metric = "cosine"
-search_limit = 24
+search_limit = 12
 
 [app]
 search_chat_history = true

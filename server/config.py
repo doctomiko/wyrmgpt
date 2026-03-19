@@ -407,7 +407,7 @@ QUERY_DEFAULTS: QueryConfig = QueryConfig()
 
 @dataclass(frozen=True)
 class RetrievalConfig:
-    query_include: str = "CHAT_SUMMARY,FTS,EMBEDDING"
+    query_include: str = "MEMORY,CHAT_SUMMARY,FTS,EMBEDDING"
     query_expand_results: str = "FILE,MEMORY,CHAT"
     query_max_full_files: int = 50
     query_max_full_memories: int = 500
@@ -416,15 +416,17 @@ class RetrievalConfig:
     query_expand_chat_window_before: int = 1
     query_expand_chat_window_after: int = 1
 
-    query_global_artifacts: bool = True
+    rag_limit: int = 10
+    max_chars: int = 1200
+    query_global_artifacts: bool = False
 
     retrieval_cache_ttl_sec: float = 180.0
     retrieval_cache_max_entries: int = 64
 
     query_include_project_conversation_transcripts: bool = True
-    query_include_global_conversation_transcripts: bool = True
-    query_include_recent_conversation_transcripts: bool = True
-    recent_conversation_transcript_limit: int = 40
+    query_include_global_conversation_transcripts: bool = False
+    query_include_recent_conversation_transcripts: bool = False
+    recent_conversation_transcript_limit: int = 8
 RETRIEVAL_DEFAULTS: RetrievalConfig = RetrievalConfig()
 
 QUERY_INCLUDE_ALLOWED = {"FILE", "MEMORY", "CHAT", "CHAT_SUMMARY", "FTS", "EMBEDDING"}
@@ -690,6 +692,8 @@ def load_retrieval_config() -> RetrievalConfig:
     return RetrievalConfig(
         query_include=raw_include,
         query_expand_results=raw_expand,
+        rag_limit=max(1, _cfg_int(("retrieval", "rag_limit"), env_name="RAG_LIMIT", default=RETRIEVAL_DEFAULTS.rag_limit)),
+        max_chars=max(1, _cfg_int(("retrieval", "max_chars"), env_name="RAG_MAX_CHARS", default=RETRIEVAL_DEFAULTS.max_chars)),
         query_max_full_files=max(1, _cfg_int(("retrieval", "query_max_full_files"), env_name="QUERY_MAX_FULL_FILES", default=RETRIEVAL_DEFAULTS.query_max_full_files)),
         query_max_full_memories=max(1, _cfg_int(("retrieval", "query_max_full_memories"), env_name="QUERY_MAX_FULL_MEMORIES", default=RETRIEVAL_DEFAULTS.query_max_full_memories)),
         query_max_full_chats=max(1, _cfg_int(("retrieval", "query_max_full_chats"), env_name="QUERY_MAX_FULL_CHATS", default=RETRIEVAL_DEFAULTS.query_max_full_chats)),

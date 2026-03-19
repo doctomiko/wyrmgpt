@@ -10,7 +10,7 @@ from .logging_helper import log_debug, log_warn
 from .providers.registry import ProviderRegistry
 from .db import (
     get_app_setting, get_conversation_summary_text,
-    get_messages, get_context_sources,
+    get_messages, get_messages_raw, get_context_sources,
     list_memory_pins, list_memories, list_conversations,
     ensure_artifacts_for_files, gather_scoped_files,
     ensure_conversation_transcript_artifact_fresh,
@@ -19,6 +19,7 @@ from .db import (
     conversation_transcript_artifact_id, db_session,
     list_conversation_retained_artifacts,
     retain_conversation_artifact_conn,
+    create_conversation_scaffold_event_conn,
 )
 
 from .config import (
@@ -29,6 +30,14 @@ from .config import (
     _normalize_csv_set,
     load_embedding_config, load_vector_config,
     load_provider_defs, load_deployment_defs,
+)
+
+from .artifact_reading_planner import (
+    format_index_message,
+    format_planner_note_message,
+    format_summary_message,
+    get_artifact_readiness,
+    plan_artifact_inclusion,
 )
 
 # TODO untagle dependencies later if needed
@@ -84,6 +93,7 @@ def _get_prompt(default_prompt: str, filepath: str = "", cfg_default="(cfg defau
     val = val.replace("\\n", "\n")
     return val
 
+#region Configuration Helpers
 
 @lru_cache(maxsize=1)
 def _selection_registry() -> ProviderRegistry:
@@ -154,6 +164,9 @@ def get_system_prompt(cfg: CoreConfig | None = None) -> str:
         cfg_filepath="SYSTEM_PROMPT_FILE",
     )
 
+# endregion
+
+# region Time Helpers
 
 def iso_to_epoch_ms(iso: str) -> int:
     """Handles "2026-02-28T23:15:12.140213+00:00" cleanly"""
@@ -183,6 +196,117 @@ def iso_to_age_seconds(iso: str) -> int:
     now = datetime.now(timezone.utc)
     return max(0, int((now - dt).total_seconds()))
 
+#endregion
+
+# region Reading Plan Helpers
+
+def _message_char_count(msg: dict) -> int:
+    content = msg.get("content")
+    if isinstance(content, str):
+        return len(content)
+    if isinstance(content, list):
+        total = 0
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "input_text":
+                total += len(item.get("text") or "")
+        return total
+    return 0
+
+
+def _messages_char_count(messages: list[dict]) -> int:
+    return sum(_message_char_count(m) for m in (messages or []))
+
+
+def _maybe_apply_artifact_reading_plan(
+    *,
+    conn,
+    conversation_id: str,
+    current_message_id: int | None,
+    artifact_id: str,
+    title: str,
+    user_text: str,
+    ctx_cfg: ContextConfig,
+    typed_history: list[dict],
+    whole_artifact_messages: list[dict],
+    included_artifact_ids: set[str],
+    label_sink: list[str],
+    origin_kind: str,
+    retention_state: str,
+    carry_summary_text: str | None = None,
+) -> bool:
+    readiness = get_artifact_readiness(artifact_id)
+    if not readiness:
+        return False
+
+    rough_budget_total_chars = max(4000, int(ctx_cfg.max_tokens or 6000) * 4)
+    rough_budget_used_chars = _messages_char_count(typed_history) + _messages_char_count(whole_artifact_messages)
+    rough_budget_remaining_chars = max(0, rough_budget_total_chars - rough_budget_used_chars)
+
+    plan = plan_artifact_inclusion(
+        user_text=user_text,
+        readiness=readiness,
+        budget_remaining_chars=rough_budget_remaining_chars,
+        whole_artifact_soft_cap_chars=max(2000, int(ctx_cfg.max_tokens or 6000) * 2),
+    )
+
+    if plan.get("action") == "include_whole":
+        return False
+
+    summary_msg = format_summary_message(readiness)
+    index_msg = format_index_message(readiness)
+    planner_note_msg = format_planner_note_message(plan)
+
+    added_any = False
+    if summary_msg:
+        whole_artifact_messages.append(summary_msg)
+        added_any = True
+    if index_msg:
+        whole_artifact_messages.append(index_msg)
+        added_any = True
+    if not added_any:
+        whole_artifact_messages.append(planner_note_msg)
+
+    included_artifact_ids.add(artifact_id)
+    label_sink.append(
+        f"{title} [reading-plan: {', '.join(plan.get('strategies') or [])}]"
+    )
+
+    retain_conversation_artifact_conn(
+        conn,
+        conversation_id=conversation_id,
+        artifact_id=artifact_id,
+        origin_kind=origin_kind,
+        retention_state=retention_state,
+        carry_summary_text=carry_summary_text or None,
+        inclusion_kind="summary" if summary_msg else "chunk",
+        retrieval_channel="reading_plan",
+        message_id=current_message_id,
+        note_text=(plan.get("reason") or "Artifact reading plan fallback applied"),
+        meta_json={"reading_plan": plan},
+        increment_include_count=True,
+    )
+
+    create_conversation_scaffold_event_conn(
+        conn,
+        conversation_id=conversation_id,
+        message_id=current_message_id,
+        event_kind="artifact_reading_plan",
+        status="ready",
+        title="Artifact reading plan",
+        body_text=(plan.get("reason") or "Artifact reading plan fallback applied"),
+        input_json={
+            "artifact_id": artifact_id,
+            "artifact_title": title,
+            "origin_kind": origin_kind,
+            "retention_state": retention_state,
+            "user_text_excerpt": (user_text or "")[:280],
+        },
+        output_json=plan,
+    )
+    
+    return True
+
+# endregion
 
 def _excerpt_around_query(text: str, query: str | None, *, max_chars: int) -> str:
     full = (text or "").strip()
@@ -954,11 +1078,11 @@ def build_context(
         conversation_id: str, # shapes the context by scope
         user_text: str, # needed for RAG queries
         ctx_cfg: ContextConfig | None = None,
-        query_cfg: RetrievalConfig | None = None,
+        ret_cfg: RetrievalConfig | None = None,
         include_preview: bool = True,
         ) -> dict:
     ctx_cfg = ctx_cfg or load_context_config()
-    query_cfg = query_cfg or load_retrieval_config()
+    ret_cfg = ret_cfg or load_retrieval_config()
 
     # 3A lazy repair: keep the conversation transcript artifact reasonably fresh
     try:
@@ -975,6 +1099,8 @@ def build_context(
     preview_limit = max(1, int(ctx_cfg.preview_limit))
 
     history_rows = get_messages(conversation_id, limit=ctx_cfg.history_limit)
+    history_rows_raw = get_messages_raw(conversation_id, limit=ctx_cfg.history_limit)
+
     # Add the zeitgeber prefixes
     typed_history: list[dict] = []
     for r in history_rows:
@@ -987,11 +1113,11 @@ def build_context(
     project_id = sources.get("project_id")
 
     effective_query_include = _normalize_csv_set(
-        _effective_query_setting(project_id, "include", query_cfg.query_include),
+        _effective_query_setting(project_id, "include", ret_cfg.query_include),
         QUERY_INCLUDE_ALLOWED,
     )
     effective_query_expand_results = _normalize_csv_set(
-        _effective_query_setting(project_id, "expand_results", query_cfg.query_expand_results),
+        _effective_query_setting(project_id, "expand_results", ret_cfg.query_expand_results),
         QUERY_EXPAND_ALLOWED,
     )
     expand_flags = set(effective_query_expand_results.split(",")) if effective_query_expand_results else set()
@@ -1007,18 +1133,18 @@ def build_context(
     do_fts_rag = has_user_text and ("FTS" in include_flags)
     do_vector_rag = has_user_text and ("EMBEDDING" in include_flags)
 
-    max_full_files = int(_effective_query_setting(project_id, "max_full_files", str(query_cfg.query_max_full_files)))
-    max_full_memories = int(_effective_query_setting(project_id, "max_full_memories", str(query_cfg.query_max_full_memories)))
-    max_full_chats = int(_effective_query_setting(project_id, "max_full_chats", str(query_cfg.query_max_full_chats)))
+    max_full_files = int(_effective_query_setting(project_id, "max_full_files", str(ret_cfg.query_max_full_files)))
+    max_full_memories = int(_effective_query_setting(project_id, "max_full_memories", str(ret_cfg.query_max_full_memories)))
+    max_full_chats = int(_effective_query_setting(project_id, "max_full_chats", str(ret_cfg.query_max_full_chats)))
     query_expand_min_artifact_hits = int(
         _effective_query_setting(
             project_id,
             "expand_min_artifact_hits",
-            str(query_cfg.query_expand_min_artifact_hits),
+            str(ret_cfg.query_expand_min_artifact_hits),
         )
     )
-    query_expand_chat_window_before = max(0, int(query_cfg.query_expand_chat_window_before))
-    query_expand_chat_window_after = max(0, int(query_cfg.query_expand_chat_window_after))
+    query_expand_chat_window_before = max(0, int(ret_cfg.query_expand_chat_window_before))
+    query_expand_chat_window_after = max(0, int(ret_cfg.query_expand_chat_window_after))
 
     # Fetch a wider pool first, then scope/order locally so project pins do not get crowded out by globals.
     all_pins = list_memory_pins(limit=max(int(ctx_cfg.memory_pin_limit or 50) * 4, 200))
@@ -1204,9 +1330,9 @@ def build_context(
     # on later turns, not forgotten immediately.
     included_retained_labels: list[str] = []
     current_message_id = None
-    
-    if history_rows:
-        raw_message_id = history_rows[-1].get("id")
+
+    if history_rows_raw:
+        raw_message_id = history_rows_raw[-1].get("id")
         if raw_message_id is not None:
             try:
                 current_message_id = int(str(raw_message_id))
@@ -1243,6 +1369,24 @@ def build_context(
                 # This is intentionally conservative so the bot stops forgetting
                 # user-injected pages and expanded artifacts across nearby turns.
                 if state in ("forced", "pinned", "active"):
+                    if _maybe_apply_artifact_reading_plan(
+                        conn=conn,
+                        conversation_id=conversation_id,
+                        current_message_id=current_message_id,
+                        artifact_id=artifact_id,
+                        title=title,
+                        user_text=user_text,
+                        ctx_cfg=ctx_cfg,
+                        typed_history=typed_history,
+                        whole_artifact_messages=whole_artifact_messages,
+                        included_artifact_ids=included_artifact_ids,
+                        label_sink=included_retained_labels,
+                        origin_kind=(rr.get("origin_kind") or "retrieval_expand"),
+                        retention_state=state,
+                        carry_summary_text=carry_summary,
+                    ):
+                        continue
+
                     art = load_artifact_row_for_context(conn, artifact_id)
                     if not art or not (art.get("content_text") or "").strip():
                         continue
@@ -1281,14 +1425,14 @@ def build_context(
     emb_cfg = load_embedding_config()
     vec_cfg = load_vector_config()
 
-    rag_limit = 24 # was 8, but why bigger now?
-    max_chars = 2200 #1200
+    rag_limit = ret_cfg.rag_limit
+    max_chars = ret_cfg.max_chars
     if do_fts_rag or do_vector_rag:
         chunks_resp = retrieve_chunks_for_message(
             conversation_id=conversation_id,
             user_message=user_text,
-            limit=rag_limit, 
-            cfg=query_cfg,
+            limit=rag_limit,
+            cfg=ret_cfg,
         )
 
         retrieved_rows_raw = chunks_resp.get("raw_results") or []
@@ -1407,8 +1551,43 @@ def build_context(
 
                             continue
 
-                        included_artifact_ids.add(artifact_id)
+                        origin_kind = "retrieval_expand" if kind != "FILE" else "file_attach"
+
+                        if kind == "FILE":
+                            title = (art.get("title") or item.get("filename") or artifact_id).strip()
+                            label_sink = included_file_artifact_labels
+                        elif kind == "MEMORY":
+                            title = (art.get("title") or f"Memory {item.get('source_id')}").strip()
+                            label_sink = included_memory_labels
+                        else:
+                            title = (art.get("title") or artifact_id).strip()
+                            label_sink = included_chat_labels
+
                         expanded_artifact_ids.add(artifact_id)
+
+                        if _maybe_apply_artifact_reading_plan(
+                            conn=conn,
+                            conversation_id=conversation_id,
+                            current_message_id=current_message_id,
+                            artifact_id=artifact_id,
+                            title=title,
+                            user_text=user_text,
+                            ctx_cfg=ctx_cfg,
+                            typed_history=typed_history,
+                            whole_artifact_messages=whole_artifact_messages,
+                            included_artifact_ids=included_artifact_ids,
+                            label_sink=label_sink,
+                            origin_kind=origin_kind,
+                            retention_state="active",
+                            carry_summary_text=None,
+                        ):
+                            if kind == "MEMORY":
+                                label_sink[-1] = f"{title} [expanded via reading-plan]"
+                            elif kind == "FILE":
+                                label_sink[-1] = f"{title} [reading-plan]"
+                            continue
+
+                        included_artifact_ids.add(artifact_id)
 
                         whole_artifact_messages.append(
                             _artifact_to_input_message(art, label=f"EXPANDED {kind} ARTIFACT")
@@ -1417,7 +1596,7 @@ def build_context(
                             conn,
                             conversation_id=conversation_id,
                             artifact_id=artifact_id,
-                            origin_kind="retrieval_expand" if kind != "FILE" else "file_attach",
+                            origin_kind=origin_kind,
                             retention_state="active",
                             carry_summary_text=None,
                             inclusion_kind="whole",
@@ -1433,13 +1612,10 @@ def build_context(
                         )
 
                         if kind == "FILE":
-                            title = (art.get("title") or item.get("filename") or artifact_id).strip()
                             included_file_artifact_labels.append(title)
-
                         elif kind == "MEMORY":
-                            title = (art.get("title") or f"Memory {item.get('source_id')}").strip()
                             included_memory_labels.append(f"{title} [expanded]")
-
+      
                 if expanded_artifact_ids:
                     suppressed = [
                         r for r in retrieved_rows
@@ -1567,9 +1743,9 @@ def build_context(
         #"query_mode": query_cfg.query_mode,  # legacy
         "query_include": effective_query_include,
         "query_expand_results": effective_query_expand_results,
-        "query_max_full_files": int(_effective_query_setting(project_id, "max_full_files", str(query_cfg.query_max_full_files))),
-        "query_max_full_memories": int(_effective_query_setting(project_id, "max_full_memories", str(query_cfg.query_max_full_memories))),
-        "query_max_full_chats": int(_effective_query_setting(project_id, "max_full_chats", str(query_cfg.query_max_full_chats))),
+        "query_max_full_files": int(_effective_query_setting(project_id, "max_full_files", str(ret_cfg.query_max_full_files))),
+        "query_max_full_memories": int(_effective_query_setting(project_id, "max_full_memories", str(ret_cfg.query_max_full_memories))),
+        "query_max_full_chats": int(_effective_query_setting(project_id, "max_full_chats", str(ret_cfg.query_max_full_chats))),
         "query_expand_min_artifact_hits": query_expand_min_artifact_hits,
         "has_user_text": has_user_text,
         "core_system_prompt": core_system,
@@ -1661,7 +1837,7 @@ def build_context_panel_payload(
         conversation_id=conversation_id,
         user_text=user_text,
         ctx_cfg=ctx_cfg,
-        query_cfg=query_cfg,
+        ret_cfg=query_cfg,
         include_preview=False,
     )
 

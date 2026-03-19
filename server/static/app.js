@@ -626,7 +626,8 @@ async function openCitationsModalForProject(pid) {
 }
 
 async function loadMessages(cid) {
-  return await fetchJsonDebug(`/api/conversation/${cid}/messages`);
+  return await fetchJsonDebug(`/api/conversation/${cid}/messages?mode=thread`);
+  //return await fetchJsonDebug(`/api/conversation/${cid}/messages`);
 }
 
 // #endregion

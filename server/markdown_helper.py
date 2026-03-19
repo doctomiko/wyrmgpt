@@ -51,30 +51,34 @@ def apply_house_markdown_normalization(text: str) -> str:
     text = _convert_double_underscore_to_bold_if_marked(text)
     return text
 
+
 def autolink_text(text: str) -> str:
     """
     Autolink URLs and domain/path strings.
-    Uses markdown autolink form: <https://...>
+    Uses markdown autolink form: <https://...>.
+    Avoids double-wrapping content that is already inside angle-bracket autolinks.
     """
     if not text:
         return text
 
-    # 1) Wrap explicit URLs
+    # First wrap explicit URLs.
     text = _URL_RE.sub(lambda m: f"<{m.group(0)}>", text)
 
-    # 2) Wrap host/path that isn't already part of an URL autolink
+    # Then only host/path-wrap segments that are NOT already inside <...>.
+    parts = re.split(r"(<[^>\n]+>)", text)
+
     def repl(m):
         host = m.group(1)
         path = m.group(2) or ""
-        # avoid double-wrapping inside <...>
         full = f"{host}{path}"
-        # if it's already inside angle brackets, skip
         return f"<https://{full}>"
 
-    # This is intentionally after URL pass; it won’t match inside <http...> due to '<' boundary.
-    text = _HOSTPATH_RE.sub(repl, text)
+    for i, part in enumerate(parts):
+        if not part or (part.startswith("<") and part.endswith(">")):
+            continue
+        parts[i] = _HOSTPATH_RE.sub(repl, part)
 
-    return text
+    return "".join(parts)
 
 
 def extract_explicit_urls(text: str) -> list[str]:
