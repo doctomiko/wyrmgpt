@@ -1473,16 +1473,28 @@ function makeConversationItem(c) {
   return item;
 }
 
-async function fetchConversations() {
-  const list = await fetchJsonDebug("/api/conversations");
-  conversationMap = new Map(list.map(x => [x.id, x]));
+async function fetchConversations(limit = null) {
+  const params = new URLSearchParams();
+  if (limit != null) {
+    params.set("limit", String(limit));
+  }
+  const url = `/api/conversations${params.toString() ? `?${params.toString()}` : ""}`;
+  const list = await fetchJsonDebug(url);
+  const nextMap = new Map(conversationMap);
+  list.forEach(x => nextMap.set(x.id, x));
+  conversationMap = nextMap;
   return list;
 }
 
 function renderConversations(conversations) {
+  if (!sideBarConvListEl) {
+    updateChatTitle();
+    return;
+  }
+
   sideBarConvListEl.innerHTML = "";
 
-  const unassigned = (conversations || []).filter(c => c.project_id == null);
+  const unassigned = (conversations || []).filter(c => c.project_id == null && !c.is_unassigned_pseudo);
 
   unassigned.forEach(c => {
     sideBarConvListEl.appendChild(makeConversationItem(c));
@@ -1496,7 +1508,8 @@ function updateChatTitle() {
   topBarChatTitleEl.textContent = meta?.title || "…";
 }
 
-async function selectConversation(cid) {
+async function selectConversation(cid, opts = {}) {
+  const refreshLists = opts.refreshLists !== false;
   const previousCid = conversationId;
 
   cancelScheduledContextRefresh();
@@ -1510,7 +1523,11 @@ async function selectConversation(cid) {
   conversationId = cid;
   localStorage.setItem("callie_mvp_conversation_id", conversationId);
 
-  await refreshConversationLists();
+  if (refreshLists) {
+    await refreshConversationLists();
+  } else {
+    updateChatTitle();
+  }
 
   clearChat();
 
@@ -3521,7 +3538,7 @@ async function refreshConversationLists() {
   if (!projectsCache || !projectsCache.length) {
     projectsCache = await fetchProjects();
   }
-  const conversations = await fetchConversations();
+  const conversations = await fetchConversations(1000000);
   renderProjects(projectsCache, conversations);
   renderConversations(conversations);
   return conversations;
@@ -3622,8 +3639,8 @@ function renderProjects(projects, conversations) {
   // Group conversations by project_id, preserving whatever order /api/conversations returned
   const byPid = new Map();
   (conversations || []).forEach(c => {
-    if (pid == null) return;
     const pid = c.project_id;
+    if (pid == null) return;
     if (!byPid.has(pid)) byPid.set(pid, []);
     byPid.get(pid).push(c);
   });
@@ -3659,11 +3676,7 @@ function renderProjects(projects, conversations) {
     header.appendChild(count);
 
     // Left-click toggles expand/collapse
-      if (p.is_pseudo_global) {
-        return;
-      }
     header.addEventListener("click", (ev) => {
-      // Don’t toggle if this was a right-click opening the project menu
       const next = !getProjectExpanded(p.id, containsActive);
       setProjectExpanded(p.id, next);
       renderProjects(projectsCache, conversations); // re-render just the project list
@@ -3671,6 +3684,9 @@ function renderProjects(projects, conversations) {
 
     // Right-click opens the project context menu (rename/description)
     header.addEventListener("contextmenu", (ev) => {
+      if (p.is_pseudo_global) {
+        return;
+      }
       ev.preventDefault();
       ev.stopPropagation();
       menuTargetProjectId = p.id;
@@ -3701,10 +3717,9 @@ function renderProjects(projects, conversations) {
     block.appendChild(children);
     sideBarProjListEl.appendChild(block);
   });
-}
-
 
   updateChatTitle();
+}
 async function updateProject(projectId, fields) {
   const res = await fetch(`/api/projects/${projectId}`, {
     method: "PUT",
@@ -4933,30 +4948,45 @@ window.addEventListener("beforeunload", () => {
     bootLog("[boot] applyAdvancedVisibility");
     applyAdvancedVisibility();
 
-    bootLog("[boot] fetchConversations");
-    const conversations = await fetchConversations();
-
-    bootLog("[boot] fetchProjects");
-    const projects = await fetchProjects();
-
-    bootLog("[boot] renderProjects");
-    renderProjects(projects, conversations);
-    bootLog("[boot] renderConversations");
-    renderConversations(conversations);
-
     const saved = localStorage.getItem("callie_mvp_conversation_id");
-    bootLog("[boot] pick conversation", { saved, count: conversations.length });
 
-    if (saved && conversationMap.has(saved)) {
-      bootLog("[boot] select saved");
-      await selectConversation(saved);
-    } else if (conversations.length) {
-      bootLog("[boot] select first");
-      await selectConversation(conversations[0].id);
+    bootLog("[boot] fetchRecentConversations");
+    const recentConversations = await fetchConversations(10);
+    bootLog("[boot] pick conversation", { saved, count: recentConversations.length });
+
+    if (saved) {
+      bootLog("[boot] select saved without sidebar refresh");
+      await selectConversation(saved, { refreshLists: false });
+    } else if (recentConversations.length) {
+      bootLog("[boot] select first recent without sidebar refresh");
+      await selectConversation(recentConversations[0].id, { refreshLists: false });
     } else {
       bootLog("[boot] newChat");
       await newChat();
     }
+
+    bootLog("[boot] fetchProjects");
+    const projects = await fetchProjects();
+    projectsCache = projects;
+
+    bootLog("[boot] renderProjects");
+    renderProjects(projects, recentConversations);
+    bootLog("[boot] renderConversations");
+    renderConversations(recentConversations);
+
+    void (async () => {
+      try {
+        bootLog("[boot-bg] fetchAllConversations");
+        const allConversations = await fetchConversations(1000000);
+        bootLog("[boot-bg] renderProjects/all");
+        renderProjects(projectsCache, allConversations);
+        bootLog("[boot-bg] renderConversations/all");
+        renderConversations(allConversations);
+        updateChatTitle();
+      } catch (e) {
+        console.error("[boot-bg] FAILED", e);
+      }
+    })();
 
     bootLog("[boot] loadPersonalization");
     await loadPersonalization();
