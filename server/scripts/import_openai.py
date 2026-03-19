@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from server.db import (
+    create_conversation_scaffold_event_conn,
     db_session,
     get_file_by_id,
     get_or_create_project,
@@ -24,7 +25,6 @@ from server.db import (
     register_scoped_file,
     refresh_conversation_transcript_artifact,
     reindex_corpus_for_conversation,
-    upsert_artifact_text,
     upsert_file_artifact,
 )
 
@@ -650,38 +650,77 @@ def _resolve_project_for_conversation(convo: dict, caches: dict[str, dict[str, s
     return project_id, key
 
 
-def _upsert_user_context_snapshot(conn, *, export_conversation_id: str, profile_text: str, instructions_text: str, caches: dict[str, dict[str, str]]) -> str:
+def _user_context_hash(*, profile_text: str, instructions_text: str) -> str:
+    return _sha256_text((profile_text or "").strip() + "\n\n---\n\n" + (instructions_text or "").strip())
+
+
+def _record_user_context_archive_entry(
+    archive: dict[str, dict[str, Any]],
+    *,
+    export_conversation_id: str,
+    export_node_id: str,
+    create_time: str | None,
+    profile_text: str,
+    instructions_text: str,
+) -> str:
     profile_text = (profile_text or "").strip()
     instructions_text = (instructions_text or "").strip()
     if not profile_text and not instructions_text:
         return ""
-    context_hash = _sha256_text(profile_text + "\n\n---\n\n" + instructions_text)
-    title = f"OpenAI User Editable Context {context_hash[:12]}"
-    body = _join_nonempty([
-        "OPENAI USER EDITABLE CONTEXT SNAPSHOT",
-        f"Export conversation id: {export_conversation_id}",
-        "",
-        "USER PROFILE",
-        profile_text,
-        "",
-        "USER INSTRUCTIONS",
-        instructions_text,
-    ])
-    artifact_id = upsert_artifact_text(
-        conn=conn,
-        source_kind="openai:user_editable_context",
-        source_id=context_hash,
-        title=title,
-        scope_type="global",
-        scope_id=None,
-        text=body,
+
+    context_hash = _user_context_hash(
+        profile_text=profile_text,
+        instructions_text=instructions_text,
     )
+    when = _to_iso_utc(create_time)
+    row = archive.get(context_hash)
+    if row is None:
+        archive[context_hash] = {
+            "context_hash": context_hash,
+            "first_seen_at": when,
+            "first_export_conversation_id": export_conversation_id or None,
+            "first_export_node_id": export_node_id or None,
+            "last_seen_at": when,
+            "last_export_conversation_id": export_conversation_id or None,
+            "last_export_node_id": export_node_id or None,
+            "occurrence_count": 1,
+            "profile_text": profile_text,
+            "instructions_text": instructions_text,
+        }
+        return context_hash
+
+    row["occurrence_count"] = int(row.get("occurrence_count") or 0) + 1
+    row["last_seen_at"] = when
+    row["last_export_conversation_id"] = export_conversation_id or None
+    row["last_export_node_id"] = export_node_id or None
+
+    first_seen = (row.get("first_seen_at") or "").strip()
+    if not first_seen or when < first_seen:
+        row["first_seen_at"] = when
+        row["first_export_conversation_id"] = export_conversation_id or None
+        row["first_export_node_id"] = export_node_id or None
+
+    return context_hash
+
+
+def _upsert_user_context_tracking_conn(
+    conn,
+    *,
+    context_hash: str,
+    export_conversation_id: str,
+    profile_text: str,
+    instructions_text: str,
+) -> None:
+    now = _now_iso()
     row = conn.execute(
-        "SELECT occurrence_count FROM openai_import_user_contexts WHERE context_hash = ?",
+        "SELECT occurrence_count, first_export_conversation_id FROM openai_import_user_contexts WHERE context_hash = ?",
         (context_hash,),
     ).fetchone()
-    count = int(row["occurrence_count"] or 0) if row else 0
-    now = _now_iso()
+    existing_count = int(row["occurrence_count"] or 0) if row else 0
+    first_export_conversation_id = None
+    if row:
+        first_export_conversation_id = (row["first_export_conversation_id"] or "").strip() or None
+
     conn.execute(
         """
         INSERT INTO openai_import_user_contexts(
@@ -689,38 +728,99 @@ def _upsert_user_context_snapshot(conn, *, export_conversation_id: str, profile_
             first_export_conversation_id, last_export_conversation_id,
             occurrence_count, artifact_id, imported_at, last_imported_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
         ON CONFLICT(context_hash) DO UPDATE SET
             profile_text = excluded.profile_text,
             instructions_text = excluded.instructions_text,
             last_export_conversation_id = excluded.last_export_conversation_id,
             occurrence_count = ?,
-            artifact_id = excluded.artifact_id,
+            artifact_id = NULL,
             last_imported_at = excluded.last_imported_at
         """,
         (
             context_hash,
             profile_text,
             instructions_text,
+            first_export_conversation_id or export_conversation_id,
             export_conversation_id,
-            export_conversation_id,
-            count + 1,
-            artifact_id,
+            existing_count + 1,
             now,
             now,
-            count + 1,
+            existing_count + 1,
         ),
     )
-    _upsert_import_identity_conn(
+
+
+def _maybe_create_user_context_scaffold_event_conn(
+    conn,
+    *,
+    conversation_id: str,
+    export_conversation_id: str,
+    export_node_id: str,
+    create_time: str | None,
+    context_hash: str,
+    profile_text: str,
+    instructions_text: str,
+) -> None:
+    input_payload = {
+        "context_hash": context_hash,
+        "export_conversation_id": export_conversation_id or None,
+        "export_node_id": export_node_id or None,
+        "create_time": _to_iso_utc(create_time),
+        "has_profile": bool((profile_text or "").strip()),
+        "has_instructions": bool((instructions_text or "").strip()),
+    }
+    input_json_text = json.dumps(input_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    existing = conn.execute(
+        """
+        SELECT id
+        FROM conversation_scaffold_events
+        WHERE conversation_id = ?
+          AND event_kind = ?
+          AND input_json = ?
+        LIMIT 1
+        """,
+        (conversation_id, "openai_import_user_editable_context", input_json_text),
+    ).fetchone()
+    if existing:
+        return
+
+    preview_parts: list[str] = []
+    if (profile_text or "").strip():
+        preview_parts.append("profile")
+    if (instructions_text or "").strip():
+        preview_parts.append("instructions")
+    preview_label = " + ".join(preview_parts) if preview_parts else "context"
+
+    create_conversation_scaffold_event_conn(
         conn,
-        asset_type="artifact",
-        local_id=artifact_id,
-        import_id=f"user-context:{context_hash}",
-        imported_name=title,
-        imported_parent_id=export_conversation_id,
+        conversation_id=conversation_id,
+        event_kind="openai_import_user_editable_context",
+        status="ready",
+        title="Imported OpenAI user-editable context",
+        body_text=f"Imported {preview_label} snapshot preserved as scaffold metadata during OpenAI import.",
+        input_json=input_json_text,
+        output_json={
+            "context_hash": context_hash,
+            "profile_text": profile_text,
+            "instructions_text": instructions_text,
+        },
     )
-    caches["artifact"][f"user-context:{context_hash}"] = str(artifact_id)
-    return artifact_id
+
+
+def _write_user_context_archive_json(archive: dict[str, dict[str, Any]], out_path: Path) -> Path | None:
+    if not archive:
+        return None
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "generated_at": _now_iso(),
+        "total_unique_contexts": len(archive),
+        "contexts": sorted(archive.values(), key=lambda r: ((r.get("first_seen_at") or ""), (r.get("context_hash") or ""))),
+    }
+    out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return out_path
+
 
 
 def _import_group_chats(raw_group_chats: dict, logger: Logger) -> int:
@@ -916,7 +1016,7 @@ def _message_text_excerpt(message: dict) -> str:
     return text[:5000]
 
 
-def _import_conversation(convo: dict, *, prefix: str, zip_names: list[str], caches: dict[str, dict[str, str]], metadata_only: bool, refresh_transcripts: bool, reindex: bool, logger: Logger) -> dict[str, Any]:
+def _import_conversation(convo: dict, *, prefix: str, zip_names: list[str], caches: dict[str, dict[str, str]], metadata_only: bool, refresh_transcripts: bool, reindex: bool, user_context_archive: dict[str, dict[str, Any]], logger: Logger) -> dict[str, Any]:
     export_id = str(convo.get("id") or convo.get("conversation_id") or "").strip()
     local_cid = caches["conversation"].get(export_id) or _local_conversation_id(export_id, prefix)
     branch_nodes = _extract_current_path_nodes(convo)
@@ -1025,6 +1125,38 @@ def _import_conversation(convo: dict, *, prefix: str, zip_names: list[str], cach
             parent_node_id = (node.get("parent") or "").strip() or None
             author = message.get("author") or {}
             role = (author.get("role") or "").strip() or "assistant"
+            content = message.get("content") or {}
+            ctype = (content.get("content_type") or "").strip()
+            if ctype == "user_editable_context":
+                profile_text = (content.get("user_profile") or "").strip()
+                instructions_text = (content.get("user_instructions") or "").strip()
+                context_hash = _record_user_context_archive_entry(
+                    user_context_archive,
+                    export_conversation_id=export_id,
+                    export_node_id=export_node_id,
+                    create_time=message.get("create_time"),
+                    profile_text=profile_text,
+                    instructions_text=instructions_text,
+                )
+                if context_hash:
+                    _upsert_user_context_tracking_conn(
+                        conn,
+                        context_hash=context_hash,
+                        export_conversation_id=export_id,
+                        profile_text=profile_text,
+                        instructions_text=instructions_text,
+                    )
+                    _maybe_create_user_context_scaffold_event_conn(
+                        conn,
+                        conversation_id=local_cid,
+                        export_conversation_id=export_id,
+                        export_node_id=export_node_id,
+                        create_time=message.get("create_time"),
+                        context_hash=context_hash,
+                        profile_text=profile_text,
+                        instructions_text=instructions_text,
+                    )
+                continue
             text = _normalize_message_text(_extract_message_text(message))
             if not text:
                 # still record metadata shell if we can map existing local message
@@ -1072,7 +1204,6 @@ def _import_conversation(convo: dict, *, prefix: str, zip_names: list[str], cach
                     continue
 
             metadata = message.get("metadata") or {}
-            content = message.get("content") or {}
             attachments = metadata.get("attachments") or []
             content_refs = metadata.get("content_references") or []
             msg_created_at = _to_iso_utc(message.get("create_time"))
@@ -1153,15 +1284,6 @@ def _import_conversation(convo: dict, *, prefix: str, zip_names: list[str], cach
             _upsert_import_identity_conn(conn, asset_type="message", local_id=local_msg_id_int, import_id=export_node_id, imported_name=(text[:120] if text else export_message_id or export_node_id), imported_parent_id=export_id)
             inserted_attachments += _upsert_attachment_rows(conn, zip_names=zip_names, export_node_id=export_node_id, export_conversation_id=export_id, local_conversation_id=local_cid, message=message)
 
-            ctype = (content.get("content_type") or "").strip()
-            if ctype == "user_editable_context" and not metadata_only:
-                _upsert_user_context_snapshot(
-                    conn,
-                    export_conversation_id=export_id,
-                    profile_text=(content.get("user_profile") or ""),
-                    instructions_text=(content.get("user_instructions") or ""),
-                    caches=caches,
-                )
 
             latest_msg_id = local_msg_id_int
             latest_created_at = msg_created_at
@@ -1199,6 +1321,7 @@ def main() -> None:
     ap.add_argument("--reindex", action="store_true")
     ap.add_argument("--ingest-root-files", action="store_true")
     ap.add_argument("--move-root-files", action="store_true")
+    ap.add_argument("--user-context-json", default="", help="Optional output path for deduplicated imported user-editable-context JSON")
     ap.add_argument("--log-file", default="")
     args = ap.parse_args()
 
@@ -1247,6 +1370,7 @@ def main() -> None:
             inserted_attachments = 0
             imported_root_files = 0
             imported_feedback = 0
+            user_context_archive: dict[str, dict[str, Any]] = {}
 
             if args.ingest_root_files:
                 imported_root_files = _import_root_assets(source, source_label, caches, move_root_files=args.move_root_files, logger=logger)
@@ -1272,6 +1396,7 @@ def main() -> None:
                         metadata_only=args.metadata_only,
                         refresh_transcripts=args.refresh_transcripts,
                         reindex=args.reindex,
+                        user_context_archive=user_context_archive,
                         logger=logger,
                     )
                     imported_conversations += 1
@@ -1292,6 +1417,10 @@ def main() -> None:
                 except Exception:
                     logger.exception("Failed importing message_feedback.json")
 
+            source_slug = _safe_slug(source_label)
+            user_context_json_path = Path(args.user_context_json).expanduser() if args.user_context_json else (ROOT / "data" / f"openai_user_editable_contexts.{source_slug}.json")
+            written_context_json = _write_user_context_archive_json(user_context_archive, user_context_json_path)
+
             summary = {
                 "conversations_imported_or_updated": imported_conversations,
                 "conversations_skipped": skipped_conversations,
@@ -1300,6 +1429,8 @@ def main() -> None:
                 "attachments_cataloged": inserted_attachments,
                 "root_files_imported": imported_root_files,
                 "feedback_rows_imported": imported_feedback,
+                "user_editable_context_unique": len(user_context_archive),
+                "user_editable_context_json": str(written_context_json) if written_context_json else None,
                 "log_file": str(log_path),
             }
             logger.log(json.dumps(summary, indent=2))

@@ -1588,16 +1588,17 @@ def init_schema() -> None:
         # Legacy pre-v7 path stays special because it is destructive / interactive.
         if current < 7:
             # Destructive changes - commented unless needed
-            if (False):
-                dropped = drop_empty_satellite_tables(conn)
-                print("Dropped:", dropped)
+            """
+            dropped = drop_empty_satellite_tables(conn)
+            print("Dropped:", dropped)
 
-                if _db_has_user_data(conn):
-                    raise RuntimeError(
-                        "Refusing destructive migration: DB already has data. "
-                        "Write a non-destructive migration before upgrading."
-                    )
-                _drop_all_tables(conn)
+            if _db_has_user_data(conn):
+                raise RuntimeError(
+                    "Refusing destructive migration: DB already has data. "
+                    "Write a non-destructive migration before upgrading."
+                )
+            _drop_all_tables(conn)
+            """
 
             # Warn user that this is deprecated and they should migrate or start fresh. We can remove this code in a future release after giving users time to adjust.
             print(f"\nWARNING: Database schema is {current}, code expects {SCHEMA_VERSION}.")
@@ -2610,6 +2611,14 @@ def _transcript_should_skip_message(row: dict) -> bool:
     # summary messages are stored separately as conversation summary artifacts
     if bool(meta.get("summary")):
         return True
+
+    openai_content_type = (meta.get("openai_content_type") or "").strip().lower()
+    import_source = (meta.get("import_source") or "").strip().lower()
+    if openai_content_type == "user_editable_context":
+        return True
+    if import_source in {"openai_export_zip", "openai-export", "openai-export-zip"}:
+        if content.startswith("USER PROFILE") or content.startswith("USER INSTRUCTIONS"):
+            return True
 
     return False
 
@@ -6580,7 +6589,7 @@ def list_citations_for_project(
 
 
 def _short_snippet(text: str | None, limit: int = 280) -> str:
-    raw = " ".join((text or "").replace("", "").replace("", " ").split()).strip()
+    raw = " ".join((text or "").split()).strip()
     if not raw:
         return ""
     if len(raw) <= limit:
