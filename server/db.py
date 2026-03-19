@@ -2160,6 +2160,7 @@ def list_conversations(
             params,
         ).fetchall()
 
+        global_project_id = get_global_project_id()
         return [
             {
                 "id": r["id"],
@@ -2224,6 +2225,7 @@ def get_conversation_context(conversation_id: str, preview_limit: int = 20) -> d
     # Messages preview: last N raw messages (so UI can show meta if desired)
     raw = get_messages_raw(conversation_id, limit=2000)
     preview = raw[-max(0, int(preview_limit)):] if preview_limit else []
+    global_project_id = get_global_project_id()
 
     return {
         "conversation_id": conversation_id,
@@ -2238,8 +2240,8 @@ def get_conversation_context(conversation_id: str, preview_limit: int = 20) -> d
 
 def get_context_sources(conversation_id: str) -> dict:
     with db_session() as conn:
-        row = conn.execute(
         global_project_id = get_global_project_id()
+        row = conn.execute(
             """
             SELECT
               c.id AS conversation_id,
@@ -2252,7 +2254,7 @@ def get_context_sources(conversation_id: str) -> dict:
             LEFT JOIN projects p ON p.id = c.project_id
             WHERE c.id = ?
             """,
-            (conversation_id,),
+            (conversation_id),
         ).fetchone()
 
         if not row:
@@ -2261,8 +2263,6 @@ def get_context_sources(conversation_id: str) -> dict:
         return {
             "conversation_id": row["conversation_id"],
             # "summary_json": row["summary_json"],
-            "project_id": row["project_id"],
-            "project_name": row["project_name"],
             "project_id": int(row["project_id"]) if row["project_id"] is not None else int(global_project_id),
             "project_name": row["project_name"] or "Unassigned Chats",
         }
