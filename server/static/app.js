@@ -2317,15 +2317,6 @@ async function sendSingle(text, model) {
   if (headerCid) {
     conversationId = headerCid;
     localStorage.setItem("callie_mvp_conversation_id", conversationId);
-
-  const msgs = await loadMessages(conversationId);
-  clearChat();
-  if (!msgs.length) {
-    addMsg("assistant", "Empty chat. Say something mean to the void.");
-  } else {
-    renderMessagesWithAB(msgs);
-  }
-
   }
 
   const reader = res.body.getReader();

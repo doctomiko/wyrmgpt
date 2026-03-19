@@ -6233,6 +6233,70 @@ def list_artifact_derivative_sections(
         return [dict(r) for r in rows]
 
 
+def _normalize_scaffold_event_json_arg(value: str | dict | list | None) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value.strip() or None
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def create_conversation_scaffold_event_if_absent_conn(
+    conn: sqlite3.Connection,
+    *,
+    conversation_id: str,
+    message_id: int | None = None,
+    event_kind: str,
+    status: str = "ready",
+    title: str | None = None,
+    body_text: str | None = None,
+    input_json: str | dict | list | None = None,
+    output_json: str | dict | list | None = None,
+) -> int:
+    cid = (conversation_id or "").strip()
+    ek = (event_kind or "").strip()
+    st = (status or "ready").strip()
+    if not cid:
+        raise ValueError("conversation_id is required")
+    if not ek:
+        raise ValueError("event_kind is required")
+
+    title = (title or "").strip() or None
+    body_text = (body_text or "").strip() or None
+    input_json_text = _normalize_scaffold_event_json_arg(input_json)
+    output_json_text = _normalize_scaffold_event_json_arg(output_json)
+    message_id_int = int(message_id) if message_id is not None else None
+
+    row = conn.execute(
+        """
+        SELECT id
+        FROM conversation_scaffold_events
+        WHERE conversation_id = ?
+          AND event_kind = ?
+          AND COALESCE(message_id, -1) = COALESCE(?, -1)
+          AND COALESCE(input_json, '') = COALESCE(?, '')
+          AND COALESCE(output_json, '') = COALESCE(?, '')
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (cid, ek, message_id_int, input_json_text, output_json_text),
+    ).fetchone()
+    if row:
+        return int(row["id"])
+
+    return create_conversation_scaffold_event_conn(
+        conn,
+        conversation_id=cid,
+        message_id=message_id_int,
+        event_kind=ek,
+        status=st,
+        title=title,
+        body_text=body_text,
+        input_json=input_json_text,
+        output_json=output_json_text,
+    )
+
+
 def create_conversation_scaffold_event_conn(
     conn: sqlite3.Connection,
     *,
@@ -6351,19 +6415,8 @@ def update_conversation_scaffold_event_conn(
 
     current = dict(row)
 
-    if input_json is None:
-        input_json_text = current.get("input_json")
-    elif isinstance(input_json, str):
-        input_json_text = input_json.strip() or None
-    else:
-        input_json_text = json.dumps(input_json, ensure_ascii=False)
-
-    if output_json is None:
-        output_json_text = current.get("output_json")
-    elif isinstance(output_json, str):
-        output_json_text = output_json.strip() or None
-    else:
-        output_json_text = json.dumps(output_json, ensure_ascii=False)
+    input_json_text = _normalize_scaffold_event_json_arg(input_json)
+    output_json_text = _normalize_scaffold_event_json_arg(output_json)
 
     conn.execute(
         """

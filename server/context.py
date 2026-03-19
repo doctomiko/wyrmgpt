@@ -19,7 +19,7 @@ from .db import (
     conversation_transcript_artifact_id, db_session,
     list_conversation_retained_artifacts,
     retain_conversation_artifact_conn,
-    create_conversation_scaffold_event_conn,
+    create_conversation_scaffold_event_if_absent_conn,
 )
 
 from .config import (
@@ -252,7 +252,7 @@ def _maybe_apply_artifact_reading_plan(
     if plan.get("action") != "include_whole" and plan.get("needs_derivatives"):
         from .artifact_derivative_builder import ensure_artifact_reading_derivatives
 
-        refreshed = ensure_artifact_reading_derivatives(artifact_id)
+        refreshed = ensure_artifact_reading_derivatives(artifact_id, clear_invalid=True)
         if refreshed:
             readiness = refreshed
             plan = plan_artifact_inclusion(
@@ -299,7 +299,7 @@ def _maybe_apply_artifact_reading_plan(
         increment_include_count=True,
     )
 
-    create_conversation_scaffold_event_conn(
+    create_conversation_scaffold_event_if_absent_conn(
         conn,
         conversation_id=conversation_id,
         message_id=current_message_id,

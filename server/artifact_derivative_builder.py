@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .artifact_reading_planner import ArtifactReadiness, get_artifact_readiness
+from .chunking import chunk_markdown, chunk_prose
 from .config import load_deployment_defs, load_provider_defs, load_summary_config
 from .db import (
     db_session,
@@ -170,11 +171,7 @@ def _complete_via_provider(
     return (result.text or "").strip()
 
 
-def _summarize_artifact_text(
-    *,
-    title: str,
-    artifact_text: str,
-) -> tuple[str, str]:
+def _summarize_artifact_text(*, title: str, artifact_text: str) -> tuple[str, str]:
     target, provider, sum_cfg = _resolve_summary_runtime()
     transcript = (artifact_text or "").strip()
     if not transcript:
@@ -235,6 +232,9 @@ def _summarize_artifact_text(
         if partial:
             partials.append(f"Chunk {idx}: {partial}")
 
+    if not partials:
+        return "", target.model
+
     reduce_prompt = (
         f"Title: {title}\n\n"
         f"The following are chunk summaries for one artifact. Combine them into a coherent summary of the full artifact.\n\n"
@@ -263,6 +263,52 @@ def _artifact_chunks(conn, artifact_id: str) -> list[dict]:
         ((artifact_id or "").strip(),),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def _normalize_source_text(text: str) -> str:
+    return (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def _has_meaningful_content(text: str, *, min_chars: int = 200) -> bool:
+    t = _normalize_source_text(text)
+    if len(t) < min_chars:
+        return False
+    alpha = sum(ch.isalpha() for ch in t)
+    return alpha >= max(80, min_chars // 3)
+
+
+def _synthesized_chunks_from_text(art: dict) -> list[dict]:
+    body = _normalize_source_text(art.get("content_text") or "")
+    if not _has_meaningful_content(body):
+        return []
+
+    title = (art.get("title") or "").lower()
+    source_kind = (art.get("source_kind") or "").lower()
+    if "markdown" in source_kind or body.lstrip().startswith("#") or ".md" in title:
+        raw_chunks = chunk_markdown(body)
+    else:
+        raw_chunks = chunk_prose(body)
+
+    out: list[dict] = []
+    cursor = 0
+    for idx, chunk in enumerate(raw_chunks):
+        chunk_text = (chunk or "").strip()
+        if not chunk_text:
+            continue
+        start = body.find(chunk_text[:80], cursor)
+        if start < 0:
+            start = cursor
+        end = start + len(chunk_text)
+        out.append({
+            "id": None,
+            "chunk_index": idx,
+            "start_char": start,
+            "end_char": end,
+            "text": chunk_text,
+            "synthetic": True,
+        })
+        cursor = max(cursor, end)
+    return out
 
 
 def _headingish_lines(text: str) -> list[str]:
@@ -327,18 +373,12 @@ def _excerpt_sentence(text: str, *, max_chars: int = 180) -> str:
 
 def _build_index_payload(title: str, chunks: list[dict]) -> tuple[str, dict, list[dict]]:
     if not chunks:
-        payload = {
+        return "", {
             "title": title,
             "sections": [],
             "needs_llm_outline": True,
-            "reason": "no_chunks_available",
-        }
-        text = (
-            "ARTIFACT INDEX PLACEHOLDER\n"
-            "No chunk data exists for this artifact yet.\n"
-            "If this persists, reindex the artifact before generating a reading outline."
-        )
-        return text, payload, []
+            "reason": "no_content_available",
+        }, []
 
     labels_detected = any(_detect_heading_label(c.get("text") or "") for c in chunks)
     if not labels_detected:
@@ -432,10 +472,28 @@ def _build_index_payload(title: str, chunks: list[dict]) -> tuple[str, dict, lis
     return "\n".join(lines).strip(), payload, sections
 
 
+def _clear_index_derivatives(conn, artifact_id: str) -> None:
+    rows = conn.execute(
+        """
+        SELECT id
+        FROM artifact_derivatives
+        WHERE artifact_id = ?
+          AND derivative_kind = 'index'
+          AND focus_kind = 'general'
+        """,
+        ((artifact_id or "").strip(),),
+    ).fetchall()
+    for r in rows:
+        did = int(r["id"])
+        conn.execute("DELETE FROM artifact_derivative_sections WHERE artifact_derivative_id = ?", (did,))
+        conn.execute("DELETE FROM artifact_derivatives WHERE id = ?", (did,))
+
+
 def ensure_artifact_reading_derivatives(
     artifact_id: str,
     *,
     force: bool = False,
+    clear_invalid: bool = False,
 ) -> ArtifactReadiness | None:
     aid = (artifact_id or "").strip()
     if not aid:
@@ -447,15 +505,28 @@ def ensure_artifact_reading_derivatives(
             return None
 
         title = (art.get("title") or aid).strip()
-        content_text = (art.get("content_text") or "").strip()
+        content_text = _normalize_source_text(art.get("content_text") or "")
         source_hash = (art.get("content_hash") or "").strip() or None
+
+        chunks = _artifact_chunks(conn, aid)
+        synthetic_chunks_used = False
+        if not chunks and _has_meaningful_content(content_text):
+            chunks = _synthesized_chunks_from_text(art)
+            synthetic_chunks_used = bool(chunks)
+
+        has_content_evidence = _has_meaningful_content(content_text) or bool(chunks)
 
         summary_info = get_artifact_summary(conn, aid, include_stale=True)
         needs_summary = bool(force)
         if not needs_summary:
             needs_summary = not summary_info or bool(summary_info.get("is_stale"))
 
-        if needs_summary and content_text:
+        if not has_content_evidence:
+            if clear_invalid:
+                if summary_info and (summary_info.get("summary_text") or "").strip():
+                    set_artifact_summary(conn, aid, "", "artifact_derivative_builder")
+                _clear_index_derivatives(conn, aid)
+        elif needs_summary:
             summary_text, summary_model = _summarize_artifact_text(
                 title=title,
                 artifact_text=content_text,
@@ -486,28 +557,31 @@ def ensure_artifact_reading_derivatives(
                 existing_status = (index_der.get("status") or "").strip().lower()
                 needs_index = existing_hash != source_hash or existing_status != "ready"
 
-        if needs_index:
-            chunks = _artifact_chunks(conn, aid)
+        if not has_content_evidence:
+            if clear_invalid and index_der:
+                _clear_index_derivatives(conn, aid)
+        elif needs_index:
             index_text, index_payload, sections = _build_index_payload(title, chunks)
-            derivative_id = upsert_artifact_derivative_conn(
-                conn,
-                artifact_id=aid,
-                derivative_kind="index",
-                focus_kind="general",
-                format_kind="json",
-                title=f"{title} — Reading index",
-                content_text=index_text,
-                content_json=index_payload,
-                source_artifact_content_hash=source_hash,
-                model_deployment_id=None,
-                model_name=None,
-                generator_kind="deterministic_outline",
-                status="ready",
-            )
-            replace_artifact_derivative_sections_conn(
-                conn,
-                artifact_derivative_id=int(derivative_id),
-                sections=sections,
-            )
+            if index_text or sections:
+                derivative_id = upsert_artifact_derivative_conn(
+                    conn,
+                    artifact_id=aid,
+                    derivative_kind="index",
+                    focus_kind="general",
+                    format_kind="json",
+                    title=f"{title} — Reading index",
+                    content_text=index_text,
+                    content_json=index_payload,
+                    source_artifact_content_hash=source_hash,
+                    model_deployment_id=None,
+                    model_name=None,
+                    generator_kind="deterministic_outline" if not synthetic_chunks_used else "deterministic_outline_from_content",
+                    status="ready",
+                )
+                replace_artifact_derivative_sections_conn(
+                    conn,
+                    artifact_derivative_id=int(derivative_id),
+                    sections=sections,
+                )
 
     return get_artifact_readiness(aid)
