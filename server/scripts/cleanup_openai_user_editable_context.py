@@ -1,6 +1,7 @@
 import argparse
 import json
 import sys
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -16,7 +17,6 @@ from server.db import (
     db_session,
     init_schema,
     refresh_conversation_transcript_artifact,
-    reindex_corpus_for_conversation,
 )
 
 
@@ -239,15 +239,26 @@ def _list_target_rows(limit: int | None = None) -> list[dict]:
 def _list_existing_transcript_chunk_ids(conversation_ids: list[str]) -> dict[str, list[int]]:
     if not conversation_ids:
         return {}
-    out: dict[str, list[int]] = {}
+
+    artifact_to_cid = {
+        conversation_transcript_artifact_id(cid): cid
+        for cid in conversation_ids
+    }
+    placeholders = ",".join("?" for _ in artifact_to_cid)
+    sql = f"""
+        SELECT artifact_id, id
+        FROM corpus_chunks
+        WHERE artifact_id IN ({placeholders})
+        ORDER BY artifact_id ASC, id ASC
+    """
+    out: dict[str, list[int]] = {cid: [] for cid in conversation_ids}
     with db_session() as conn:
-        for cid in conversation_ids:
-            artifact_id = conversation_transcript_artifact_id(cid)
-            rows = conn.execute(
-                "SELECT id FROM corpus_chunks WHERE artifact_id = ? ORDER BY id ASC",
-                (artifact_id,),
-            ).fetchall()
-            out[cid] = [int(r["id"]) for r in rows]
+        rows = conn.execute(sql, tuple(artifact_to_cid.keys())).fetchall()
+    for row in rows:
+        artifact_id = str(row["artifact_id"])
+        cid = artifact_to_cid.get(artifact_id)
+        if cid:
+            out[cid].append(int(row["id"]))
     return out
 
 
@@ -274,6 +285,17 @@ def _delete_import_identity_rows(conn, message_ids: list[int]) -> int:
     cur = conn.execute(
         f"DELETE FROM import_identities WHERE import_source = ? AND asset_type = 'message' AND local_id IN ({placeholders})",
         ("openai-export", *[str(x) for x in message_ids]),
+    )
+    return int(cur.rowcount or 0)
+
+
+def _delete_messages(conn, message_ids: list[int]) -> int:
+    if not message_ids:
+        return 0
+    placeholders = ",".join("?" for _ in message_ids)
+    cur = conn.execute(
+        f"DELETE FROM messages WHERE id IN ({placeholders})",
+        tuple(message_ids),
     )
     return int(cur.rowcount or 0)
 
@@ -321,14 +343,12 @@ def main() -> None:
     if total_rows == 0:
         return
 
-    archive: dict[str, dict[str, Any]] = {}
-    affected_conversations: list[str] = []
-    message_ids_by_conversation: dict[str, list[int]] = {}
-    transcript_chunk_ids = _list_existing_transcript_chunk_ids(sorted({str(r["local_conversation_id"]) for r in rows}))
-
+    rows_by_conversation: dict[str, list[dict]] = defaultdict(list)
     for row in rows:
-        cid = str(row["local_conversation_id"])
-        message_ids_by_conversation.setdefault(cid, []).append(int(row["local_message_id"]))
+        rows_by_conversation[str(row["local_conversation_id"])].append(row)
+
+    archive: dict[str, dict[str, Any]] = {}
+    affected_conversations = list(rows_by_conversation.keys())
 
     scaffold_created = 0
     messages_deleted = 0
@@ -336,56 +356,50 @@ def main() -> None:
     import_identities_deleted = 0
 
     with db_session() as conn:
-        seen_conversations: set[str] = set()
-
-        for row in rows:
-            conversation_id = str(row["local_conversation_id"])
-            export_conversation_id = str(row["export_conversation_id"] or "")
-            export_node_id = str(row["export_node_id"] or "")
-            local_message_id = int(row["local_message_id"])
-            profile_text, instructions_text = _extract_context_texts(row)
-            context_hash = _record_user_context_archive_entry(
-                archive,
-                export_conversation_id=export_conversation_id,
-                export_node_id=export_node_id,
-                create_time=row.get("create_time"),
-                profile_text=profile_text,
-                instructions_text=instructions_text,
-            )
-            if context_hash:
-                created = _maybe_create_user_context_scaffold_event_conn(
-                    conn,
-                    conversation_id=conversation_id,
+        for idx, (conversation_id, conv_rows) in enumerate(rows_by_conversation.items(), start=1):
+            message_ids: list[int] = []
+            for row in conv_rows:
+                export_conversation_id = str(row.get("export_conversation_id") or "")
+                export_node_id = str(row.get("export_node_id") or "")
+                local_message_id = int(row["local_message_id"])
+                message_ids.append(local_message_id)
+                profile_text, instructions_text = _extract_context_texts(row)
+                context_hash = _record_user_context_archive_entry(
+                    archive,
                     export_conversation_id=export_conversation_id,
                     export_node_id=export_node_id,
                     create_time=row.get("create_time"),
-                    context_hash=context_hash,
                     profile_text=profile_text,
                     instructions_text=instructions_text,
                 )
-                if created:
-                    scaffold_created += 1
+                if context_hash:
+                    created = _maybe_create_user_context_scaffold_event_conn(
+                        conn,
+                        conversation_id=conversation_id,
+                        export_conversation_id=export_conversation_id,
+                        export_node_id=export_node_id,
+                        create_time=row.get("create_time"),
+                        context_hash=context_hash,
+                        profile_text=profile_text,
+                        instructions_text=instructions_text,
+                    )
+                    if created:
+                        scaffold_created += 1
 
-            conn.execute("DELETE FROM messages WHERE id = ?", (local_message_id,))
-            messages_deleted += 1
-
-            if conversation_id not in seen_conversations:
-                citations_deleted += _delete_citations_for_conversation(conn, conversation_id)
-                seen_conversations.add(conversation_id)
-                affected_conversations.append(conversation_id)
-
-        for cid, mids in message_ids_by_conversation.items():
-            import_identities_deleted += _delete_import_identity_rows(conn, mids)
+            citations_deleted += _delete_citations_for_conversation(conn, conversation_id)
+            import_identities_deleted += _delete_import_identity_rows(conn, message_ids)
+            messages_deleted += _delete_messages(conn, message_ids)
+            print(f"[{idx}/{len(rows_by_conversation)}] cleaned message rows for {conversation_id} ({len(message_ids)} messages)")
 
     deleted_vectors = 0
     if args.delete_qdrant_points:
+        transcript_chunk_ids = _list_existing_transcript_chunk_ids(affected_conversations)
         for cid in affected_conversations:
             deleted_vectors += _delete_qdrant_points(transcript_chunk_ids.get(cid) or [])
 
     rebuilt = 0
     failed = 0
-    reindexed = 0
-    reindex_failed = 0
+    total_conversations = len(affected_conversations)
     for idx, cid in enumerate(affected_conversations, start=1):
         try:
             out = refresh_conversation_transcript_artifact(
@@ -395,26 +409,16 @@ def main() -> None:
             )
             rebuilt += 1
             print(
-                f"[{idx}/{len(affected_conversations)}] rebuilt transcript {cid} "
+                f"[{idx}/{total_conversations}] rebuilt transcript {cid} "
                 f"(full_rebuild={out.get('full_rebuild')} appended={out.get('appended_message_count')})"
             )
         except Exception as e:
             failed += 1
-            print(f"[{idx}/{len(affected_conversations)}] FAIL transcript {cid}: {e!r}")
-            continue
+            print(f"[{idx}/{total_conversations}] FAIL transcript {cid}: {e!r}")
 
-        try:
-            reindex_corpus_for_conversation(
-                conversation_id=cid,
-                force=True,
-                include_global=False,
-            )
-            reindexed += 1
-        except Exception as e:
-            reindex_failed += 1
-            print(f"[{idx}/{len(affected_conversations)}] FAIL reindex {cid}: {e!r}")
-
-    json_out = Path(args.json_out).expanduser() if args.json_out else (ROOT / "data" / f"openai_user_editable_contexts.cleanup.{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+    json_out = Path(args.json_out).expanduser() if args.json_out else (
+        ROOT / "data" / f"openai_user_editable_contexts.cleanup.{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    )
     written = _write_user_context_archive_json(archive, json_out)
 
     summary = {
@@ -427,8 +431,6 @@ def main() -> None:
         "transcript_vectors_deleted": deleted_vectors,
         "transcripts_rebuilt": rebuilt,
         "transcripts_failed": failed,
-        "conversations_reindexed": reindexed,
-        "reindex_failed": reindex_failed,
         "unique_user_contexts": len(archive),
         "json_out": str(written) if written else None,
     }

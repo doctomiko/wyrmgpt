@@ -380,6 +380,19 @@ def _chunk_js_heuristic(text: str) -> List[str]:
 # Packing + fallback splitting
 # -----------------------------
 
+def _hard_slice_text(text: str, hard_max: int) -> List[str]:
+    text = (text or "").rstrip()
+    if not text:
+        return []
+    if hard_max <= 0:
+        return [text]
+    return [
+        text[i:i + hard_max].rstrip()
+        for i in range(0, len(text), hard_max)
+        if text[i:i + hard_max].rstrip()
+    ]
+
+
 def _pack_blocks(
     *,
     blocks: List[str],
@@ -391,6 +404,7 @@ def _pack_blocks(
     """
     Packs blocks into chunks under hard_max, aiming for target.
     If a block is > hard_max, uses splitter(block) to sub-split it.
+    Guarantees forward progress even if a splitter fails to reduce size.
     """
     chunks: List[str] = []
     current: List[str] = []
@@ -411,10 +425,8 @@ def _pack_blocks(
         if not piece:
             return
         piece_len = len(piece)
-        # If current chunk would exceed target, flush first (soft boundary).
         if current_len and current_len + len(joiner) + piece_len > target:
             flush()
-        # If piece still doesn't fit hard max with current, flush and add it alone.
         if current_len and current_len + len(joiner) + piece_len > hard_max:
             flush()
         current.append(piece)
@@ -426,9 +438,26 @@ def _pack_blocks(
             continue
 
         if len(block) > hard_max:
-            subs = splitter(block, hard_max)
+            subs = splitter(block, hard_max) or []
+            subs = [s.rstrip() for s in subs if s and s.rstrip()]
+
+            made_progress = (
+                len(subs) > 1
+                or (len(subs) == 1 and len(subs[0]) < len(block))
+            )
+
+            if not made_progress:
+                subs = _hard_slice_text(block, hard_max)
+
             for sub in subs:
-                add_piece(sub)
+                sub = sub.rstrip()
+                if not sub:
+                    continue
+                if len(sub) > hard_max:
+                    for forced in _hard_slice_text(sub, hard_max):
+                        add_piece(forced)
+                else:
+                    add_piece(sub)
             continue
 
         add_piece(block)
@@ -521,12 +550,17 @@ def _split_by_sentenceish(text: str, hard_max: int) -> List[str]:
     if tail:
         parts.append(tail)
 
+    parts = [p for p in parts if p]
     if not parts:
         return []
 
+    stripped = text.strip()
+    if len(parts) == 1 and parts[0] == stripped:
+        return _split_by_whitespace(stripped, hard_max)
+
     return _pack_blocks(
-        blocks=[p for p in parts if p],
-        target=hard_max,     # when we’re here, we just need to stay under hard_max
+        blocks=parts,
+        target=hard_max,
         hard_max=hard_max,
         splitter=_fallback_split_prose_block,
         joiner=" ",
@@ -535,9 +569,19 @@ def _split_by_sentenceish(text: str, hard_max: int) -> List[str]:
 
 def _split_by_whitespace(text: str, hard_max: int) -> List[str]:
     words = text.split()
+    if not words:
+        return _hard_slice_text(text, hard_max)
+
     out: List[str] = []
     cur = ""
     for w in words:
+        if len(w) > hard_max:
+            if cur:
+                out.append(cur)
+                cur = ""
+            out.extend(_hard_slice_text(w, hard_max))
+            continue
+
         candidate = (cur + " " + w).strip() if cur else w
         if cur and len(candidate) > hard_max:
             out.append(cur)
@@ -546,7 +590,7 @@ def _split_by_whitespace(text: str, hard_max: int) -> List[str]:
             cur = candidate
     if cur:
         out.append(cur)
-    return out
+    return [chunk for chunk in out if chunk.strip()]
 
 
 def _split_code_into_blocks(text: str) -> List[str]:
