@@ -2254,7 +2254,7 @@ def get_context_sources(conversation_id: str) -> dict:
             LEFT JOIN projects p ON p.id = c.project_id
             WHERE c.id = ?
             """,
-            (conversation_id),
+            (conversation_id,),
         ).fetchone()
 
         if not row:
