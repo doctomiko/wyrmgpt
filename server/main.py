@@ -53,6 +53,7 @@ from .db import (
     list_conversation_history_with_scaffold_events,
     list_citation_scope_cards_for_conversation,
     list_citation_scope_cards_for_project,
+    replace_citations_for_message,
     save_conversation_summary_artifact,
     update_ab_canonical,
     # Converstaions
@@ -860,6 +861,75 @@ def new_chat():
     create_conversation(cid)
     return {"conversation_id": cid}
 
+
+def _build_citation_rows_from_context(ctx: dict | None) -> list[dict]:
+    if not ctx:
+        return []
+
+    retrieved_meta = ctx.get("retrieved_chunk_meta") or []
+    if not retrieved_meta:
+        return []
+
+    rows_by_chunk_id: dict[int, dict] = {}
+    for row in (ctx.get("retrieved_chunks_final") or []):
+        chunk_id = row.get("chunk_id")
+        if chunk_id is None:
+            continue
+        try:
+            rows_by_chunk_id[int(chunk_id)] = row
+        except Exception:
+            continue
+
+    citations: list[dict] = []
+    for rank, meta in enumerate(retrieved_meta, start=1):
+        chunk_id = meta.get("chunk_id")
+        if chunk_id is None:
+            continue
+
+        try:
+            chunk_id_int = int(chunk_id)
+        except Exception:
+            continue
+
+        row = rows_by_chunk_id.get(chunk_id_int) or {}
+        retrieval_channels = row.get("retrieval_channels") or []
+        retrieval_channel = "+".join(
+            str(ch).strip()
+            for ch in retrieval_channels
+            if str(ch).strip()
+        ) or None
+
+        citations.append({
+            "corpus_chunk_id": chunk_id_int,
+            "artifact_id": meta.get("artifact_id"),
+            "source_kind": meta.get("source_kind"),
+            "source_id": meta.get("source_id"),
+            "retrieval_channel": retrieval_channel,
+            "retrieval_rank": rank,
+            "retrieval_score": meta.get("score"),
+            "matched_text": meta.get("preview_text"),
+        })
+
+    return citations
+
+
+def _persist_citations_for_assistant_message(assistant_message_id: int, ctx: dict | None) -> None:
+    if not assistant_message_id:
+        return
+
+    citations = _build_citation_rows_from_context(ctx)
+    if not citations:
+        return
+
+    try:
+        replace_citations_for_message(
+            assistant_message_id=assistant_message_id,
+            citations=citations,
+        )
+    except Exception as e:
+        log_warn(f"Citation persistence failed for assistant message {assistant_message_id}: {e}")
+
+
 @app.post("/api/chat")
 def chat(req: ChatRequest, model: str | None = None):
     cid = req.conversation_id or str(uuid.uuid4())
@@ -885,14 +955,8 @@ def chat(req: ChatRequest, model: str | None = None):
         )
     except Exception as e:
         log_warn(f"URL ingest failed for conversation {cid}: {e}")
-    raw_input = build_model_input(cid, full)
-
-    if (False):
-        full = postprocess_text(req.message)
-        if full:
-            add_message(cid, "user", full)
-        # End to "Call" above.
-        raw_input = build_model_input(cid, full)
+        ctx = build_context(cid, full, include_preview=False)
+        raw_input = build_model_input(cid, full, ctx=ctx)
 
     requested_model = (req.model or model or "").strip()
     if PROVIDER_REGISTRY is None:
@@ -910,7 +974,7 @@ def chat(req: ChatRequest, model: str | None = None):
 
             full = postprocess_text("".join(parts))
             if full:
-                add_message(
+                assistant_message_id = add_message(
                     cid,
                     "assistant",
                     full,
@@ -920,6 +984,7 @@ def chat(req: ChatRequest, model: str | None = None):
                         "deployment_id": target.id,
                     },
                 )
+                _persist_citations_for_assistant_message(assistant_message_id, ctx)
         except ProviderExecutionError as e:
             yield f"\n[server exception: {type(e).__name__}]"
         except Exception as e:
@@ -1050,13 +1115,15 @@ async def chat_ab(req: ABChatRequest):
     except Exception as e:
         log_warn(f"URL ingest failed for conversation {cid}: {e}")
 
-    raw_input = build_model_input(cid, full)
+    ctx = build_context(cid, full, include_preview=False)
+    raw_input = build_model_input(cid, full, ctx=ctx)
 
     if (False):
         full = postprocess_text(req.message)
         if full:
             add_message(cid, "user", full)
-        raw_input = build_model_input(cid, req.message)
+        ctx = build_context(cid, req.message, include_preview=False)
+        raw_input = build_model_input(cid, req.message, ctx=ctx)
 
     model_a = (req.model_a or "").strip()
     model_b = (req.model_b or model_a).strip()
@@ -1089,7 +1156,7 @@ async def chat_ab(req: ABChatRequest):
             text = res.get("text") or ""
             full = postprocess_text(text)
             if full:
-                add_message(cid, "assistant", full, meta={
+                assistant_message_id = add_message(cid, "assistant", full, meta={
                     "ab_group": ab_group,
                     "slot": slot,
                     "model": target.model,
@@ -1099,6 +1166,7 @@ async def chat_ab(req: ABChatRequest):
                     "kind": "ab",
                     "recovery": res.get("recovery"),
                 })
+                _persist_citations_for_assistant_message(assistant_message_id, ctx)
         else:
             payload = res.get("error") or {}
             msg = extract_error_message(payload)
