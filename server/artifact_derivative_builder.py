@@ -423,7 +423,7 @@ def _build_index_payload(title: str, chunks: list[dict]) -> tuple[str, dict, lis
             "sections": [],
             "needs_llm_outline": True,
             "reason": "no_content_available",
-    labels_detected = any(_detect_heading_labels(c.get("text") or "") for c in chunks)
+         }, []
 
     labels_detected = any(_detect_heading_label(c.get("text") or "") for c in chunks)
     if not labels_detected:
@@ -461,12 +461,10 @@ def _build_index_payload(title: str, chunks: list[dict]) -> tuple[str, dict, lis
     current: dict[str, Any] | None = None
 
     for chunk in chunks:
+        idx = int(chunk.get("chunk_index") or 0)
         heading_sections = _extract_heading_sections(chunk_text)
         chunk_text = (chunk.get("text") or "").strip()
         if heading_sections:
-
-        if heading:
-
             for heading, summary_text in heading_sections[:-1]:
                 sections.append({
                     "ordinal": len(sections) + 1,
