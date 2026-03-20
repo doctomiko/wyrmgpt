@@ -323,7 +323,7 @@ def _synthesized_chunks_from_text(art: dict) -> list[dict]:
 
 def _headingish_lines(text: str) -> list[str]:
     lines = []
-    for raw in (text or "").splitlines()[:10]:
+    for raw in (text or "").splitlines():
         line = (raw or "").strip()
         if not line:
             continue
@@ -362,12 +362,47 @@ def _looks_like_heading(line: str) -> bool:
     return False
 
 
-def _detect_heading_label(chunk_text: str) -> str | None:
-    for line in _headingish_lines(chunk_text):
+def _extract_heading_sections(chunk_text: str) -> list[tuple[str, str]]:
+    raw_lines = (chunk_text or "").splitlines()
+    cleaned_lines = [(raw or "").strip() for raw in raw_lines]
+
+    heading_positions: list[tuple[int, str]] = []
+    for idx, line in enumerate(cleaned_lines):
+        if not line:
+            continue
+        if len(line) > 120:
+            continue
         if _looks_like_heading(line):
             label = _cleanup_heading(line).rstrip(":")
             if label:
-                return label
+                heading_positions.append((idx, label))
+
+    if not heading_positions:
+        return []
+
+    sections: list[tuple[str, str]] = []
+    for pos, (line_idx, label) in enumerate(heading_positions):
+        next_line_idx = heading_positions[pos + 1][0] if pos + 1 < len(heading_positions) else len(cleaned_lines)
+        body_lines = [
+            line
+            for line in cleaned_lines[line_idx + 1 : next_line_idx]
+            if line and not _looks_like_heading(line)
+        ]
+        body_text = "".join(body_lines).strip()
+        summary = _excerpt_sentence(body_text) if body_text else ""
+        sections.append((label, summary))
+
+    return sections
+
+
+def _detect_heading_labels(chunk_text: str) -> list[str]:
+    return [label for label, _summary in _extract_heading_sections(chunk_text)]
+
+
+def _detect_heading_label(chunk_text: str) -> str | None:
+    labels = _detect_heading_labels(chunk_text)
+    if labels:
+        return labels[0]
     return None
 
 
@@ -388,7 +423,7 @@ def _build_index_payload(title: str, chunks: list[dict]) -> tuple[str, dict, lis
             "sections": [],
             "needs_llm_outline": True,
             "reason": "no_content_available",
-        }, []
+    labels_detected = any(_detect_heading_labels(c.get("text") or "") for c in chunks)
 
     labels_detected = any(_detect_heading_label(c.get("text") or "") for c in chunks)
     if not labels_detected:
@@ -426,17 +461,30 @@ def _build_index_payload(title: str, chunks: list[dict]) -> tuple[str, dict, lis
     current: dict[str, Any] | None = None
 
     for chunk in chunks:
-        idx = int(chunk.get("chunk_index") or 0)
+        heading_sections = _extract_heading_sections(chunk_text)
         chunk_text = (chunk.get("text") or "").strip()
-        heading = _detect_heading_label(chunk_text)
+        if heading_sections:
 
         if heading:
-            if current is not None:
-                sections.append(current)
+
+            for heading, summary_text in heading_sections[:-1]:
+                sections.append({
+                    "ordinal": len(sections) + 1,
+                    "section_kind": "heading",
+                    "source_mode": "heading",
+                    "label": heading,
+                    "summary_text": summary_text,
+                    "chunk_start": idx,
+                    "chunk_end": idx,
+                })
+
+            last_heading, last_summary_text = heading_sections[-1]
             current = {
                 "ordinal": len(sections) + 1,
                 "section_kind": "heading",
                 "source_mode": "heading",
+                "label": last_heading,
+                "summary_text": last_summary_text,
                 "label": heading,
                 "summary_text": _excerpt_sentence(chunk_text),
                 "chunk_start": idx,
