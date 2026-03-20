@@ -3,6 +3,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from server.logging_helper import log_debug, log_warn
+
 from .providers.types import ProviderDef, DeploymentDef
 
 try:
@@ -82,6 +84,37 @@ _HERE = Path(__file__).resolve().parent
 _ROOT = _HERE.parent
 _DEFAULT_TOML_PATH = _ROOT / "config.toml"
 _DEFAULT_SECRETS_TOML_PATH = _ROOT / "config.secrets.toml"
+
+
+def get_prompt(default_prompt: str, filepath: str = "", cfg_default="(cfg default)", cfg_filepath="(cfg filepath name)") -> str:
+    """
+    Loads a given prompt in this precedence order:
+    1) filepath (read text file)
+    2) default_prompt (fallback from cfg values, supports literal '\\n' sequences)
+    """
+    if filepath:
+        raw = Path(filepath)
+
+        candidates = []
+        if raw.is_absolute():
+            candidates.append(raw)
+        else:
+            candidates.append(raw)
+            candidates.append(Path.cwd() / raw)
+            candidates.append(Path(__file__).resolve().parents[1] / raw)  # repo root / relative path
+
+        for p in candidates:
+            try:
+                if p.exists() and p.is_file():
+                    log_debug("Loaded prompt from file %s (%s)", cfg_filepath, p)
+                    return p.read_text(encoding="utf-8")
+            except Exception as e:
+                log_warn("Failed reading prompt file %s from %s: %s", cfg_filepath, p, e)
+
+    log_debug("No valid %s found, falling back to %s", cfg_filepath, cfg_default)
+    val = default_prompt or ""
+    val = val.replace("\\n", "\n")
+    return val
 
 
 def _config_toml_path() -> Path:
@@ -357,6 +390,15 @@ class SummaryConfig:
         Target roughly 180 to 450 words.
         """
 
+    reading_plan_instructions_file: str = ".\\prompts\\_summary_reading_plan_instruct.txt"
+    reading_plan_instructions: str = """
+        When ARTIFACT SUMMARY, ARTIFACT INDEX, or ARTIFACT READING PLAN blocks appear, the full artifact was not included.
+        Do not claim or imply that you read the whole artifact unless the full text or the requested section text is actually present in context.
+        Treat the summary as a high-level synopsis and the index as a map of section labels and chunk ranges, not as full evidence for fine-grained claims.
+        If the user asks about a specific section, chapter, page, or passage that is not present in context, say that directly and ask to load or read that section instead of guessing.
+        When answering, distinguish between what is supported by direct section text versus what is only supported by summary or index metadata.
+        """
+
     summary_conversation_prompt_file: str = ".\\prompts\\_summary_convo_prompt.txt"
     summary_conversation_prompt: str = """
         You are generating a memory summary for internal storage and later retrieval.
@@ -625,6 +667,19 @@ def load_summary_config() -> SummaryConfig:
             env_name="SUMMARY_MAX_TOKENS",
             default=SUMMARY_DEFAULTS.summary_max_tokens,
         ),
+
+
+        reading_plan_instructions_file=_cfg_str(
+            ("summary", "reading_plan_instructions_file"),
+            env_name="READING_PLAN_INSTRUCT_FILE",
+            default=SUMMARY_DEFAULTS.reading_plan_instructions_file,
+        ),
+        reading_plan_instructions=_cfg_str(
+            ("summary", "reading_plan_instructions"),
+            env_name="READING_PLAN_INSTRUCT",
+            default=SUMMARY_DEFAULTS.reading_plan_instructions,
+        ),
+
 
         summary_conversation_prompt_file=_cfg_str(
             ("summary", "summary_conversation_prompt_file"),

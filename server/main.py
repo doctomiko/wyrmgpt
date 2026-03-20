@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 from pydantic import BaseModel
 
 from .logging_helper import log_warn
-from .context import _get_prompt, build_context, build_context_panel_payload, build_model_input
+from .context import build_context, build_context_panel_payload, build_model_input
 from .markdown_helper import apply_house_markdown_normalization, autolink_text, extract_explicit_urls
 from .query_retrieval import retrieve_chunks_for_message
 from .summary_helper import summarize_conversation_text, suggest_conversation_title_from_transcript
@@ -38,7 +38,7 @@ from .config import (
     APP_KEYS, load_app_config,
     # Other helpers and vars
     QUERY_INCLUDE_ALLOWED, QUERY_EXPAND_ALLOWED,
-    _normalize_csv_set,
+    _normalize_csv_set, get_prompt
 )
 from .db import (
     # Schema and connection
@@ -1312,7 +1312,7 @@ def api_summarize_conversation(conversation_id: str, sum_cfg: SummaryConfig | No
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    system_prompt = _get_prompt(
+    system_prompt = get_prompt(
         default_prompt=sum_cfg.summary_conversation_prompt,
         filepath=sum_cfg.summary_conversation_prompt_file,
         cfg_default="SUMMARY_CONVO_PROMPT",

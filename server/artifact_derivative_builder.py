@@ -462,16 +462,20 @@ def _build_index_payload(title: str, chunks: list[dict]) -> tuple[str, dict, lis
 
     for chunk in chunks:
         idx = int(chunk.get("chunk_index") or 0)
-        heading_sections = _extract_heading_sections(chunk_text)
         chunk_text = (chunk.get("text") or "").strip()
+        heading_sections = _extract_heading_sections(chunk_text)
         if heading_sections:
+            if current is not None:
+                sections.append(current)
+                current = None
+
             for heading, summary_text in heading_sections[:-1]:
                 sections.append({
                     "ordinal": len(sections) + 1,
                     "section_kind": "heading",
                     "source_mode": "heading",
                     "label": heading,
-                    "summary_text": summary_text,
+                    "summary_text": summary_text or _excerpt_sentence(chunk_text),
                     "chunk_start": idx,
                     "chunk_end": idx,
                 })
@@ -482,9 +486,7 @@ def _build_index_payload(title: str, chunks: list[dict]) -> tuple[str, dict, lis
                 "section_kind": "heading",
                 "source_mode": "heading",
                 "label": last_heading,
-                "summary_text": last_summary_text,
-                "label": heading,
-                "summary_text": _excerpt_sentence(chunk_text),
+                "summary_text": last_summary_text or _excerpt_sentence(chunk_text),
                 "chunk_start": idx,
                 "chunk_end": idx,
             }

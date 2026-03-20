@@ -23,12 +23,12 @@ from .db import (
 )
 
 from .config import (
-    CoreConfig, load_core_config,
+    CoreConfig, get_prompt, load_core_config,
     ContextConfig, load_context_config,
     RetrievalConfig, load_retrieval_config,
     QUERY_INCLUDE_ALLOWED, QUERY_EXPAND_ALLOWED,
     _normalize_csv_set,
-    load_embedding_config, load_vector_config,
+    load_embedding_config, load_summary_config, load_vector_config,
     load_provider_defs, load_deployment_defs,
 )
 
@@ -63,35 +63,6 @@ _QUERY_STOP = load_filler_words_cached()
 #CHEAP_MODEL=oai_cfg.summary_model
 #FULL_MODEL=oai_cfg.open_ai_model
 
-def _get_prompt(default_prompt: str, filepath: str = "", cfg_default="(cfg default)", cfg_filepath="(cfg filepath name)") -> str:
-    """
-    Loads a given prompt in this precedence order:
-    1) filepath (read text file)
-    2) default_prompt (fallback from cfg values, supports literal '\\n' sequences)
-    """
-    if filepath:
-        raw = Path(filepath)
-
-        candidates = []
-        if raw.is_absolute():
-            candidates.append(raw)
-        else:
-            candidates.append(raw)
-            candidates.append(Path.cwd() / raw)
-            candidates.append(Path(__file__).resolve().parents[1] / raw)  # repo root / relative path
-
-        for p in candidates:
-            try:
-                if p.exists() and p.is_file():
-                    log_debug("Loaded prompt from file %s (%s)", cfg_filepath, p)
-                    return p.read_text(encoding="utf-8")
-            except Exception as e:
-                log_warn("Failed reading prompt file %s from %s: %s", cfg_filepath, p, e)
-
-    log_debug("No valid %s found, falling back to %s", cfg_filepath, cfg_default)
-    val = default_prompt or ""
-    val = val.replace("\\n", "\n")
-    return val
 
 #region Configuration Helpers
 
@@ -157,7 +128,7 @@ def get_system_prompt(cfg: CoreConfig | None = None) -> str:
     3) fallback to hardcoded string in CoreConfig
     """
     cfg = cfg or load_core_config()
-    return _get_prompt(
+    return get_prompt(
         cfg.default_system_prompt,
         cfg.system_prompt_file,
         cfg_default="SYSTEM_PROMPT",
@@ -313,7 +284,8 @@ def _maybe_apply_artifact_reading_plan(
         "mode": plan.get("mode"),
         "action": plan.get("action"),
         "strategies": sorted(plan.get("strategies") or []),
-        "missing_derivatives": sorted(plan.get("missing_derivatives") or []),
+        "needs_derivatives": sorted(plan.get("needs_derivatives") or []),
+        "missing_derivatives": sorted(plan.get("needs_derivatives") or []),
         "reason": plan.get("reason"),
     }
     #create_conversation_scaffold_event_if_absent_conn(
@@ -864,6 +836,30 @@ def _retained_artifact_summary_to_input_message(row: dict) -> dict:
     return {"role": "user", "content": "\n".join(lines).strip()}
 
 
+def _is_artifact_reading_plan_message(msg: dict) -> bool:
+    content = msg.get("content")
+    if not isinstance(content, str):
+        return False
+
+    first_line = (content.splitlines() or [""])[0].strip()
+    return first_line in {
+        "ARTIFACT SUMMARY",
+        "ARTIFACT INDEX",
+        "ARTIFACT READING PLAN",
+    }
+
+
+def _artifact_reading_plan_guidance_text() -> str:
+    sum_cfg = load_summary_config()
+    text = get_prompt(
+        default_prompt=sum_cfg.reading_plan_instructions,
+        filepath=sum_cfg.reading_plan_instructions_file,
+        cfg_default="sum_cfg.reading_plan_instructions",
+        cfg_filepath="sum_cfg.reading_plan_instructions_file",
+    )
+    return text
+
+
 def _order_scoped_memories_for_context(
     memories: list[dict],
     project_id: int | None,
@@ -1126,6 +1122,16 @@ def build_context(
     history_rows = get_messages(conversation_id, limit=ctx_cfg.history_limit)
     history_rows_raw = get_messages_raw(conversation_id, limit=ctx_cfg.history_limit)
 
+    current_message_id = None
+    if history_rows_raw:
+        raw_message_id = history_rows_raw[-1].get("id")
+        if raw_message_id is not None:
+            try:
+                current_message_id = int(str(raw_message_id))
+            except (TypeError, ValueError):
+                current_message_id = None
+ 
+
     # Add the zeitgeber prefixes
     typed_history: list[dict] = []
     for r in history_rows:
@@ -1308,6 +1314,11 @@ def build_context(
             conversation_id,
             limit=max_full_files,
             already_included_artifact_ids=included_artifact_ids,
+            user_text=user_text,
+            ctx_cfg=ctx_cfg,
+            typed_history=typed_history,
+            whole_artifact_messages=whole_artifact_messages,
+            current_message_id=current_message_id,
         )
         whole_artifact_messages.extend(file_messages)
         included_artifact_ids.update(file_artifact_ids)
@@ -1354,15 +1365,6 @@ def build_context(
     # artifacts previously pulled into this conversation should be reconsidered
     # on later turns, not forgotten immediately.
     included_retained_labels: list[str] = []
-    current_message_id = None
-
-    if history_rows_raw:
-        raw_message_id = history_rows_raw[-1].get("id")
-        if raw_message_id is not None:
-            try:
-                current_message_id = int(str(raw_message_id))
-            except (TypeError, ValueError):
-                current_message_id = None
 
     retained_rows = list_conversation_retained_artifacts(
         conversation_id,
@@ -1705,6 +1707,10 @@ def build_context(
 
     if retrieved_block:
         system_blocks.append("RETRIEVED CONTENT (RAG; cite chunk_id if referencing):\n" + retrieved_block)
+
+    if any(_is_artifact_reading_plan_message(m) for m in whole_artifact_messages):
+        system_blocks.append("ARTIFACT READING RULES:\n" + _artifact_reading_plan_guidance_text())
+
     # if retrieved:
     #    joined = "\n".join(f"- {m}" for m in retrieved)
     #    system_blocks.append("Retrieved memories (machine-selected using RAG, verify if uncertain):\n" + joined)
@@ -1929,6 +1935,11 @@ def _build_file_messages_for_conversation(
     *,
     limit: int,
     already_included_artifact_ids: set[str] | None = None,
+    user_text: str,
+    ctx_cfg: ContextConfig,
+    typed_history: list[dict],
+    whole_artifact_messages: list[dict],
+    current_message_id: int | None,
 ) -> tuple[list[dict], list[str], set[str]]:
     files_by_id: dict[str, dict] = gather_scoped_files(conversation_id)
     if not files_by_id:
@@ -1936,7 +1947,7 @@ def _build_file_messages_for_conversation(
 
     ensure_artifacts_for_files(files_by_id)
 
-    already_included_artifact_ids = already_included_artifact_ids or set()
+    known_artifact_ids = set(already_included_artifact_ids or set())
     file_messages: list[dict] = []
     included_file_labels: list[str] = []
     included_artifact_ids: set[str] = set()
@@ -1945,86 +1956,109 @@ def _build_file_messages_for_conversation(
     file_rows.sort(key=lambda r: (r.get("updated_at") or r.get("created_at") or ""), reverse=True)
 
     files_taken = 0
-    for file_row in file_rows:
-        if files_taken >= max(0, int(limit)):
-            break
+    with db_session() as conn:
+        for file_row in file_rows:
+            if files_taken >= max(0, int(limit)):
+                break
 
-        file_id = str(file_row.get("id") or "").strip()
-        if not file_id:
-            continue
-
-        try:
-            artifacts = list_artifacts_for_file(file_id, include_deleted=False)
-        except Exception as exc:
-            print(f"[context] list_artifacts_for_file failed for file {file_id}: {exc}")
-            continue
-
-        if not artifacts:
-            continue
-
-        orig_name = file_row.get("original_name") or Path(file_row.get("path") or "").name
-        file_had_any = False
-
-        for art in artifacts:
-            artifact_id = (art.get("id") or "").strip()
-            if artifact_id and artifact_id in already_included_artifact_ids:
+            file_id = str(file_row.get("id") or "").strip()
+            if not file_id:
                 continue
 
-            source_kind = art.get("source_kind") or ""
-            content = art.get("content_text") or ""
+            try:
+                artifacts = list_artifacts_for_file(file_id, include_deleted=False)
+            except Exception as exc:
+                print(f"[context] list_artifacts_for_file failed for file {file_id}: {exc}")
+                continue
 
-            if source_kind.startswith("file:image"):
-                try:
-                    payload = json.loads(content)
-                except Exception as exc:
-                    print(f"[context] failed to parse image artifact JSON for file {file_id}: {exc}")
+            if not artifacts:
+                continue
+
+            orig_name = file_row.get("original_name") or Path(file_row.get("path") or "").name
+            file_had_any = False
+            label_count_before = len(included_file_labels)
+
+            for art in artifacts:
+                artifact_id = (art.get("id") or "").strip()
+                if artifact_id and artifact_id in known_artifact_ids:
                     continue
 
-                image_path_str = payload.get("path") or file_row.get("path")
-                if not image_path_str:
-                    continue
+                source_kind = art.get("source_kind") or ""
+                content = art.get("content_text") or ""
 
-                try:
-                    image_path = Path(image_path_str)
-                    data = load_image_bytes(image_path)
-                except Exception as exc:
-                    print(f"[context] failed to load image bytes for {image_path_str}: {exc}")
-                    continue
+                if source_kind.startswith("file:image"):
+                    try:
+                        payload = json.loads(content)
+                    except Exception as exc:
+                        print(f"[context] failed to parse image artifact JSON for file {file_id}: {exc}")
+                        continue
 
-                if not data:
-                    continue
+                    image_path_str = payload.get("path") or file_row.get("path")
+                    if not image_path_str:
+                        continue
 
-                b64 = image_bytes_to_base64(data)
-                mime_type = payload.get("mime_type") or "application/octet-stream"
-                data_url = f"data:{mime_type};base64,{b64}"
+                    try:
+                        image_path = Path(image_path_str)
+                        data = load_image_bytes(image_path)
+                    except Exception as exc:
+                        print(f"[context] failed to load image bytes for {image_path_str}: {exc}")
+                        continue
 
-                file_messages.append(
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "input_text", "text": f"[FILE ARTIFACT]\nTitle: {orig_name}\nArtifact ID: {artifact_id}\nSource kind: {source_kind}"},
-                            {"type": "input_image", "image_url": data_url},
-                        ],
-                    }
-                )
-            else:
-                text = str(content)
-                if not text.strip():
-                    continue
+                    if not data:
+                        continue
 
-                file_messages.append(
-                    {
-                        "role": "user",
-                        "content": f"[FILE ARTIFACT]\nTitle: {orig_name}\nArtifact ID: {artifact_id}\nSource kind: {source_kind}\n\n{text}".strip(),
-                    }
-                )
+                    b64 = image_bytes_to_base64(data)
+                    mime_type = payload.get("mime_type") or "application/octet-stream"
+                    data_url = f"data:{mime_type};base64,{b64}"
+                    file_messages.append(
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "input_text", "text": f"[FILE ARTIFACT]\nTitle: {orig_name}\nArtifact ID: {artifact_id}\nSource kind: {source_kind}"},
+                                {"type": "input_image", "image_url": data_url},
+                            ],
+                        }
+                    )
+                else:
+                    text = str(content)
+                    if not text.strip():
+                        continue
 
-            if artifact_id:
-                included_artifact_ids.add(artifact_id)
-            file_had_any = True
+                    if artifact_id and _maybe_apply_artifact_reading_plan(
+                        conn=conn,
+                        conversation_id=conversation_id,
+                        current_message_id=current_message_id,
+                        artifact_id=artifact_id,
+                        title=(art.get("title") or orig_name or artifact_id).strip(),
+                        user_text=user_text,
+                        ctx_cfg=ctx_cfg,
+                        typed_history=typed_history,
+                        whole_artifact_messages=whole_artifact_messages + file_messages,
+                        included_artifact_ids=included_artifact_ids,
+                        label_sink=included_file_labels,
+                        origin_kind="file_attach",
+                        retention_state="forced",
+                        carry_summary_text=None,
+                    ):
+                        known_artifact_ids.add(artifact_id)
+                        file_had_any = True
+                        continue
 
-        if file_had_any:
-            files_taken += 1
-            included_file_labels.append(orig_name)
+                    file_messages.append(
+                        {
+                            "role": "user",
+                            "content": f"[FILE ARTIFACT]\nTitle: {orig_name}\nArtifact ID: {artifact_id}\nSource kind: {source_kind}\n\n{text}".strip(),
+                        }
+                    )
+
+                if artifact_id:
+                    included_artifact_ids.add(artifact_id)
+                    known_artifact_ids.add(artifact_id)
+                file_had_any = True
+
+            if file_had_any:
+                files_taken += 1
+                if len(included_file_labels) == label_count_before and orig_name not in included_file_labels:
+                    included_file_labels.append(orig_name)
 
     return file_messages, included_file_labels, included_artifact_ids
