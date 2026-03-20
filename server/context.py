@@ -299,24 +299,31 @@ def _maybe_apply_artifact_reading_plan(
         increment_include_count=True,
     )
 
+    input = {
+        "artifact_id": artifact_id,
+        "artifact_title": title,
+        "origin_kind": origin_kind,
+        "retention_state": retention_state,
+    }
+    plan_better = {
+        "artifact_id": artifact_id,
+        "mode": plan.get("mode"),
+        "action": plan.get("action"),
+        "strategies": sorted(plan.get("strategies") or []),
+        "missing_derivatives": sorted(plan.get("missing_derivatives") or []),
+    }
     create_conversation_scaffold_event_if_absent_conn(
         conn,
         conversation_id=conversation_id,
-        message_id=current_message_id,
+        message_id=None,
         event_kind="artifact_reading_plan",
         status="ready",
         title="Artifact reading plan",
         body_text=(plan.get("reason") or "Artifact reading plan fallback applied"),
-        input_json={
-            "artifact_id": artifact_id,
-            "artifact_title": title,
-            "origin_kind": origin_kind,
-            "retention_state": retention_state,
-            "user_text_excerpt": (user_text or "")[:280],
-        },
-        output_json=plan,
+        input_json = input,
+        output_json = plan_better,
     )
-    
+
     return True
 
 # endregion

@@ -2281,6 +2281,9 @@ async function send() {
   }
 
   await refreshConversationLists();
+  lastContextQueryText = text;
+  await refreshContext();
+
   const msgs = await loadMessages(conversationId);
   clearChat();
   if (!msgs.length) {
@@ -2288,8 +2291,7 @@ async function send() {
   } else {
     renderMessagesWithAB(msgs);
   }
-  lastContextQueryText = text;
-  await refreshContext();
+
   scheduleTranscriptRefresh();
 }
 
