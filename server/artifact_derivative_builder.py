@@ -133,15 +133,19 @@ def _read_prompt_file(path_text: str) -> str:
     return ""
 
 
-def _resolve_summary_runtime() -> tuple[ResolvedDeployment, ChatProvider, Any]:
+def _resolve_summary_runtime(requested_deployment_id: str = "summary_default") -> tuple[ResolvedDeployment, ChatProvider, Any]:
     model_catalog = _load_model_catalog()
     registry = _build_provider_registry(model_catalog)
-    requested = "summary_default"
+    requested = (requested_deployment_id or "summary_default").strip() or "summary_default"
     if requested not in registry.deployments:
-        raise RuntimeError(
-            "Summary deployment 'summary_default' is not configured. "
-            "Add it under [deployments] before generating artifact derivatives."
-        )
+        if requested != "summary_default" and "summary_default" in registry.deployments:
+            # TODO WARN that the model has been swapped!
+            requested = "summary_default"
+        else:
+            raise RuntimeError(
+                "Summary deployment 'summary_default' is not configured. "
+                "Add it under [deployments] before generating artifact derivatives."
+            )
     target = registry.resolve_deployment_for_capability(
         "chat",
         requested,
@@ -171,11 +175,47 @@ def _complete_via_provider(
     return (result.text or "").strip()
 
 
+def _looks_like_title_only_text(title: str, text: str) -> bool:
+    body = _normalize_source_text(text)
+    heading = _normalize_source_text(title)
+    if not body:
+        return True
+    if not heading:
+        return False
+
+    body_low = body.lower()
+    heading_low = heading.lower()
+    if body_low == heading_low:
+        return True
+    if body_low.startswith(f"# {heading_low}"):
+        remainder = body[len(heading) + 2 :].strip(" :-–—")
+        return len(remainder) < 80
+    if body_low.startswith(heading_low):
+        remainder = body[len(heading) :].strip(" :-–—")
+        return len(remainder) < 80
+    return False
+
+
+def _trustworthy_artifact_text(title: str, text: str) -> str:
+    body = _normalize_source_text(text)
+    if not _has_meaningful_content(body, min_chars=300):
+        return ""
+    if _looks_like_title_only_text(title, body):
+        return ""
+    return body
+
+
 def _summarize_artifact_text(*, title: str, artifact_text: str) -> tuple[str, str]:
-    target, provider, sum_cfg = _resolve_summary_runtime()
-    transcript = (artifact_text or "").strip()
+    transcript = _trustworthy_artifact_text(title, artifact_text)
     if not transcript:
-        return "", target.model
+        return "", ""
+
+    sum_cfg = load_summary_config()
+    requested_deployment = "summary_default"
+    if len(transcript) > max(sum_cfg.summary_reduce_threshold_chars * 2, 36000):
+        requested_deployment = "chat_default"
+    # TODO we no longer get the summary configuration back from this function so remove that
+    target, provider, _ = _resolve_summary_runtime(requested_deployment)
 
     system_prompt = _read_prompt_file(sum_cfg.summary_conversation_prompt_file).strip() or _ARTIFACT_SUMMARY_PROMPT
 
@@ -510,16 +550,16 @@ def ensure_artifact_reading_derivatives(
 
         chunks = _artifact_chunks(conn, aid)
         synthetic_chunks_used = False
+        trusted_content_text = _trustworthy_artifact_text(title, content_text)
         if not chunks and _has_meaningful_content(content_text):
             chunks = _synthesized_chunks_from_text(art)
             synthetic_chunks_used = bool(chunks)
 
-        has_content_evidence = _has_meaningful_content(content_text) or bool(chunks)
-
+        if not chunks and trusted_content_text:
+            chunks = _synthesized_chunks_from_text({**art, "content_text": trusted_content_text})
         summary_info = get_artifact_summary(conn, aid, include_stale=True)
-        needs_summary = bool(force)
-        if not needs_summary:
-            needs_summary = not summary_info or bool(summary_info.get("is_stale"))
+        needs_summary = not summary_info or bool(force) or bool(summary_info.get("is_stale"))
+        has_content_evidence = bool(trusted_content_text) or bool(chunks)
 
         if not has_content_evidence:
             if clear_invalid:
@@ -529,11 +569,11 @@ def ensure_artifact_reading_derivatives(
         elif needs_summary:
             summary_text, summary_model = _summarize_artifact_text(
                 title=title,
-                artifact_text=content_text,
+                artifact_text=trusted_content_text,
             )
             if summary_text:
                 set_artifact_summary(conn, aid, summary_text, summary_model)
-
+                
         index_der = get_artifact_derivative(
             aid,
             derivative_kind="index",

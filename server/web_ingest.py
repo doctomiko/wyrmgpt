@@ -9,7 +9,7 @@ from .db import (
     db_session, get_conversation_project_id,
     upsert_web_source_conn, insert_web_source_snapshot_conn,
     get_web_snapshot_bundle_conn, upsert_artifact_text,
-    retain_conversation_artifact_conn,
+    retain_conversation_artifact_conn, reindex_artifact_by_id,
 )
 from .artifactor import build_web_artifact_payload
 #from .artifactor import artifact_web_snapshot
@@ -44,6 +44,7 @@ def ingest_urls_from_user_message(
     created_snapshots = 0
     artifact_ids: list[str] = []
     errors: list[str] = []
+    artifact_ids_to_reindex: list[str] = []
 
     with db_session() as conn:
         project_id = get_conversation_project_id(conn, conversation_id)
@@ -99,6 +100,7 @@ def ingest_urls_from_user_message(
 
                 if artifact_id:
                     artifact_ids.append(artifact_id)
+                    artifact_ids_to_reindex.append(artifact_id)
 
                     retain_conversation_artifact_conn(
                         conn,
@@ -118,39 +120,17 @@ def ingest_urls_from_user_message(
                             "fetch_method": fetch_method,
                         },
                         increment_include_count=True,
-                    )
-
-                if (False):
-                    artifact_id = artifact_web_snapshot(
-                        snapshot_id=snapshot_id,
-                        conversation_id=conversation_id,
-                    )
-                    if artifact_id:
-                        artifact_ids.append(artifact_id)
-
-                        retain_conversation_artifact_conn(
-                            conn,
-                            conversation_id=conversation_id,
-                            artifact_id=artifact_id,
-                            origin_kind="user_url",
-                            retention_state="forced",
-                            carry_summary_text=None,
-                            inclusion_kind="whole",
-                            retrieval_channel="manual",
-                            message_id=request_message_id,
-                            note_text=f"Explicit URL injected by user: {url}",
-                            meta_json={
-                                "url": url,
-                                "source_id": source_id,
-                                "snapshot_id": snapshot_id,
-                                "fetch_method": fetch_method,
-                            },
-                            increment_include_count=True,
-                        )
-                    
+                    )        
             except Exception as e:
                 errors.append(f"{url}: {type(e).__name__}: {e}")
                 log_warn(f"URL ingest failed for {url}: {e}")
+
+    for artifact_id in artifact_ids_to_reindex:
+        try:
+            reindex_artifact_by_id(artifact_id)
+        except Exception as e:
+            errors.append(f"reindex {artifact_id}: {type(e).__name__}: {e}")
+            log_warn(f"Artifact reindex failed for {artifact_id}: {e}")
 
     return {
         "ok": len(errors) == 0,

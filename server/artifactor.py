@@ -13,7 +13,6 @@ try:
 except ImportError:  # type: ignore
     PdfReader = None  # type: ignore
 from typing import Optional # ,Any, Iterable, List
-from bs4 import BeautifulSoup
 from .db import (
     db_session,
     get_web_source_snapshot_by_id,
@@ -31,6 +30,7 @@ except Exception:  # defensive
 from .image_helpers import is_image_file, build_image_reference_json
 from .zip_helpers import is_zip_file, list_zip_entries, build_zip_index_text
 from .markdown_helper import autolink_text, apply_house_markdown_normalization
+from .html_readable import extract_readable_html_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -194,26 +194,26 @@ def extract_text_from_file(file_row) -> tuple[str, str]:
     return (text, "file:text")
 
 
-def _extract_text_from_html(html: str) -> tuple[str, str]:
+def _extract_text_from_html(
+    html: str,
+    *,
+    base_url: str | None = None,
+    fallback_title: str | None = None,
+) -> tuple[str, str]:
     """
-    Returns (title, text)
+    Returns (title, markdown_text)
     """
     raw = (html or "").strip()
     if not raw:
-        return ("", "")
+        return ((fallback_title or "").strip(), "")
 
-    soup = BeautifulSoup(raw, "html.parser")
-
-    for tag in soup(["script", "style", "noscript", "svg", "canvas"]):
-        tag.decompose()
-
-    title = ""
-    if soup.title and soup.title.string:
-        title = soup.title.string.strip()
-
-    text = soup.get_text("\n", strip=True)
-    text = apply_house_markdown_normalization(text)
-    text = autolink_text(text)
+    parsed = extract_readable_html_markdown(
+        raw,
+        base_url=base_url,
+        fallback_title=fallback_title,
+    )
+    title = (parsed.title or fallback_title or "").strip()
+    text = apply_house_markdown_normalization(parsed.markdown)
     return (title, text)
 
 
@@ -226,10 +226,19 @@ def build_web_artifact_payload(
     raw_text = snapshot.get("raw_text") or ""
 
     if raw_html.strip():
-        title, text = _extract_text_from_html(raw_html)
+        title, text = _extract_text_from_html(
+            raw_html,
+            base_url=(snapshot.get("final_url") or source.get("canonical_url") or "").strip() or None,
+            fallback_title=source.get("canonical_url") or "Web Page",
+        )
+        if not (text or "").strip() and (raw_text or "").strip():
+            title = title or source.get("canonical_url") or "Web Page"
+            text = apply_house_markdown_normalization((raw_text or "").strip())
+            text = autolink_text(text)
     else:
         title = source.get("canonical_url") or "Web Page"
-        text = (raw_text or "").strip()
+        text = apply_house_markdown_normalization((raw_text or "").strip())
+        text = autolink_text(text)
 
     text = (text or "").strip()
     if not text:
@@ -241,48 +250,3 @@ def build_web_artifact_payload(
         "source_kind": "web:snapshot",
         "source_id": str(snapshot["id"]),
     }
-
-
-if (False):
-    def artifact_web_snapshot(
-        *,
-        snapshot_id: int,
-        conversation_id: str,
-    ) -> str | None:
-        snap = get_web_source_snapshot_by_id(snapshot_id)
-        if not snap:
-            raise ValueError(f"web snapshot not found: {snapshot_id}")
-
-        source_id = snap.get("source_id")
-        if not source_id:
-            raise ValueError(f"web snapshot has no source_id: {snapshot_id}")
-
-        source = get_web_source_by_id(int(source_id))
-        if not source:
-            raise ValueError(f"web source not found: {source_id}")
-
-        raw_html = snap.get("raw_html") or ""
-        raw_text = snap.get("raw_text") or ""
-
-        if raw_html.strip():
-            title, text = _extract_text_from_html(raw_html)
-        else:
-            title = source.get("canonical_url") or "Web Page"
-            text = (raw_text or "").strip()
-
-        if not text.strip():
-            return None
-
-        with db_session() as conn:
-            artifact_id = upsert_artifact_text(
-                conn,
-                source_kind="web:snapshot",
-                source_id=str(snapshot_id),
-                title=title or source.get("canonical_url") or "Web Page",
-                scope_type="conversation",
-                scope_id=conversation_id,
-                text=text,
-            )
-
-        reindex_artifact_by_id(artifact_id)
-        return artifact_id
