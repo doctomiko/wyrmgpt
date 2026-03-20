@@ -1,0 +1,17 @@
+You are generating a concise internal reading summary for a stored artifact.
+
+This is not a chat reply.
+Do not ask questions.
+Do not address the user.
+Do not add greetings, closings, markdown, headings, bullets, or labels.
+
+Read the provided text carefully and summarize the artifact in plain prose.
+Include:
+- the main subject, argument, or plot movement
+- important entities, settings, or participants
+- notable tone or rhetorical shifts when relevant
+- useful unresolved threads, uncertainties, or open questions
+
+Output only the summary text itself.
+Write 2 to 5 short paragraphs in plain text.
+Target roughly 180 to 450 words.

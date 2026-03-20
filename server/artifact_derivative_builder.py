@@ -25,43 +25,6 @@ from .summary_helper import _call_summary_model, _chunk_transcript, cleanup_summ
 
 ROOT = Path(__file__).resolve().parents[1]
 
-_ARTIFACT_SUMMARY_PROMPT = """
-You are generating a concise internal reading summary for a stored artifact.
-
-This is not a chat reply.
-Do not ask questions.
-Do not address the user.
-Do not add greetings, closings, markdown, headings, bullets, or labels.
-
-Read the provided text carefully and summarize the artifact in plain prose.
-Include:
-- the main subject, argument, or plot movement
-- important entities, settings, or participants
-- notable tone or rhetorical shifts when relevant
-- useful unresolved threads, uncertainties, or open questions
-
-Output only the summary text itself.
-Write 2 to 5 short paragraphs in plain text.
-Target roughly 180 to 450 words.
-""".strip()
-
-_ARTIFACT_REDUCE_PROMPT = """
-You are generating a concise internal reading summary for a stored artifact from chunk summaries.
-
-This is not a chat reply.
-Do not ask questions.
-Do not address the user.
-Do not add greetings, closings, markdown, headings, bullets, or labels.
-
-Combine the chunk summaries into one coherent summary of the artifact as a whole.
-Preserve important chronology or argumentative order.
-Mention major shifts in topic, plot, setting, tone, or structure when useful.
-
-Output only the summary text itself.
-Write 2 to 5 short paragraphs in plain text.
-Target roughly 180 to 450 words.
-""".strip()
-
 _HEADING_MARKERS = (
     "chapter",
     "scene",
@@ -114,7 +77,8 @@ def _build_provider_registry(model_catalog: ModelCatalog) -> ProviderRegistry:
     )
 
 
-def _read_prompt_file(path_text: str) -> str:
+# TODO move this to config.py and/or replace it with what is already there
+def _read_prompt_file(path_text: str, default_value: str = "") -> str:
     raw = Path(path_text)
     candidates: list[Path] = []
     if raw.is_absolute():
@@ -130,8 +94,7 @@ def _read_prompt_file(path_text: str) -> str:
                 return p.read_text(encoding="utf-8")
         except Exception:
             continue
-    return ""
-
+    return default_value.strip()
 
 def _resolve_summary_runtime(requested_deployment_id: str = "summary_default") -> tuple[ResolvedDeployment, ChatProvider, Any]:
     model_catalog = _load_model_catalog()
@@ -212,12 +175,15 @@ def _summarize_artifact_text(*, title: str, artifact_text: str) -> tuple[str, st
 
     sum_cfg = load_summary_config()
     requested_deployment = "summary_default"
-    if len(transcript) > max(sum_cfg.summary_reduce_threshold_chars * 2, 36000):
+    if len(transcript) > max(sum_cfg.summary_reduce_threshold_chars, 12000):
         requested_deployment = "chat_default"
     # TODO we no longer get the summary configuration back from this function so remove that
     target, provider, _ = _resolve_summary_runtime(requested_deployment)
 
-    system_prompt = _read_prompt_file(sum_cfg.summary_conversation_prompt_file).strip() or _ARTIFACT_SUMMARY_PROMPT
+    system_prompt = _read_prompt_file(
+        sum_cfg.summary_artifact_prompt_file,
+        sum_cfg.summary_artifact_prompt
+    ).strip()
 
     def call(system_prompt_text: str, user_prompt_text: str, max_output_tokens: int) -> str:
         return _complete_via_provider(
@@ -275,7 +241,11 @@ def _summarize_artifact_text(*, title: str, artifact_text: str) -> tuple[str, st
     if not partials:
         return "", target.model
 
-    reduce_prompt = (
+    reduce_system_prompt = _read_prompt_file(
+        sum_cfg.summary_artifact_reduce_prompt_file,
+        sum_cfg.summary_artifact_reduce_prompt
+    ).strip()
+    reduce_user_prompt = (
         f"Title: {title}\n\n"
         f"The following are chunk summaries for one artifact. Combine them into a coherent summary of the full artifact.\n\n"
         + "\n\n".join(partials)
@@ -283,8 +253,8 @@ def _summarize_artifact_text(*, title: str, artifact_text: str) -> tuple[str, st
     reduced = cleanup_summary_text(
         _call_summary_model(
             model=target.model,
-            system_prompt=_ARTIFACT_REDUCE_PROMPT,
-            user_prompt=reduce_prompt,
+            system_prompt=reduce_system_prompt,
+            user_prompt=reduce_user_prompt,
             max_output_tokens=sum_cfg.summary_max_tokens,
             complete_fn=call,
         )
@@ -558,8 +528,16 @@ def ensure_artifact_reading_derivatives(
         if not chunks and trusted_content_text:
             chunks = _synthesized_chunks_from_text({**art, "content_text": trusted_content_text})
         summary_info = get_artifact_summary(conn, aid, include_stale=True)
-        needs_summary = not summary_info or bool(force) or bool(summary_info.get("is_stale"))
         has_content_evidence = bool(trusted_content_text) or bool(chunks)
+        existing_summary_text = ""
+        if summary_info:
+            existing_summary_text = (summary_info.get("summary_text") or "").strip()
+        needs_summary = (
+            bool(force)
+            or not summary_info
+            or not existing_summary_text
+            or bool(summary_info.get("is_stale"))
+        )
 
         if not has_content_evidence:
             if clear_invalid:

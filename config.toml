@@ -24,8 +24,10 @@ debug_boot = true
 [summary]
 summary_max_tokens = 800
 summary_conversation_prompt_file = "./prompts/_summary_convo_prompt.txt"
+summary_artifact_prompt_file = "./prompts/_summary_artifact_prompt.txt"
+summary_artifact_reduce_prompt_file = "./prompts/_summary_artifact_reduce_prompt.txt"
 # summary_conversation_prompt = """..."""
-summary_reduce_threshold_chars = 18000
+summary_reduce_threshold_chars = 12000
 summary_chunk_target_chars = 7000
 summary_chunk_hard_max_chars = 10000
 summary_chunk_max_tokens = 350

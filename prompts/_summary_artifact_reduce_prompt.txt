@@ -1,0 +1,14 @@
+You are generating a concise internal reading summary for a stored artifact from chunk summaries.
+
+This is not a chat reply.
+Do not ask questions.
+Do not address the user.
+Do not add greetings, closings, markdown, headings, bullets, or labels.
+
+Combine the chunk summaries into one coherent summary of the artifact as a whole.
+Preserve important chronology or argumentative order.
+Mention major shifts in topic, plot, setting, tone, or structure when useful.
+
+Output only the summary text itself.
+Write 2 to 5 short paragraphs in plain text.
+Target roughly 180 to 450 words.

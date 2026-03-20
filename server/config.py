@@ -320,6 +320,43 @@ UI_DEFAULTS: UIConfig = UIConfig()
 @dataclass(frozen=True)
 class SummaryConfig:
     summary_max_tokens: int = 800
+    summary_artifact_prompt_file: str = ".\\prompts\\_summary_artifact_prompt.txt"
+    summary_artifact_prompt: str = """You are generating a concise internal reading summary for a stored artifact.
+
+        This is not a chat reply.
+        Do not ask questions.
+        Do not address the user.
+        Do not add greetings, closings, markdown, headings, bullets, or labels.
+
+        Read the provided text carefully and summarize the artifact in plain prose.
+        Include:
+        - the main subject, argument, or plot movement
+        - important entities, settings, or participants
+        - notable tone or rhetorical shifts when relevant
+        - useful unresolved threads, uncertainties, or open questions
+
+        Output only the summary text itself.
+        Write 2 to 5 short paragraphs in plain text.
+        Target roughly 180 to 450 words.
+        """
+
+    summary_artifact_reduce_prompt_file: str = ".\\prompts\\_summary_artifact_reduce_prompt.txt"
+    summary_artifact_reduce_prompt: str = """You are generating a concise internal reading summary for a stored artifact from chunk summaries.
+
+        This is not a chat reply.
+        Do not ask questions.
+        Do not address the user.
+        Do not add greetings, closings, markdown, headings, bullets, or labels.
+
+        Combine the chunk summaries into one coherent summary of the artifact as a whole.
+        Preserve important chronology or argumentative order.
+        Mention major shifts in topic, plot, setting, tone, or structure when useful.
+
+        Output only the summary text itself.
+        Write 2 to 5 short paragraphs in plain text.
+        Target roughly 180 to 450 words.
+        """
+
     summary_conversation_prompt_file: str = ".\\prompts\\_summary_convo_prompt.txt"
     summary_conversation_prompt: str = """
         You are generating a memory summary for internal storage and later retrieval.
@@ -588,6 +625,7 @@ def load_summary_config() -> SummaryConfig:
             env_name="SUMMARY_MAX_TOKENS",
             default=SUMMARY_DEFAULTS.summary_max_tokens,
         ),
+
         summary_conversation_prompt_file=_cfg_str(
             ("summary", "summary_conversation_prompt_file"),
             env_name="SUMMARY_CONVO_PROMPT_FILE",
@@ -598,6 +636,29 @@ def load_summary_config() -> SummaryConfig:
             env_name="SUMMARY_CONVO_PROMPT",
             default=SUMMARY_DEFAULTS.summary_conversation_prompt,
         ),
+
+        summary_artifact_prompt_file=_cfg_str(
+            ("summary", "summary_artifact_prompt_file"),
+            env_name="SUMMARY_ARTIFACT_PROMPT_FILE",
+            default=SUMMARY_DEFAULTS.summary_artifact_prompt_file,
+        ),
+        summary_artifact_prompt=_cfg_str(
+            ("summary", "summary_artifact_prompt"),
+            env_name="SUMMARY_ARTIFACT_PROMPT",
+            default=SUMMARY_DEFAULTS.summary_artifact_prompt,
+        ),
+
+        summary_artifact_reduce_prompt_file=_cfg_str(
+            ("summary", "summary_artifact_prompt_reduce_file"),
+            env_name="SUMMARY_ARTIFACT_REDUCE_PROMPT_FILE",
+            default=SUMMARY_DEFAULTS.summary_artifact_reduce_prompt_file,
+        ),
+        summary_artifact_reduce_prompt=_cfg_str(
+            ("summary", "summary_artifact_reduce_prompt"),
+            env_name="SUMMARY_ARTIFACT_REDUCE_PROMPT",
+            default=SUMMARY_DEFAULTS.summary_artifact_reduce_prompt,
+        ),
+
         summary_reduce_threshold_chars=_cfg_int(
             ("summary", "summary_reduce_threshold_chars"),
             env_name="SUMMARY_REDUCE_THRESHOLD_CHARS",
