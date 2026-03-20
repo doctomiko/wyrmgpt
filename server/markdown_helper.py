@@ -7,10 +7,18 @@ from typing import Iterable
 # When rendering to HTML (if/when), convert __underline__ -> <u>underline</u>
 
 _URL_RE = re.compile(r'(?i)\bhttps?://[^\s<>()]+\b')
+_ANGLE_AUTOLINK_URL_RE = re.compile(r'(?i)<+\s*(https?://[^\s<>()]+)\s*>+')
 # domain/path without scheme, excluding emails
 _HOSTPATH_RE = re.compile(
     r'(?i)\b(?![\w.+-]+@)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9-]{2,})+)(/[^\s<>()]*)?\b'
 )
+
+def _normalize_existing_autolinks(text: str) -> str:
+    if not text:
+        return text
+    # Collapse any malformed <<https://...>> style sequences to one markdown autolink.
+    return _ANGLE_AUTOLINK_URL_RE.sub(lambda m: f"<{m.group(1)}>", text)
+
 
 def wrap_text(
         text: str, 
@@ -22,6 +30,7 @@ def wrap_text(
 ) -> str:
     if not text:
         return ''
+
     if bold and underline:
         return f"__**{text}**__"
     if bold and italic:
@@ -62,7 +71,16 @@ def autolink_text(text: str) -> str:
         return text
 
     # First wrap explicit URLs.
-    text = _URL_RE.sub(lambda m: f"<{m.group(0)}>", text)
+    #text = _URL_RE.sub(lambda m: f"<{m.group(0)}>", text)
+    text = _normalize_existing_autolinks(text)
+    parts = re.split(r"(<[^>\n]+>)", text)
+    for i, part in enumerate(parts):
+        if not part:
+            continue
+        if part.startswith("<") and part.endswith(">"):
+            continue
+        parts[i] = _URL_RE.sub(lambda m: f"<{m.group(0)}>", part)
+    text = "".join(parts)
 
     # Then only host/path-wrap segments that are NOT already inside <...>.
     parts = re.split(r"(<[^>\n]+>)", text)
@@ -78,7 +96,8 @@ def autolink_text(text: str) -> str:
             continue
         parts[i] = _HOSTPATH_RE.sub(repl, part)
 
-    return "".join(parts)
+    #return "".join(parts)
+    return _normalize_existing_autolinks("".join(parts))
 
 
 def extract_explicit_urls(text: str) -> list[str]:

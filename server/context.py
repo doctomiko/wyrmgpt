@@ -19,7 +19,7 @@ from .db import (
     conversation_transcript_artifact_id, db_session,
     list_conversation_retained_artifacts,
     retain_conversation_artifact_conn,
-    create_conversation_scaffold_event_if_absent_conn,
+    create_or_update_conversation_scaffold_event_by_input_conn,
 )
 
 from .config import (
@@ -301,18 +301,23 @@ def _maybe_apply_artifact_reading_plan(
 
     input = {
         "artifact_id": artifact_id,
-        "artifact_title": title,
-        "origin_kind": origin_kind,
-        "retention_state": retention_state,
+        #"artifact_title": title,
+        #"origin_kind": origin_kind,
+        #"retention_state": retention_state,
     }
     plan_better = {
         "artifact_id": artifact_id,
+        "artifact_title": title,
+        "origin_kind": origin_kind,
+        "retention_state": retention_state,
         "mode": plan.get("mode"),
         "action": plan.get("action"),
         "strategies": sorted(plan.get("strategies") or []),
         "missing_derivatives": sorted(plan.get("missing_derivatives") or []),
+        "reason": plan.get("reason"),
     }
-    create_conversation_scaffold_event_if_absent_conn(
+    #create_conversation_scaffold_event_if_absent_conn(
+    create_or_update_conversation_scaffold_event_by_input_conn(
         conn,
         conversation_id=conversation_id,
         message_id=None,

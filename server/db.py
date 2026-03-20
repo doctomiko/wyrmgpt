@@ -6241,6 +6241,27 @@ def _normalize_scaffold_event_json_arg(value: str | dict | list | None) -> str |
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def _scaffold_event_artifact_id_for_dedupe(
+    event_kind: str,
+    input_json_text: str | None,
+) -> str | None:
+    if (event_kind or "").strip() != "artifact_reading_plan":
+        return None
+    raw = (input_json_text or "").strip()
+    if not raw:
+        return None
+    try:
+        obj = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    artifact_id = (obj.get("artifact_id") or "").strip()
+    if not artifact_id:
+        return None
+    return artifact_id
+
+
 def create_conversation_scaffold_event_if_absent_conn(
     conn: sqlite3.Connection,
     *,
@@ -6370,6 +6391,131 @@ def create_conversation_scaffold_event_conn(
         raise RuntimeError("Failed to insert conversation_scaffold_events row")
     return int(row_id)
 
+def create_or_update_conversation_scaffold_event_by_input_conn(
+    conn: sqlite3.Connection,
+    *,
+    conversation_id: str,
+    event_kind: str,
+    input_json: str | dict | list | None,
+    message_id: int | None = None,
+    status: str = "ready",
+    title: str | None = None,
+    body_text: str | None = None,
+    output_json: str | dict | list | None = None,
+) -> int:
+    cid = (conversation_id or "").strip()
+    ek = (event_kind or "").strip()
+    st = (status or "ready").strip()
+    if not cid:
+        raise ValueError("conversation_id is required")
+    if not ek:
+        raise ValueError("event_kind is required")
+
+    title_text = (title or "").strip() or None
+    body_text_norm = (body_text or "").strip() or None
+    input_json_text = _normalize_scaffold_event_json_arg(input_json)
+    output_json_text = _normalize_scaffold_event_json_arg(output_json)
+    message_id_int = int(message_id) if message_id is not None else None
+    artifact_id_key = _scaffold_event_artifact_id_for_dedupe(ek, input_json_text)
+    if artifact_id_key:
+        rows = conn.execute(
+            """
+            SELECT id, input_json
+            FROM conversation_scaffold_events
+            WHERE conversation_id = ?
+              AND event_kind = ?
+            ORDER BY id DESC
+            """,
+            (cid, ek),
+        ).fetchall()
+
+        keep_id: int | None = None
+        duplicate_ids: list[int] = []
+        for row in rows:
+            row_id = int(row["id"])
+            row_artifact_id = _scaffold_event_artifact_id_for_dedupe(
+                ek,
+                row["input_json"],
+            )
+            if row_artifact_id != artifact_id_key:
+                continue
+            if keep_id is None:
+                keep_id = row_id
+            else:
+                duplicate_ids.append(row_id)
+
+        if keep_id is not None:
+            conn.execute(
+                """
+                UPDATE conversation_scaffold_events
+                SET
+                    message_id = ?,
+                    status = ?,
+                    title = ?,
+                    body_text = ?,
+                    input_json = ?,
+                    output_json = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (message_id_int, st, title_text, body_text_norm, input_json_text, output_json_text, _utc_now_iso(), keep_id),
+            )
+            if duplicate_ids:
+                conn.executemany("DELETE FROM conversation_scaffold_events WHERE id = ?", [(rid,) for rid in duplicate_ids])
+            return keep_id
+
+
+    row = conn.execute(
+        """
+        SELECT id
+        FROM conversation_scaffold_events
+        WHERE conversation_id = ?
+          AND event_kind = ?
+          AND COALESCE(input_json, '') = COALESCE(?, '')
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (cid, ek, input_json_text),
+    ).fetchone()
+    if row:
+        event_id = int(row["id"])
+        conn.execute(
+            """
+            UPDATE conversation_scaffold_events
+                input_json = ?,
+            SET
+                message_id = ?,
+                status = ?,
+                title = ?,
+                body_text = ?,
+                output_json = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+                input_json_text,
+            (
+                message_id_int,
+                st,
+                title_text,
+                body_text_norm,
+                output_json_text,
+                _utc_now_iso(),
+                event_id,
+            ),
+        )
+        return event_id
+
+    return create_conversation_scaffold_event_conn(
+        conn,
+        conversation_id=cid,
+        message_id=message_id_int,
+        event_kind=ek,
+        status=st,
+        title=title_text,
+        body_text=body_text_norm,
+        input_json=input_json_text,
+        output_json=output_json_text,
+    )
 
 def create_conversation_scaffold_event(
     *,

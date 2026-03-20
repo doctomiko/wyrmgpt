@@ -1389,6 +1389,39 @@ function renderMarkdown(text) {
       t = t.replace(/\*(.+?)\*/g, "<em>$1</em>");
       t = t.replace(/_(.+?)_/g, "<em>$1</em>");
 
+      // Markdown autolinks: <https://example.com>
+      t = t.replace(
+        /&lt;+\s*(https?:\/\/(?:(?!&gt;|&lt;|\s).)+)\s*&gt;+/g,
+        (match, url) => {
+          const safeUrl = url
+            .replace(/"/g, "&quot;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+          return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${safeUrl}</a>`;
+        }
+      );
+
+      // Bare explicit URLs that are not already part of markdown links/autolinks.
+      // Only run this on text nodes, not inside HTML tags we already emitted.
+      {
+        const urlParts = t.split(/(<[^>]+>)/g);
+        for (let i = 0; i < urlParts.length; i++) {
+          const part = urlParts[i];
+          if (!part || part.startsWith("<")) continue;
+          urlParts[i] = part.replace(
+            /(^|[\s(])((https?:\/\/(?:(?!&lt;|&gt;|\s).)+))/g,
+            (match, prefix, url) => {
+              const safeUrl = url
+                .replace(/"/g, "&quot;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;");
+              return `${prefix}<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${safeUrl}</a>`;
+            }
+          );
+        }
+        t = urlParts.join("");
+      }
+
       // Strikethrough: ~~text~~
       t = t.replace(/~~(.+?)~~/g, "<del>$1</del>");
 
