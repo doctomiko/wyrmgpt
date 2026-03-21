@@ -6305,6 +6305,30 @@ def get_artifact_reading_session_for_conversation_artifact(
         return dict(row) if row else None
 
 
+def list_artifact_reading_sessions_for_conversation(
+    conversation_id: str,
+    *,
+    include_complete: bool = False,
+) -> list[dict]:
+    cid = (conversation_id or "").strip()
+    if not cid:
+        return []
+
+    sql = """
+        SELECT *
+        FROM artifact_reading_sessions
+        WHERE conversation_id = ?
+    """
+    params: list[Any] = [cid]
+    if not include_complete:
+        sql += " AND status IN ('active', 'paused')"
+    sql += " ORDER BY updated_at DESC, id DESC"
+
+    with db_session() as conn:
+        rows = conn.execute(sql, tuple(params)).fetchall()
+        return [dict(r) for r in rows]
+
+
 def upsert_artifact_reading_session(
     *,
     conversation_id: str,

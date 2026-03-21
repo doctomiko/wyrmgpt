@@ -20,6 +20,8 @@ from .db import (
     list_conversation_retained_artifacts,
     retain_conversation_artifact_conn,
     create_or_update_conversation_scaffold_event_by_input_conn,
+    list_artifact_reading_sessions_for_conversation,
+    list_artifact_reading_steps,
 )
 
 from .config import (
@@ -862,6 +864,52 @@ def _artifact_reading_plan_guidance_text() -> str:
     return text
 
 
+def _format_active_reading_session_message(conversation_id: str) -> dict | None:
+    sessions = list_artifact_reading_sessions_for_conversation(conversation_id)
+    if not sessions:
+        return None
+
+    lines = ["ACTIVE READING SESSIONS"]
+    for session in sessions[:8]:
+        session_id = int(session.get("id") or 0)
+        artifact_id = (session.get("artifact_id") or "").strip()
+        status = (session.get("status") or "").strip() or "active"
+        current_ordinal = session.get("current_section_ordinal")
+        steps = list_artifact_reading_steps(session_id)
+        next_step = next((s for s in steps if (s.get("status") or "") in {"pending", "active"}), None)
+        done_count = sum(1 for s in steps if (s.get("status") or "") == "done")
+
+        title = artifact_id
+        readiness = get_artifact_readiness(artifact_id)
+        if readiness and readiness.title:
+            title = readiness.title
+
+        lines.append(f"- Session {session_id}: {title} [{status}]")
+        lines.append(f"  Artifact ID: {artifact_id}")
+        if current_ordinal is not None:
+            lines.append(f"  Current section ordinal: {int(current_ordinal)}")
+        if next_step:
+            next_label = (next_step.get("label") or f"Section {int(next_step.get('ordinal') or 0)}").strip()
+            lines.append(
+                f"  Next step: ordinal {int(next_step.get('ordinal') or 0)} · {next_label} · chunks {int(next_step.get('chunk_start') or 0)}–{int(next_step.get('chunk_end') or 0)}"
+            )
+        lines.append(f"  Progress: {done_count}/{len(steps) or 0} steps complete")
+        summary_so_far = (session.get("summary_so_far") or "").strip()
+        if summary_so_far:
+            lines.append(f"  Summary so far: {summary_so_far}")
+        recent_notes = None
+        for step in reversed(steps):
+            if step.get("notes"):
+                recent_notes = step.get("notes")
+                break
+        if recent_notes:
+            lines.append(f"  Most recent notes: {recent_notes}")
+        lines.append("  Guidance: Reuse this session with artifact.read_next unless the user explicitly wants a restart.")
+        lines.append("")
+
+    return {"role": "user", "content": "".join(lines).strip()}
+
+
 def _order_scoped_memories_for_context(
     memories: list[dict],
     project_id: int | None,
@@ -1683,6 +1731,10 @@ def build_context(
             "reason": f"query_include={effective_query_include} user_text_present={bool(user_text.strip())}",
             #"reason": f"query_mode={query_cfg.query_mode} user_text_present={bool(user_text.strip())}",
         }
+
+    active_reading_session_message = _format_active_reading_session_message(conversation_id)
+    if active_reading_session_message:
+        whole_artifact_messages.append(active_reading_session_message)
 
     # Choose base system prompt
     core_system = get_system_prompt()

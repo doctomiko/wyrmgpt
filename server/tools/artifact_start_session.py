@@ -5,6 +5,8 @@ from typing import Any
 from ..artifact_reading_planner import get_artifact_readiness
 from ..db import (
     get_artifact_reading_session_for_conversation_artifact,
+    get_next_artifact_reading_step,
+    list_artifact_reading_steps,
     replace_artifact_reading_steps,
     update_artifact_reading_session,
     upsert_artifact_reading_session,
@@ -71,6 +73,30 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         return ToolResult(ok=False, tool=TOOL_SPEC.name, error="artifact has no readable sections or chunks yet")
 
     existing = get_artifact_reading_session_for_conversation_artifact(conversation_id, artifact_id)
+    if existing and not restart:
+        session_id = int(existing["id"])
+        stored_steps = list_artifact_reading_steps(session_id)
+        next_step = get_next_artifact_reading_step(
+            session_id,
+            after_ordinal=existing.get("current_section_ordinal"),
+            include_active=True,
+        )
+        existing = update_artifact_reading_session(session_id, status="active")
+        return ToolResult(
+            ok=True,
+            tool=TOOL_SPEC.name,
+            result={
+                "session": existing,
+                "steps": stored_steps,
+                "artifact_id": artifact_id,
+                "title": title or artifact_id,
+                "step_count": len(stored_steps),
+                "reused_existing_session": True,
+                "next_step": next_step,
+            },
+            display_text=f"Reusing reading session {session_id} for {title or artifact_id}.",
+        )
+
     summary_so_far = None if restart or not existing else existing.get("summary_so_far")
 
     session = upsert_artifact_reading_session(
@@ -87,6 +113,7 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
     session_id = int(session["id"])
     stored_steps = replace_artifact_reading_steps(session_id, steps)
     session = update_artifact_reading_session(session_id, current_section_ordinal=None, current_chunk_position=None, status="active")
+    next_step = get_next_artifact_reading_step(session_id, after_ordinal=None, include_active=True)
 
     return ToolResult(
         ok=True,
@@ -97,6 +124,8 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
             "artifact_id": artifact_id,
             "title": title or artifact_id,
             "step_count": len(stored_steps),
+            "reused_existing_session": False,
+            "next_step": next_step,
         },
         display_text=f"Prepared reading session {session_id} for {title or artifact_id} with {len(stored_steps)} steps.",
     )

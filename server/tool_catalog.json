@@ -93,7 +93,6 @@
     "input_schema": {
       "type": "object",
       "required": [
-        "conversation_id",
         "artifact_id"
       ],
       "properties": {
@@ -141,9 +140,7 @@
     ],
     "input_schema": {
       "type": "object",
-      "required": [
-        "session_id"
-      ],
+      "required": [],
       "properties": {
         "session_id": {
           "type": "integer",
@@ -152,6 +149,14 @@
         "mark_active": {
           "type": "boolean",
           "default": true
+        },
+        "artifact_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "conversation_id": {
+          "type": "string",
+          "minLength": 1
         }
       }
     },

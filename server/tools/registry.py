@@ -27,7 +27,7 @@ Example:
 ```
 
 When to use tools:
-* Use artifact.start_session when the user wants to begin reading a long artifact in order.
+* Use artifact.start_session when the user wants to begin reading a long artifact in order and there is no active reading session for that artifact.
 * Use artifact.read_next when the user says to continue, resume, or read the next step in an active reading session.
 * Use artifact.resolve_section when the user names a section, chapter, page, or heading and you need the chunk range.
 * Use artifact.read_section when the user explicitly wants a section read or after resolving a section.
@@ -37,7 +37,10 @@ Rules:
 * Only use tools listed below.
 * Do not invent tool results.
 * Do not claim to have read a section unless its text is present in context or returned by a tool.
-* Artifact IDs appear in ARTIFACT SUMMARY, ARTIFACT INDEX, FILE ARTIFACT, or ARTIFACT READING PLAN blocks when available.
+* If an ACTIVE READING SESSIONS block is present for the artifact you are discussing, prefer artifact.read_next over artifact.start_session unless the user explicitly asks to restart from the beginning.
+* Reuse an existing session whenever possible. Do not start a new reading session every turn.
+* artifact.read_next may use session_id when known. If the session id is not known, it may use artifact_id, and the scaffold will look up the active session for that artifact.
+* Artifact IDs appear in ARTIFACT SUMMARY, ARTIFACT INDEX, FILE ARTIFACT, ACTIVE READING SESSIONS, or ARTIFACT READING PLAN blocks when available.
 * The scaffold may fill context-only arguments like conversation_id automatically; do not invent random IDs.
 * After tool results are returned, continue with a normal answer unless another tool is still clearly required.
 

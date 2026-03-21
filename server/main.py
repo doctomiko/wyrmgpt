@@ -959,8 +959,12 @@ def _tool_text_without_blocks(text: str) -> str:
     return _TOOL_BLOCK_FENCE_RE.sub("", text or "").strip()
 
 
+def _tool_wrapper_text(text: str) -> str:
+    return _tool_text_without_blocks(text or "")
+
+
 def _tool_remainder_is_trivial(text: str) -> bool:
-    remainder = _tool_text_without_blocks(text or "")
+    remainder = _tool_wrapper_text(text or "")
     if not remainder:
         return True
     if len(remainder) <= 80 and _TRIVIAL_TOOL_WRAPPER_RE.match(remainder):
@@ -968,12 +972,17 @@ def _tool_remainder_is_trivial(text: str) -> bool:
     return False
 
 
-def _response_is_tool_only(text: str, tool_registry: ToolRegistry | None) -> bool:
+def _response_requests_tool_execution(text: str, tool_registry: ToolRegistry | None) -> bool:
     if not tool_registry:
         return False
     requests = tool_registry.extract_requests_from_text(text or "")
     if not requests:
         return False
+    remainder = _tool_wrapper_text(text or "")
+    if not remainder:
+        return True
+    if len(remainder) <= 400:
+        return True
     return _tool_remainder_is_trivial(text or "")
 
 
@@ -1111,7 +1120,7 @@ def _expand_input_with_tool_requests(
             pending_text = strip_zeitgeber_prefix(result.text or "")
 
         requests = tool_registry.extract_requests_from_text(pending_text or "")
-        if not _response_is_tool_only(pending_text or "", tool_registry):
+        if not _response_requests_tool_execution(pending_text or "", tool_registry):
             return working_input, pending_text, used_tools
 
         working_input.append({"role": "assistant", "content": pending_text or ""})
@@ -1206,12 +1215,15 @@ def chat(req: ChatRequest, model: str | None = None):
         final_text = ""
         try:
             if used_preflight_tools:
+                wrapper_text = _tool_wrapper_text(preflight_terminal_text or "")
+                if wrapper_text:
+                    yield wrapper_text + ""
                 follow_input = _remove_tool_prompt_messages(preflight_input)
                 parts: list[str] = []
                 for delta in provider.stream_text(target, follow_input):
                     parts.append(delta)
                     yield delta
-                final_text = postprocess_text("".join(parts))
+                final_text = postprocess_text((wrapper_text + "" if wrapper_text else "") + "".join(parts))
             elif preflight_terminal_text is not None:
                 final_text = postprocess_text(preflight_terminal_text)
                 if final_text:
@@ -1223,7 +1235,7 @@ def chat(req: ChatRequest, model: str | None = None):
                     yield delta
 
                 streamed_text = strip_zeitgeber_prefix("".join(parts))
-                if _response_is_tool_only(streamed_text, TOOL_REGISTRY):
+                if _response_requests_tool_execution(streamed_text, TOOL_REGISTRY):
                     expanded_input, terminal_text, used_tools = _expand_input_with_tool_requests(
                         target=target,
                         base_input=raw_input,
