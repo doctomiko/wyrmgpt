@@ -6233,6 +6233,407 @@ def list_artifact_derivative_sections(
         return [dict(r) for r in rows]
 
 
+
+def list_artifact_chunks(
+    artifact_id: str,
+    *,
+    chunk_start: int | None = None,
+    chunk_end: int | None = None,
+) -> list[dict]:
+    aid = (artifact_id or "").strip()
+    if not aid:
+        return []
+
+    sql = """
+        SELECT id, chunk_index, start_char, end_char, text
+        FROM corpus_chunks
+        WHERE artifact_id = ?
+    """
+    params: list[Any] = [aid]
+
+    if chunk_start is not None:
+        sql += " AND chunk_index >= ?"
+        params.append(int(chunk_start))
+    if chunk_end is not None:
+        sql += " AND chunk_index <= ?"
+        params.append(int(chunk_end))
+
+    sql += " ORDER BY chunk_index ASC, id ASC"
+
+    with db_session() as conn:
+        rows = conn.execute(sql, tuple(params)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def _normalize_json_text_arg(value: str | dict | list | None) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value.strip() or None
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def get_artifact_reading_session(session_id: int) -> dict | None:
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT * FROM artifact_reading_sessions WHERE id = ?",
+            (int(session_id),),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_artifact_reading_session_for_conversation_artifact(
+    conversation_id: str,
+    artifact_id: str,
+) -> dict | None:
+    cid = (conversation_id or "").strip()
+    aid = (artifact_id or "").strip()
+    if not cid or not aid:
+        return None
+
+    with db_session() as conn:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM artifact_reading_sessions
+            WHERE conversation_id = ?
+              AND artifact_id = ?
+            LIMIT 1
+            """,
+            (cid, aid),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def upsert_artifact_reading_session(
+    *,
+    conversation_id: str,
+    artifact_id: str,
+    mode: str = "reading",
+    status: str = "active",
+    strategy_json: str | dict | list | None = None,
+    current_section_ordinal: int | None = None,
+    current_chunk_position: int | None = None,
+    summary_so_far: str | None = None,
+) -> dict:
+    cid = (conversation_id or "").strip()
+    aid = (artifact_id or "").strip()
+    if not cid:
+        raise ValueError("conversation_id is required")
+    if not aid:
+        raise ValueError("artifact_id is required")
+
+    mode = (mode or "reading").strip() or "reading"
+    status = (status or "active").strip() or "active"
+    strategy_text = _normalize_json_text_arg(strategy_json)
+    summary_text = (summary_so_far or "").strip() or None
+    now = _utc_now_iso()
+
+    with db_session() as conn:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM artifact_reading_sessions
+            WHERE conversation_id = ?
+              AND artifact_id = ?
+            LIMIT 1
+            """,
+            (cid, aid),
+        ).fetchone()
+
+        if row:
+            session_id = int(row["id"])
+            conn.execute(
+                """
+                UPDATE artifact_reading_sessions
+                SET
+                    mode = ?,
+                    status = ?,
+                    strategy_json = COALESCE(?, strategy_json),
+                    current_section_ordinal = COALESCE(?, current_section_ordinal),
+                    current_chunk_position = COALESCE(?, current_chunk_position),
+                    summary_so_far = COALESCE(?, summary_so_far),
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    mode,
+                    status,
+                    strategy_text,
+                    current_section_ordinal,
+                    current_chunk_position,
+                    summary_text,
+                    now,
+                    session_id,
+                ),
+            )
+        else:
+            cur = conn.execute(
+                """
+                INSERT INTO artifact_reading_sessions
+                (
+                    conversation_id,
+                    artifact_id,
+                    mode,
+                    status,
+                    strategy_json,
+                    current_section_ordinal,
+                    current_chunk_position,
+                    summary_so_far,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    cid,
+                    aid,
+                    mode,
+                    status,
+                    strategy_text,
+                    current_section_ordinal,
+                    current_chunk_position,
+                    summary_text,
+                    now,
+                    now,
+                ),
+            )
+            if cur.lastrowid is None:
+                raise RuntimeError("Failed to insert artifact_reading_sessions row")
+            session_id = int(cur.lastrowid)
+
+        out = conn.execute(
+            "SELECT * FROM artifact_reading_sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+        if not out:
+            raise RuntimeError(f"artifact reading session not found after upsert: {session_id}")
+        return dict(out)
+
+
+def update_artifact_reading_session(
+    session_id: int,
+    *,
+    mode: str | None = None,
+    status: str | None = None,
+    strategy_json: str | dict | list | None = None,
+    current_section_ordinal: int | None = None,
+    current_chunk_position: int | None = None,
+    summary_so_far: str | None = None,
+) -> dict:
+    now = _utc_now_iso()
+    strategy_text = _normalize_json_text_arg(strategy_json)
+    summary_text = (summary_so_far or "").strip() or None if summary_so_far is not None else None
+
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT * FROM artifact_reading_sessions WHERE id = ?",
+            (int(session_id),),
+        ).fetchone()
+        if not row:
+            raise ValueError(f"artifact reading session not found: {session_id}")
+
+        current = dict(row)
+        conn.execute(
+            """
+            UPDATE artifact_reading_sessions
+            SET
+                mode = ?,
+                status = ?,
+                strategy_json = ?,
+                current_section_ordinal = ?,
+                current_chunk_position = ?,
+                summary_so_far = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                (mode or current.get("mode") or "reading").strip(),
+                (status or current.get("status") or "active").strip(),
+                strategy_text if strategy_json is not None else current.get("strategy_json"),
+                current_section_ordinal if current_section_ordinal is not None else current.get("current_section_ordinal"),
+                current_chunk_position if current_chunk_position is not None else current.get("current_chunk_position"),
+                summary_text if summary_so_far is not None else current.get("summary_so_far"),
+                now,
+                int(session_id),
+            ),
+        )
+        out = conn.execute(
+            "SELECT * FROM artifact_reading_sessions WHERE id = ?",
+            (int(session_id),),
+        ).fetchone()
+        if not out:
+            raise RuntimeError(f"artifact reading session not found after update: {session_id}")
+        return dict(out)
+
+
+def replace_artifact_reading_steps(
+    session_id: int,
+    steps: list[dict],
+) -> list[dict]:
+    now = _utc_now_iso()
+    sid = int(session_id)
+
+    with db_session() as conn:
+        conn.execute("DELETE FROM artifact_reading_steps WHERE session_id = ?", (sid,))
+        for idx, step in enumerate(steps or [], start=1):
+            ordinal = int(step.get("ordinal") or idx)
+            label = (step.get("label") or "").strip() or None
+            chunk_start = step.get("chunk_start")
+            chunk_end = step.get("chunk_end")
+            if chunk_start is None or chunk_end is None:
+                raise ValueError(f"reading step #{idx} missing chunk_start/chunk_end")
+            step_status = (step.get("status") or "pending").strip() or "pending"
+            notes = _normalize_json_text_arg(step.get("notes"))
+            conn.execute(
+                """
+                INSERT INTO artifact_reading_steps
+                (
+                    session_id,
+                    ordinal,
+                    label,
+                    chunk_start,
+                    chunk_end,
+                    status,
+                    notes,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    sid,
+                    ordinal,
+                    label,
+                    int(chunk_start),
+                    int(chunk_end),
+                    step_status,
+                    notes,
+                    now,
+                    now,
+                ),
+            )
+
+        rows = conn.execute(
+            "SELECT * FROM artifact_reading_steps WHERE session_id = ? ORDER BY ordinal ASC, id ASC",
+            (sid,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def list_artifact_reading_steps(session_id: int) -> list[dict]:
+    with db_session() as conn:
+        rows = conn.execute(
+            "SELECT * FROM artifact_reading_steps WHERE session_id = ? ORDER BY ordinal ASC, id ASC",
+            (int(session_id),),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_artifact_reading_step(session_id: int, ordinal: int) -> dict | None:
+    with db_session() as conn:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM artifact_reading_steps
+            WHERE session_id = ?
+              AND ordinal = ?
+            LIMIT 1
+            """,
+            (int(session_id), int(ordinal)),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_next_artifact_reading_step(
+    session_id: int,
+    *,
+    after_ordinal: int | None = None,
+    include_active: bool = False,
+) -> dict | None:
+    sql = """
+        SELECT *
+        FROM artifact_reading_steps
+        WHERE session_id = ?
+    """
+    params: list[Any] = [int(session_id)]
+
+    if after_ordinal is not None:
+        sql += " AND ordinal > ?"
+        params.append(int(after_ordinal))
+
+    if include_active:
+        sql += " AND status IN ('pending', 'active')"
+    else:
+        sql += " AND status = 'pending'"
+
+    sql += " ORDER BY ordinal ASC, id ASC LIMIT 1"
+
+    with db_session() as conn:
+        row = conn.execute(sql, tuple(params)).fetchone()
+        return dict(row) if row else None
+
+
+def update_artifact_reading_step(
+    session_id: int,
+    ordinal: int,
+    *,
+    status: str | None = None,
+    label: str | None = None,
+    notes: str | dict | list | None = None,
+) -> dict:
+    now = _utc_now_iso()
+    notes_text = _normalize_json_text_arg(notes) if notes is not None else None
+
+    with db_session() as conn:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM artifact_reading_steps
+            WHERE session_id = ?
+              AND ordinal = ?
+            LIMIT 1
+            """,
+            (int(session_id), int(ordinal)),
+        ).fetchone()
+        if not row:
+            raise ValueError(f"artifact reading step not found: session={session_id} ordinal={ordinal}")
+
+        current = dict(row)
+        conn.execute(
+            """
+            UPDATE artifact_reading_steps
+            SET
+                status = ?,
+                label = ?,
+                notes = ?,
+                updated_at = ?
+            WHERE session_id = ?
+              AND ordinal = ?
+            """,
+            (
+                (status or current.get("status") or "pending").strip(),
+                (label.strip() if isinstance(label, str) else current.get("label")) or None,
+                notes_text if notes is not None else current.get("notes"),
+                now,
+                int(session_id),
+                int(ordinal),
+            ),
+        )
+        out = conn.execute(
+            """
+            SELECT *
+            FROM artifact_reading_steps
+            WHERE session_id = ?
+              AND ordinal = ?
+            LIMIT 1
+            """,
+            (int(session_id), int(ordinal)),
+        ).fetchone()
+        if not out:
+            raise RuntimeError(f"artifact reading step not found after update: session={session_id} ordinal={ordinal}")
+        return dict(out)
+
 def _normalize_scaffold_event_json_arg(value: str | dict | list | None) -> str | None:
     if value is None:
         return None

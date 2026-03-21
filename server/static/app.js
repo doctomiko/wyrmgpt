@@ -1353,6 +1353,10 @@ function applyTables(t) {
 }
 
 // very simple markdown-ish renderer: headers, bold, italics, lists, code fences, newlines
+function stripAssistantToolBlocks(text) {
+  return String(text || "").replace(/```tool[\s\S]*?```/g, "").trim();
+}
+
 function renderMarkdown(text) {
   if (!text) return "";
 
@@ -2362,7 +2366,8 @@ async function sendSingle(text, model) {
     const { value, done } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
-    assistantBody.innerHTML = renderMarkdown(stripZeit(buffer));
+    const visibleBuffer = stripAssistantToolBlocks(stripZeit(buffer));
+    assistantBody.innerHTML = renderMarkdown(visibleBuffer || "Thinking…");
     chatWindow.scrollTop = chatWindow.scrollHeight;
   }
 }

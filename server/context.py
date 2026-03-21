@@ -30,7 +30,9 @@ from .config import (
     _normalize_csv_set,
     load_embedding_config, load_summary_config, load_vector_config,
     load_provider_defs, load_deployment_defs,
+    ToolConfig, load_tool_config,
 )
+from .tools.registry import ToolRegistry
 
 from .artifact_reading_planner import (
     format_index_message,
@@ -1101,7 +1103,7 @@ def build_context(
         ctx_cfg: ContextConfig | None = None,
         ret_cfg: RetrievalConfig | None = None,
         include_preview: bool = True,
-        ) -> dict:
+    ) -> dict:
     ctx_cfg = ctx_cfg or load_context_config()
     ret_cfg = ret_cfg or load_retrieval_config()
 
@@ -1824,7 +1826,9 @@ def build_model_input(
         user_text: str, 
         ctx_cfg: ContextConfig | None = None,
         query_cfg: RetrievalConfig | None = None,
-        ctx: dict | None = None
+        ctx: dict | None = None,
+        tool_cfg: ToolConfig | None = None,
+        tool_registry: ToolRegistry | None = None,
     ) -> ModelInput:
     """
     Build a Responses-API compatible input.
@@ -1833,21 +1837,26 @@ def build_model_input(
     """
     ctx_cfg = ctx_cfg or load_context_config()
     query_cfg = query_cfg or load_retrieval_config()
+    tool_cfg = tool_cfg or load_tool_config()
     
     ctx = ctx or build_context(conversation_id, user_text, ctx_cfg, query_cfg, include_preview=False)
 
     history_rows = ctx.get("history_rows") or []
-    system_message = {"role": "system", "content": ctx["system_text"]}
+    system_messages = [{"role": "system", "content": ctx["system_text"]}]
+    
+    if tool_registry and tool_cfg.enabled and tool_cfg.allow_assistant_tool_blocks:
+        system_messages.append({"role": "system", "content": tool_registry.build_system_prompt_block()})
+
     normalized_file_messages = ctx.get("file_messages") or []
     whole_artifact_messages = ctx.get("whole_artifact_messages") or []
 
     # If first message, just return the system prompt and the files list
     # Otherwise split the last message off and show it after the file list.
     if not history_rows:
-        return [system_message] + whole_artifact_messages + normalized_file_messages
+        return system_messages + whole_artifact_messages + normalized_file_messages
     typed_history = ctx["history_rows_typed"]
     *prior_msgs, last_msg = typed_history
-    return [system_message] + whole_artifact_messages + normalized_file_messages + prior_msgs + [last_msg]
+    return system_messages + whole_artifact_messages + normalized_file_messages + prior_msgs + [last_msg]
 
 
 def build_context_panel_payload(

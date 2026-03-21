@@ -30,7 +30,7 @@ from .providers.openai_provider import OpenAIProvider, ProviderExecutionError, e
 from .providers.types import ModelCatalog, ModelInput, ProviderDef
 from .config import (
     load_provider_defs, load_deployment_defs,
-    load_core_config, load_ui_config,
+    load_core_config, load_tool_config, load_ui_config,
     ContextConfig, load_context_config,
     RetrievalConfig, load_retrieval_config,
     SummaryConfig, load_summary_config,
@@ -54,6 +54,7 @@ from .db import (
     list_citation_scope_cards_for_conversation,
     list_citation_scope_cards_for_project,
     replace_citations_for_message,
+    create_conversation_scaffold_event,
     save_conversation_summary_artifact,
     update_ab_canonical,
     # Converstaions
@@ -105,8 +106,11 @@ from .db import (
     update_memory as db_update_memory,
     delete_memory as db_delete_memory,    
 )
+from .tools.base import ToolExecutionContext, ToolInvocationRequest, ToolResult
+from .tools.registry import ToolRegistry, load_tool_registry
 
 core_cfg = load_core_config()
+TOOL_CFG = load_tool_config()
 
 DEBUG_ERRORS = core_cfg.debug_errors
 
@@ -117,11 +121,12 @@ DEBUG_ERRORS = core_cfg.debug_errors
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # --- STARTUP ---
-    global MODEL_CATALOG, PROVIDER_REGISTRY
+    global MODEL_CATALOG, PROVIDER_REGISTRY, TOOL_REGISTRY
     print("[DB]", db_debug_info())
     init_schema()
     MODEL_CATALOG = load_model_catalog()
     PROVIDER_REGISTRY = build_provider_registry(MODEL_CATALOG)
+    TOOL_REGISTRY = load_tool_registry(TOOL_CFG)
 
     # If you need anything else (loading model lists, warm caches…)
     # you put it here.
@@ -139,6 +144,7 @@ app = FastAPI(lifespan=lifespan)
 
 # New abstract model for providers
 PROVIDER_REGISTRY: ProviderRegistry | None = None
+TOOL_REGISTRY: ToolRegistry | None = None
 
 # start from root folder above ./server
 HERE = Path(__file__).resolve().parent
@@ -930,8 +936,211 @@ def _persist_citations_for_assistant_message(assistant_message_id: int, ctx: dic
         log_warn(f"Citation persistence failed for assistant message {assistant_message_id}: {e}")
 
 
+
+_TOOL_BLOCK_FENCE_RE = re.compile(r"```tool\s*\{.*?\}\s*```", re.DOTALL | re.IGNORECASE)
+_TOOL_TRIGGER_RE = re.compile(r"\b(read|reading|continue|section|chapter|page|passage|chunk|artifact|resume|next)\b", re.IGNORECASE)
+_TRIVIAL_TOOL_WRAPPER_RE = re.compile(
+    r"^(?:[\s\-–—:,.!]*|(?:okay|ok|sure|certainly|i(?:'ll| will)|let me|using|calling|requesting|fetching|loading)\b[\s\-–—:,.!]*)*$",
+    re.IGNORECASE,
+)
+
+
+def _tooling_enabled(tool_cfg, tool_registry) -> bool:
+    return bool(
+        tool_cfg
+        and tool_cfg.enabled
+        and tool_cfg.allow_assistant_tool_blocks
+        and tool_registry is not None
+        and tool_registry.list_enabled()
+    )
+
+
+def _tool_text_without_blocks(text: str) -> str:
+    return _TOOL_BLOCK_FENCE_RE.sub("", text or "").strip()
+
+
+def _tool_remainder_is_trivial(text: str) -> bool:
+    remainder = _tool_text_without_blocks(text or "")
+    if not remainder:
+        return True
+    if len(remainder) <= 80 and _TRIVIAL_TOOL_WRAPPER_RE.match(remainder):
+        return True
+    return False
+
+
+def _response_is_tool_only(text: str, tool_registry: ToolRegistry | None) -> bool:
+    if not tool_registry:
+        return False
+    requests = tool_registry.extract_requests_from_text(text or "")
+    if not requests:
+        return False
+    return _tool_remainder_is_trivial(text or "")
+
+
+def _is_tool_prompt_message(msg: dict[str, Any]) -> bool:
+    if (msg.get("role") or "") != "system":
+        return False
+    content = msg.get("content")
+    return isinstance(content, str) and content.lstrip().startswith("TOOL USE")
+
+
+def _remove_tool_prompt_messages(model_input: ModelInput) -> ModelInput:
+    return [msg for msg in model_input if not _is_tool_prompt_message(msg)]
+
+
+def _tool_result_to_input_message(result: ToolResult) -> dict[str, Any]:
+    payload = {
+        "ok": result.ok,
+        "tool": result.tool,
+        "result": result.result,
+        "error": result.error,
+    }
+    body = [
+        "TOOL RESULT",
+        f"Tool: {result.tool}",
+        f"OK: {'true' if result.ok else 'false'}",
+        "",
+        "JSON:",
+        json.dumps(payload, ensure_ascii=False, indent=2),
+    ]
+    return {"role": "user", "content": "".join(body).strip()}
+
+
+def _persist_tool_event(
+    *,
+    conversation_id: str,
+    message_id: int | None,
+    request: ToolInvocationRequest,
+    result: ToolResult,
+) -> None:
+    try:
+        create_conversation_scaffold_event(
+            conversation_id=conversation_id,
+            message_id=message_id,
+            event_kind=result.event_kind or "tool_result",
+            status="ready" if result.ok else "error",
+            title=f"Tool · {request.tool}",
+            body_text=(result.display_text or result.error or request.tool),
+            input_json={"tool": request.tool, "arguments": request.arguments},
+            output_json=result.as_dict(),
+        )
+    except Exception as exc:
+        log_warn(f"Tool scaffold event persistence failed for {request.tool}: {exc}")
+
+
+def _execute_tool_requests(
+    *,
+    tool_registry: ToolRegistry,
+    conversation_id: str,
+    user_text: str,
+    requests: list[ToolInvocationRequest],
+    user_message_id: int | None,
+) -> list[ToolResult]:
+    exec_ctx = ToolExecutionContext(
+        conversation_id=conversation_id,
+        user_text=user_text,
+    )
+    out: list[ToolResult] = []
+    for request in requests:
+        try:
+            result = tool_registry.execute(request, ctx=exec_ctx)
+        except Exception as exc:
+            result = ToolResult(
+                ok=False,
+                tool=request.tool,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        _persist_tool_event(
+            conversation_id=conversation_id,
+            message_id=user_message_id,
+            request=request,
+            result=result,
+        )
+        out.append(result)
+    return out
+
+
+def _should_attempt_tool_preflight(
+    *,
+    user_text: str,
+    ctx: dict | None,
+    tool_cfg,
+    tool_registry: ToolRegistry | None,
+) -> bool:
+    if not _tooling_enabled(tool_cfg, tool_registry):
+        return False
+
+    if _TOOL_TRIGGER_RE.search(user_text or ""):
+        return True
+
+    for msg in (ctx or {}).get("whole_artifact_messages") or []:
+        content = msg.get("content")
+        if not isinstance(content, str):
+            continue
+        first = (content.splitlines() or [""])[0].strip()
+        if first in {"ARTIFACT READING PLAN", "ARTIFACT INDEX", "ARTIFACT SUMMARY"}:
+            return True
+    return False
+
+
+def _expand_input_with_tool_requests(
+    *,
+    target,
+    base_input: ModelInput,
+    conversation_id: str,
+    user_text: str,
+    tool_cfg,
+    tool_registry: ToolRegistry | None,
+    user_message_id: int | None = None,
+    initial_assistant_text: str | None = None,
+) -> tuple[ModelInput, str | None, bool]:
+    if not _tooling_enabled(tool_cfg, tool_registry):
+        return list(base_input), initial_assistant_text, False
+    if PROVIDER_REGISTRY is None:
+        raise RuntimeError("Provider registry is not initialized.")
+
+    provider = PROVIDER_REGISTRY.get_chat_provider(target)
+    working_input: ModelInput = list(base_input)
+    remaining_calls = max(1, int(tool_cfg.max_calls_per_message))
+    used_tools = False
+    pending_text = initial_assistant_text
+
+    while remaining_calls > 0:
+        if pending_text is None:
+            result = provider.complete(target, working_input)
+            pending_text = strip_zeitgeber_prefix(result.text or "")
+
+        requests = tool_registry.extract_requests_from_text(pending_text or "")
+        if not _response_is_tool_only(pending_text or "", tool_registry):
+            return working_input, pending_text, used_tools
+
+        working_input.append({"role": "assistant", "content": pending_text or ""})
+        allowed = requests[:remaining_calls]
+        remaining_calls -= len(allowed)
+        tool_results = _execute_tool_requests(
+            tool_registry=tool_registry,
+            conversation_id=conversation_id,
+            user_text=user_text,
+            requests=allowed,
+            user_message_id=user_message_id,
+        )
+        for result in tool_results:
+            working_input.append(_tool_result_to_input_message(result))
+
+        used_tools = True
+        pending_text = None
+
+    return working_input, None, used_tools
+
+
+async def _expand_input_with_tool_requests_async(**kwargs):
+    loop = asyncio.get_running_loop()
+    fn = partial(_expand_input_with_tool_requests, **kwargs)
+    return await loop.run_in_executor(None, fn)
+
 @app.post("/api/chat")
 def chat(req: ChatRequest, model: str | None = None):
+    tool_cfg = load_tool_config()
     cid = req.conversation_id or str(uuid.uuid4())
     if req.conversation_id is None:
         create_conversation(cid)
@@ -955,8 +1164,15 @@ def chat(req: ChatRequest, model: str | None = None):
         )
     except Exception as e:
         log_warn(f"URL ingest failed for conversation {cid}: {e}")
-        ctx = build_context(cid, full, include_preview=False)
-        raw_input = build_model_input(cid, full, ctx=ctx)
+
+    ctx = build_context(cid, full, include_preview=False)
+    raw_input = build_model_input(
+        cid,
+        full,
+        ctx=ctx,
+        tool_cfg=tool_cfg,
+        tool_registry=TOOL_REGISTRY,
+    )
 
     requested_model = (req.model or model or "").strip()
     if PROVIDER_REGISTRY is None:
@@ -965,19 +1181,81 @@ def chat(req: ChatRequest, model: str | None = None):
     target = PROVIDER_REGISTRY.resolve_chat_target(requested_model or None)
     provider = PROVIDER_REGISTRY.get_chat_provider(target)
 
-    def gen():
-        parts: list[str] = []
-        try:
-            for delta in provider.stream_text(target, raw_input):
-                parts.append(delta)
-                yield delta
+    preflight_input = raw_input
+    preflight_terminal_text: str | None = None
+    used_preflight_tools = False
 
-            full = postprocess_text("".join(parts))
-            if full:
+    if _should_attempt_tool_preflight(user_text=full, ctx=ctx, tool_cfg=tool_cfg, tool_registry=TOOL_REGISTRY):
+        try:
+            preflight_input, preflight_terminal_text, used_preflight_tools = _expand_input_with_tool_requests(
+                target=target,
+                base_input=raw_input,
+                conversation_id=cid,
+                user_text=full,
+                tool_cfg=tool_cfg,
+                tool_registry=TOOL_REGISTRY,
+                user_message_id=user_message_id,
+            )
+        except Exception as exc:
+            log_warn(f"Tool preflight failed for conversation {cid}: {exc}")
+            preflight_input = raw_input
+            preflight_terminal_text = None
+            used_preflight_tools = False
+
+    def gen():
+        final_text = ""
+        try:
+            if used_preflight_tools:
+                follow_input = _remove_tool_prompt_messages(preflight_input)
+                parts: list[str] = []
+                for delta in provider.stream_text(target, follow_input):
+                    parts.append(delta)
+                    yield delta
+                final_text = postprocess_text("".join(parts))
+            elif preflight_terminal_text is not None:
+                final_text = postprocess_text(preflight_terminal_text)
+                if final_text:
+                    yield final_text
+            else:
+                parts: list[str] = []
+                for delta in provider.stream_text(target, raw_input):
+                    parts.append(delta)
+                    yield delta
+
+                streamed_text = strip_zeitgeber_prefix("".join(parts))
+                if _response_is_tool_only(streamed_text, TOOL_REGISTRY):
+                    expanded_input, terminal_text, used_tools = _expand_input_with_tool_requests(
+                        target=target,
+                        base_input=raw_input,
+                        conversation_id=cid,
+                        user_text=full,
+                        tool_cfg=tool_cfg,
+                        tool_registry=TOOL_REGISTRY,
+                        user_message_id=user_message_id,
+                        initial_assistant_text=streamed_text,
+                    )
+                    if used_tools:
+                        if terminal_text is None:
+                            follow_input = _remove_tool_prompt_messages(expanded_input)
+                            follow_parts: list[str] = []
+                            for delta in provider.stream_text(target, follow_input):
+                                follow_parts.append(delta)
+                                yield delta
+                            final_text = postprocess_text("".join(follow_parts))
+                        else:
+                            final_text = postprocess_text(terminal_text)
+                            if final_text:
+                                yield final_text
+                    else:
+                        final_text = postprocess_text(streamed_text)
+                else:
+                    final_text = postprocess_text(streamed_text)
+
+            if final_text:
                 assistant_message_id = add_message(
                     cid,
                     "assistant",
-                    full,
+                    final_text,
                     meta={
                         "model": target.model,
                         "provider": target.provider_id,
@@ -1087,8 +1365,10 @@ async def chat_ab(req: ABChatRequest):
     A/B endpoint that:
       - never breaks the UI on OpenAI errors
       - runs A and B in parallel
+      - uses slot A as the shared tool planner when tooling is needed
       - returns structured {a:{ok,text|error}, b:{ok,text|error}}
     """
+    tool_cfg = load_tool_config()
     cid = req.conversation_id or str(uuid.uuid4())
     if req.conversation_id is None:
         create_conversation(cid)
@@ -1116,14 +1396,13 @@ async def chat_ab(req: ABChatRequest):
         log_warn(f"URL ingest failed for conversation {cid}: {e}")
 
     ctx = build_context(cid, full, include_preview=False)
-    raw_input = build_model_input(cid, full, ctx=ctx)
-
-    if (False):
-        full = postprocess_text(req.message)
-        if full:
-            add_message(cid, "user", full)
-        ctx = build_context(cid, req.message, include_preview=False)
-        raw_input = build_model_input(cid, req.message, ctx=ctx)
+    raw_input = build_model_input(
+        cid,
+        full,
+        ctx=ctx,
+        tool_cfg=tool_cfg,
+        tool_registry=TOOL_REGISTRY,
+    )
 
     model_a = (req.model_a or "").strip()
     model_b = (req.model_b or model_a).strip()
@@ -1134,23 +1413,59 @@ async def chat_ab(req: ABChatRequest):
     target_a = PROVIDER_REGISTRY.resolve_chat_target(model_a or None)
     target_b = PROVIDER_REGISTRY.resolve_chat_target(model_b or None)
 
+    planner_text_a: str | None = None
+    used_shared_tools = False
+    final_input = raw_input
+
+    if _should_attempt_tool_preflight(user_text=full, ctx=ctx, tool_cfg=tool_cfg, tool_registry=TOOL_REGISTRY):
+        try:
+            expanded_input, planner_text_a, used_shared_tools = await _expand_input_with_tool_requests_async(
+                target=target_a,
+                base_input=raw_input,
+                conversation_id=cid,
+                user_text=full,
+                tool_cfg=tool_cfg,
+                tool_registry=TOOL_REGISTRY,
+                user_message_id=user_message_id,
+            )
+            final_input = _remove_tool_prompt_messages(expanded_input if used_shared_tools else raw_input)
+        except Exception as exc:
+            log_warn(f"Shared tool planning failed for conversation {cid}: {exc}")
+            planner_text_a = None
+            used_shared_tools = False
+            final_input = _remove_tool_prompt_messages(raw_input)
+    else:
+        final_input = _remove_tool_prompt_messages(raw_input)
+
     ab_group = str(uuid.uuid4())
 
     a_res = None
     b_res = None
-    async with anyio.create_task_group() as tg:
-        async def run_a():
-            nonlocal a_res
-            a_res = await call_model_with_recovery(target_a, raw_input)
-        async def run_b():
-            nonlocal b_res
-            b_res = await call_model_with_recovery(target_b, raw_input)
-        tg.start_soon(run_a)
-        tg.start_soon(run_b)
-    # At this point, both are done
+
+    async def run_b():
+        nonlocal b_res
+        b_res = await call_model_with_recovery(target_b, final_input)
+
+    if used_shared_tools:
+        async with anyio.create_task_group() as tg:
+            async def run_a():
+                nonlocal a_res
+                a_res = await call_model_with_recovery(target_a, final_input)
+            tg.start_soon(run_a)
+            tg.start_soon(run_b)
+    else:
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(run_b)
+            if planner_text_a is not None:
+                a_res = {"ok": True, "text": strip_zeitgeber_prefix(planner_text_a or ""), "recovery": None}
+            else:
+                async def run_a_direct():
+                    nonlocal a_res
+                    a_res = await call_model_with_recovery(target_a, final_input)
+                tg.start_soon(run_a_direct)
+
     assert a_res is not None and b_res is not None
 
-    # Store results as messages; store errors as assistant messages with meta.kind="error"
     def store(slot: str, target, requested_model_name: str, res: dict):
         if res.get("ok"):
             text = res.get("text") or ""
@@ -1171,7 +1486,6 @@ async def chat_ab(req: ABChatRequest):
             payload = res.get("error") or {}
             msg = extract_error_message(payload)
             status = payload.get("status_code")
-            req_id = payload.get("request_id")
             bubble = f"[Model {slot} error] {status or ''} {msg}".strip()
             full = postprocess_text(bubble)
             if full:
@@ -1205,6 +1519,8 @@ async def chat_ab(req: ABChatRequest):
         "provider_b": target_b.provider_id,
         "requested_model_a": model_a,
         "requested_model_b": model_b,
+        "tool_planner_slot": "A",
+        "used_shared_tools": used_shared_tools,
         "a": a_res,
         "b": b_res,
     })

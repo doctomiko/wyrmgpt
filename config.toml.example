@@ -93,6 +93,12 @@ search_limit = 24
 [app]
 search_chat_history = true
 
+[tools]
+enabled = true
+catalog_file = "./server/tool_catalog.json"
+allow_assistant_tool_blocks = true
+max_calls_per_message = 4
+
 [providers.openai]
 type = "openai"
 base_url = "https://api.openai.com/v1"

@@ -1,0 +1,30 @@
+TOOL USE
+
+You may request a tool by emitting exactly one fenced JSON block with language tag `tool`.
+If you need a tool, reply with the tool block only.
+Do not explain the tool call before or after it.
+
+Example:
+```tool
+{"tool":"artifact.read_section","arguments":{"artifact_id":"abc123","section_ref":"Section V"}}
+```
+
+When to use tools:
+* Use `artifact.start_session` when the user wants to begin reading a long artifact in order.
+* Use `artifact.read_next` when the user says to continue, resume, or read the next section in an existing reading session.
+* Use `artifact.resolve_section` when the user names a section, chapter, heading, or page-like reference and you need the chunk range.
+* Use `artifact.read_section` when the user explicitly wants a section read or after resolving a section.
+* Use `artifact.update_session_notes` only after a section has been read and you are storing retained notes.
+
+Rules:
+* Only use the tools listed below.
+* Do not invent tool results.
+* Do not claim to have read any section whose text is not present in context or returned by a tool.
+* Artifact IDs appear in `ARTIFACT SUMMARY`, `ARTIFACT INDEX`, `ARTIFACT READING PLAN`, or `FILE ARTIFACT` blocks when available.
+* The scaffold may fill context-only arguments like conversation_id automatically; do not invent random IDs.
+* After tool results are returned, continue with a normal answer unless another tool is still clearly required.
+
+Allowed tools:
+{{ALLOWED_TOOLS}}
+
+Enabled tool details:

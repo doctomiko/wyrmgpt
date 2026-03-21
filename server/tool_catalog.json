@@ -1,0 +1,223 @@
+{
+  "artifact.resolve_section": {
+    "module": "artifact_resolve_section",
+    "enabled": true,
+    "display_name": "Resolve Artifact Section",
+    "description": "Resolve a user-facing section reference like 'Section V' or a heading label to a concrete artifact chunk range.",
+    "tags": [
+      "artifact",
+      "reading",
+      "navigation"
+    ],
+    "input_schema": {
+      "type": "object",
+      "required": [
+        "artifact_id",
+        "section_ref"
+      ],
+      "properties": {
+        "artifact_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "section_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "max_candidates": {
+          "type": "integer",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 20
+        }
+      }
+    },
+    "system_usage": "Use when the user refers to a named section, chapter, page, or heading and you need a concrete chunk range before reading."
+  },
+  "artifact.read_section": {
+    "module": "artifact_read_section",
+    "enabled": true,
+    "display_name": "Read Artifact Section",
+    "description": "Load a concrete artifact section or chunk range into a structured tool result.",
+    "tags": [
+      "artifact",
+      "reading"
+    ],
+    "input_schema": {
+      "type": "object",
+      "required": [
+        "artifact_id"
+      ],
+      "properties": {
+        "artifact_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "section_ref": {
+          "type": "string"
+        },
+        "chunk_start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "chunk_end": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "session_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ordinal": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "mark_active": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "system_usage": "Use when the user explicitly wants a section read, or after artifact.resolve_section identifies the chunk range."
+  },
+  "artifact.start_session": {
+    "module": "artifact_start_session",
+    "enabled": true,
+    "display_name": "Start Artifact Reading Session",
+    "description": "Create or refresh a durable reading session with ordered reading steps derived from the artifact index.",
+    "tags": [
+      "artifact",
+      "reading",
+      "session"
+    ],
+    "input_schema": {
+      "type": "object",
+      "required": [
+        "conversation_id",
+        "artifact_id"
+      ],
+      "properties": {
+        "conversation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifact_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "reading",
+            "reference",
+            "mixed"
+          ],
+          "default": "reading"
+        },
+        "strategy": {
+          "type": [
+            "object",
+            "array",
+            "string"
+          ]
+        },
+        "restart": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "system_usage": "Use before reading a long artifact sequentially so progress and notes can be retained across turns."
+  },
+  "artifact.read_next": {
+    "module": "artifact_read_next",
+    "enabled": true,
+    "display_name": "Read Next Artifact Step",
+    "description": "Advance an artifact reading session to the next pending step and return the corresponding section text.",
+    "tags": [
+      "artifact",
+      "reading",
+      "session"
+    ],
+    "input_schema": {
+      "type": "object",
+      "required": [
+        "session_id"
+      ],
+      "properties": {
+        "session_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "mark_active": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "system_usage": "Use when the user says to continue reading or when the assistant wants the next section in an active reading session."
+  },
+  "artifact.update_session_notes": {
+    "module": "artifact_update_session_notes",
+    "enabled": true,
+    "display_name": "Update Artifact Session Notes",
+    "description": "Persist summary-so-far and compact structured reading notes for one reading step.",
+    "tags": [
+      "artifact",
+      "reading",
+      "session",
+      "notes"
+    ],
+    "input_schema": {
+      "type": "object",
+      "required": [
+        "session_id",
+        "ordinal"
+      ],
+      "properties": {
+        "session_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ordinal": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "summary_so_far": {
+          "type": "string"
+        },
+        "notes": {
+          "type": [
+            "object",
+            "array",
+            "string"
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "active",
+            "done",
+            "skipped"
+          ],
+          "default": "done"
+        },
+        "session_status": {
+          "type": "string",
+          "enum": [
+            "active",
+            "paused",
+            "complete",
+            "dropped"
+          ]
+        },
+        "current_chunk_position": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "system_usage": "Use after reading a section to store the running summary and short reflective notes for later continuation or retrieval."
+  }
+}

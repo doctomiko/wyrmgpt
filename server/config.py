@@ -552,6 +552,15 @@ class ImportConfig:
 IMPORT_DEFAULTS: ImportConfig = ImportConfig()
 
 
+@dataclass(frozen=True)
+class ToolConfig:
+    enabled: bool = True
+    catalog_file: str = "./server/tool_catalog.json"
+    allow_assistant_tool_blocks: bool = True
+    max_calls_per_message: int = 4
+TOOLS_DEFAULTS: ToolConfig = ToolConfig()
+
+
 @dataclass
 class AppConfig:
     search_chat_history: bool = True
@@ -860,4 +869,19 @@ def load_import_config() -> ImportConfig:
         trailing_merge_min_chars=max(1, _cfg_int(("import", "trailing_merge_min_chars"), env_name="IMPORT_TRAILING_MERGE_MIN_CHARS", default=IMPORT_DEFAULTS.trailing_merge_min_chars)),
         ensure_files_limit_per_scope=max(1, _cfg_int(("import", "ensure_files_limit_per_scope"), env_name="IMPORT_ENSURE_FILES_LIMIT_PER_SCOPE", default=IMPORT_DEFAULTS.ensure_files_limit_per_scope)),
         artifact_sidecar_threshold_bytes=max(1, _cfg_int(("import", "artifact_sidecar_threshold_bytes"), env_name="IMPORT_ARTIFACT_SIDECAR_THRESHOLD_BYTES", default=IMPORT_DEFAULTS.artifact_sidecar_threshold_bytes)),
+    )
+
+def load_tool_config() -> ToolConfig:
+    return ToolConfig(
+        enabled=_cfg_bool(("tools", "enabled"), env_name="TOOLS_ENABLED", default=TOOLS_DEFAULTS.enabled),
+        catalog_file=_cfg_str(("tools", "catalog_file"), env_name="TOOLS_CATALOG_FILE", default=TOOLS_DEFAULTS.catalog_file),
+        allow_assistant_tool_blocks=_cfg_bool(
+            ("tools", "allow_assistant_tool_blocks"),
+            env_name="TOOLS_ALLOW_ASSISTANT_TOOL_BLOCKS",
+            default=TOOLS_DEFAULTS.allow_assistant_tool_blocks,
+        ),
+        max_calls_per_message=max(
+            1,
+            _cfg_int(("tools", "max_calls_per_message"), env_name="TOOLS_MAX_CALLS_PER_MESSAGE", default=TOOLS_DEFAULTS.max_calls_per_message),
+        ),
     )
