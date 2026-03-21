@@ -76,6 +76,7 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
 
     payload = {
         "artifact_id": artifact_id,
+        "session_id": int(session_id) if session_id is not None else None,
         "title": (art.get("title") or artifact_id).strip(),
         "source_kind": (art.get("source_kind") or "").strip(),
         "section": {

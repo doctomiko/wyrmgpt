@@ -1,23 +1,95 @@
-Are there any points where the setting, characters, tone, style, or arguments have shifted in a way that makes you think a new scene, act, or section has begun partway through this peice?
-What changed in stakes, goals, or power balance here?
+[core]
+## Questions for Core Reading:
+- What seems to have begun, ended, or shifted in this section? Did a new scene, act, or argumentative turn start partway through?
+- What changed in stakes, goals, leverage, or power balance here?
+- Who or what is central in this section? Are these returning elements or newly introduced ones?
+- What newly established, revised, or contradicted facts matter going forward?
+- What is the single most load-bearing sentence, image, beat, or claim in this section?
+- What feels unresolved now, and what is the most urgent next question?
 
-Who are the characters? Are they returning from a previous section or are they newly introduced in this peice?
-Did any characters meet a resolution that seems like an ending, such as departure or death? If so, were you pleased or displeased by this turn of events? Do you see reasons why it needed to happen, both within the plot and writers' meta-reasons?
+[meta]
+## Meta / Session overlay:
+- What do I currently think this piece is trying to do?
+- What am I uncertain about but willing to keep watching?
+- What is my current confidence in my interpretation?
+- Have any earlier expectations been confirmed or overturned?
+- Am I more or less engaged than I was one section ago?
 
-What facts about the world [or world-view being expressed] were newly established or contradicted?
-Are there any first premises, axioms, conclusions, or argument keystones being laid down?
-Are there specific lines of dialog, images, metaphors, themes, or arguments you found particularly compelling?
-What is the single most load-bearing sentence or image in this section?
+[reader_experience]
+## Reader Experience overlay, for enjoyment and engagement:
+- What emotional temperature did this section carry?
+- Was it interesting, boring, gripping, funny, moving, tense, or flat? Why?
+- Did the pacing accelerate, stall, or pivot?
+- What moment, line, image, or exchange landed best for you?
+- What do you most want to see next?
+- What do you predict will happen next, and how confident are you?
 
-What emotional temperature did this section carry?
-Did the pacing accelerate, stall, or pivot?
+[narrative]
+## Narrative / Storycraft overlay:
+- Which characters are active here, and how did their relationships or goals change?
+- Did any character arrive, depart, transform, resolve, or die in a way that feels consequential?
+- Did the setting, tone, POV, style, or dramatic focus shift?
+- Is this section doing setup, escalation, complication, climax, fallout, or transition?
+- Does anything here feel like foreshadowing, payoff, misdirection, or thematic reinforcement?
+- Is the plot development satisfying so far?
 
-Are there any elements that don't make sense right now?
-What would an editor want to verify later?
+[developmental_edit]
+## Developmental Editing overlay:
+- Where does the piece feel unclear, under-motivated, redundant, rushed, or over-explained?
+- Are there implied scene breaks or section breaks that the draft has not marked clearly?
+- What would an editor want to verify, move, trim, expand, or reorder?
+- Does the emotional or logical progression feel earned?
+- Are there continuity issues, tonal clashes, dangling threads, voice shifts, or perspective problems?
+- What is the highest-value revision opportunity in this section?
 
-Was this peice interesting or boring? Did you enjoy it?
-Am you satisfied with the development of the plot so far?
-What do you anticipate might happen next in the parts that haven't been read yet?
-Are you excited to know if you're correct?
-What question is now most urgent for the next section to answer?
+[argument]
+## Argument / Rhetoric overlay:
+- What claim, premise, frame, or worldview is being advanced here?
+- What assumptions or axioms are being laid down or smuggled in?
+- What evidence or reasoning is offered, and how strong does it seem?
+- Did the argument shift, narrow, widen, or contradict itself?
+- What is the strongest point here? What is the weakest?
+- What would a skeptical reader push back on next?
 
+[worldbuilding]
+## Worldbuilding / Setting overlay:
+- What new facts about the world, system, or context were established here?
+- What norms, rules, institutions, or constraints became clearer?
+- Did anything contradict prior expectations about the setting or framework?
+- What feels suggestive but not yet fully explained?
+- What detail most effectively made the world feel real?
+
+[style]
+## Style / Language overlay:
+- What stylistic choices stand out here?
+- What metaphors, images, dialogue, or phrasing are especially effective?
+- Does the voice feel stable, evolving, or inconsistent?
+- Is the prose working with the content or fighting it?
+- What sentence or paragraph best represents how this piece sounds?
+
+[scientific_research]
+## Scientific/Research Analysis overlay:
+- What is the main research question or hypothesis in this section?
+- What claim is actually being made here, and how narrow or broad is it?
+- What methods, data, or experimental design are being used, and do they seem appropriate to the question?
+- What assumptions, controls, or limitations matter most here?
+- Are the results being described clearly, or is the prose smuggling interpretation in as if it were fact?
+- Do the conclusions seem supported by the evidence presented in this section?
+- What would a skeptical but fair reader want clarified, replicated, or tested further?
+- Is there any place where correlation, speculation, or weak inference is being presented too confidently?
+- What is the most important technical finding or takeaway here?
+- Are there are any lurking biases, faulty methodologies, or plausible fabrication of data?
+- What remains uncertain, unresolved, or clearly outside the scope of the study?
+
+[technical_systems]
+## Technical/Systems overlay:
+- What system, component, or process is being described here?
+- What problem is this section trying to solve, and for whom?
+- Are the requirements, inputs, outputs, and constraints clear?
+- What dependencies, assumptions, or prerequisites are implied or left unstated?
+- Does the explanation match how a real user, operator, or implementer would think about the task?
+- Are there edge cases, failure modes, or operational risks that should be called out more explicitly?
+- What tradeoffs are being made here, and are they justified?
+- Is anything hand-waved that would matter in real implementation, maintenance, scaling, security, or debugging?
+- What is the most useful or load-bearing concept in this section?
+- What would a competent engineer, admin, or user still need to know after reading this?

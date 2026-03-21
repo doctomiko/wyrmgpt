@@ -35,6 +35,7 @@ from .config import (
     ToolConfig, load_tool_config,
 )
 from .tools.registry import ToolRegistry
+from .reading_session_notes import coerce_reading_strategy, load_reading_questions
 
 from .artifact_reading_planner import (
     format_index_message,
@@ -240,7 +241,7 @@ def _maybe_apply_artifact_reading_plan(
     if plan.get("action") == "include_whole":
         return False
 
-    summary_msg = format_summary_message(readiness)
+    summary_msg = None if (plan.get("mode") == "reading") else format_summary_message(readiness)
     index_msg = format_index_message(readiness)
     planner_note_msg = format_planner_note_message(plan)
 
@@ -869,6 +870,7 @@ def _format_active_reading_session_message(conversation_id: str) -> dict | None:
     if not sessions:
         return None
 
+    question_sets = load_reading_questions()
     lines = ["ACTIVE READING SESSIONS"]
     for session in sessions[:8]:
         session_id = int(session.get("id") or 0)
@@ -884,8 +886,18 @@ def _format_active_reading_session_message(conversation_id: str) -> dict | None:
         if readiness and readiness.title:
             title = readiness.title
 
+        strategy = coerce_reading_strategy(
+            session.get("strategy_json"),
+            source_kind=(readiness.source_kind if readiness else ""),
+            title=title,
+            available_modes=sorted(question_sets.keys()),
+        )
+        selected_modes = strategy.get("modes") or []
+
         lines.append(f"- Session {session_id}: {title} [{status}]")
         lines.append(f"  Artifact ID: {artifact_id}")
+        if selected_modes:
+            lines.append(f"  Modes: {', '.join(str(m) for m in selected_modes)}")
         if current_ordinal is not None:
             lines.append(f"  Current section ordinal: {int(current_ordinal)}")
         if next_step:
@@ -903,7 +915,10 @@ def _format_active_reading_session_message(conversation_id: str) -> dict | None:
                 recent_notes = step.get("notes")
                 break
         if recent_notes:
-            lines.append(f"  Most recent notes: {recent_notes}")
+            recent_text = str(recent_notes).strip()
+            if len(recent_text) > 700:
+                recent_text = recent_text[:697].rstrip() + "..."
+            lines.append(f"  Most recent notes: {recent_text}")
         lines.append("  Guidance: Reuse this session with artifact.read_next unless the user explicitly wants a restart.")
         lines.append("")
 

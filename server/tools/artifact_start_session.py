@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..artifact_reading_planner import get_artifact_readiness
+from ..reading_session_notes import coerce_reading_strategy, load_reading_questions
 from ..db import (
     get_artifact_reading_session_for_conversation_artifact,
     get_next_artifact_reading_step,
@@ -72,6 +73,16 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
     if not steps:
         return ToolResult(ok=False, tool=TOOL_SPEC.name, error="artifact has no readable sections or chunks yet")
 
+    readiness = get_artifact_readiness(artifact_id)
+    question_sets = load_reading_questions()
+    strategy_payload = coerce_reading_strategy(
+        strategy,
+        source_kind=(readiness.source_kind if readiness else ""),
+        title=(title or (readiness.title if readiness else artifact_id)),
+        user_text=ctx.user_text,
+        available_modes=sorted(question_sets.keys()),
+    )
+
     existing = get_artifact_reading_session_for_conversation_artifact(conversation_id, artifact_id)
     if existing and not restart:
         session_id = int(existing["id"])
@@ -81,7 +92,11 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
             after_ordinal=existing.get("current_section_ordinal"),
             include_active=True,
         )
-        existing = update_artifact_reading_session(session_id, status="active")
+        existing = update_artifact_reading_session(
+            session_id,
+            status="active",
+            strategy_json=(strategy_payload if (strategy is not None or not existing.get("strategy_json")) else None),
+        )
         return ToolResult(
             ok=True,
             tool=TOOL_SPEC.name,
@@ -104,7 +119,7 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         artifact_id=artifact_id,
         mode=mode,
         status="active",
-        strategy_json=strategy,
+        strategy_json=strategy_payload,
         current_section_ordinal=None,
         current_chunk_position=None,
         summary_so_far=summary_so_far,

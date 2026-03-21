@@ -391,6 +391,8 @@ class SummaryConfig:
         """
 
     reading_plan_instructions_file: str = ".\\prompts\\_summary_reading_plan_instruct.txt"
+    reading_questions_file: str = ".\\prompts\\_reading_questions.txt"
+    reading_notes_max_tokens: int = 1400
     reading_plan_instructions: str = """
         When ARTIFACT SUMMARY, ARTIFACT INDEX, or ARTIFACT READING PLAN blocks appear, the full artifact was not included.
         Do not claim or imply that you read the whole artifact unless the full text or the requested section text is actually present in context.
@@ -687,6 +689,16 @@ def load_summary_config() -> SummaryConfig:
             ("summary", "reading_plan_instructions"),
             env_name="READING_PLAN_INSTRUCT",
             default=SUMMARY_DEFAULTS.reading_plan_instructions,
+        ),
+        reading_questions_file=_cfg_str(
+            ("summary", "reading_questions_file"),
+            env_name="READING_QUESTIONS_FILE",
+            default=SUMMARY_DEFAULTS.reading_questions_file,
+        ),
+        reading_notes_max_tokens=_cfg_int(
+            ("summary", "reading_notes_max_tokens"),
+            env_name="READING_NOTES_MAX_TOKENS",
+            default=SUMMARY_DEFAULTS.reading_notes_max_tokens,
         ),
 
 
