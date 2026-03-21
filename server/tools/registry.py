@@ -94,8 +94,8 @@ class ToolRegistry:
         ).strip()
 
         enabled_specs = sorted(self.list_enabled(), key=lambda s: s.name)
-        allowed_tools = "".join(f"* {spec.name}" for spec in enabled_specs) or "* (none)"
-        tool_details = "".join(_render_tool_detail(spec) for spec in enabled_specs) or "- (none)"
+        allowed_tools = "\n".join(f"* {spec.name}" for spec in enabled_specs) or "* (none)"
+        tool_details = "\n\n".join(_render_tool_detail(spec) for spec in enabled_specs) or "- (none)"
 
         return (
             prompt_template
@@ -178,7 +178,7 @@ def _render_tool_detail(spec: ToolSpec) -> str:
         "  Call shape:",
         f"  ```tool  {json.dumps(example, ensure_ascii=False)}  ```",
     ]
-    return "".join(lines)
+    return "\n".join(lines)
 
 
 def _load_catalog(path: Path) -> dict[str, Any]:
