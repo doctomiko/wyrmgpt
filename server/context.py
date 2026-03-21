@@ -870,7 +870,7 @@ def _build_scoped_file_artifact_inventory_message(conversation_id: str, *, max_i
     if added <= 0:
         return None
 
-    return {"role": "user", "content": "".join(lines).strip()}
+    return {"role": "user", "content": "\n".join(lines).strip()}
 
 
 def _retained_artifact_summary_to_input_message(row: dict) -> dict:
@@ -973,7 +973,7 @@ def _format_active_reading_session_message(conversation_id: str) -> dict | None:
         lines.append("  Guidance: Reuse this session with artifact.read_next unless the user explicitly wants a restart.")
         lines.append("")
 
-    return {"role": "user", "content": "".join(lines).strip()}
+    return {"role": "user", "content": "\n".join(lines).strip()}
 
 
 def _order_scoped_memories_for_context(
