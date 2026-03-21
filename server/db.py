@@ -6916,9 +6916,8 @@ def create_or_update_conversation_scaffold_event_by_input_conn(
                 output_json = ?,
                 updated_at = ?
             WHERE id = ?
-            """,
+            """,(
                 input_json_text,
-            (
                 message_id_int,
                 st,
                 title_text,
@@ -9082,21 +9081,21 @@ def artifact_file(file_row) -> str:
         scope_type = "global"
         scope_id = None
 
+    # Newly uploaded or refreshed file artifacts need corpus chunks immediately,
+    # otherwise conversation-scoped files can exist in the DB but never appear in
+    # retrieval/expansion until some later maintenance pass runs.
     with db_session() as conn:
         aid = upsert_file_artifact(
             conn,
             file_row=file_row,
-
-    # Newly uploaded or refreshed file artifacts need corpus chunks immediately,
-    # otherwise conversation-scoped files can exist in the DB but never appear in
-    # retrieval/expansion until some later maintenance pass runs.
+            scope_type=scope_type,
+            scope_id=scope_id,
+        )
     try:
         reindex_artifact_by_id(aid)
     except Exception as exc:
         print(f"[db] artifact_file reindex failed for {aid}: {exc}")
-            scope_type=scope_type,
-            scope_id=scope_id,
-        )
+        
     return aid
 
 def upsert_file_artifact(

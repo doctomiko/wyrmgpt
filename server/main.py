@@ -955,7 +955,7 @@ def _create_upload_scaffold_event(
         message_id=None,
         event_kind="file_upload",
         title="File upload",
-        body_text="".join(body_lines).strip(),
+        body_text="\n".join(body_lines).strip(),
         input_json={"scope_type": scope_label, "file_count": len(files)},
         output_json={"files": output_rows},
         status="ok",
@@ -977,7 +977,7 @@ def _tool_result_to_input_message(result: ToolResult) -> dict[str, Any]:
         "JSON:",
         json.dumps(payload, ensure_ascii=False, indent=2),
     ]
-    return {"role": "user", "content": "".join(body).strip()}
+    return {"role": "user", "content": "\n".join(body).strip()}
 
 
 def _persist_tool_event(
@@ -2430,7 +2430,14 @@ async def api_upload_file(
             elif scope_type_norm == "project" and proj_id is not None:
                 db_project_add_file(proj_id, fid)
                 invalidate_context_cache_for_project(proj_id)
-            artifact_file(file_row)        
+            artifact_id = artifact_file(file_row)
+            try:
+                file_row["artifact_id"] = artifact_id
+                arts = list_artifacts_for_file(fid, include_deleted=False)
+                if arts:
+                    file_row["source_kind"] = arts[0].get("source_kind")
+            except Exception:
+                pass
 
         # stream the file to disk
         results.append({
