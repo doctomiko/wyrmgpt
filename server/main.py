@@ -61,6 +61,7 @@ from .db import (
     update_ab_canonical,
     get_artifact_reading_session, get_artifact_reading_step, list_artifact_reading_steps,
     update_artifact_reading_session, update_artifact_reading_step,
+    retain_conversation_artifact,
     # Converstaions
     list_conversations, create_conversation,
     delete_conversation, set_conversation_archived,
@@ -88,6 +89,7 @@ from .db import (
     get_scoped_artifact_debug,
     # File Artifacts
     artifact_file, ensure_files_artifacted_for_conversation,
+    list_artifacts_for_file,
     # Conversation Artifacts - Transcripts and Summaries
     get_transcript_for_summary, # save_conversation_summary,
     ensure_conversation_transcript_artifact_fresh,
@@ -999,6 +1001,50 @@ def _is_tool_prompt_message(msg: dict[str, Any]) -> bool:
 
 def _remove_tool_prompt_messages(model_input: ModelInput) -> ModelInput:
     return [msg for msg in model_input if not _is_tool_prompt_message(msg)]
+
+
+def _create_upload_scaffold_event(
+    *,
+    conversation_id: str | None,
+    scope_type: str,
+    files: list[dict[str, Any]],
+) -> None:
+    cid = (conversation_id or "").strip()
+    if not cid or not files:
+        return
+
+    scope_label = (scope_type or "global").strip().lower() or "global"
+    body_lines = [f"Uploaded {len(files)} file(s) to {scope_label} scope.", ""]
+    output_rows: list[dict[str, Any]] = []
+    for row in files:
+        name = (row.get("name") or row.get("original_name") or "(file)").strip()
+        artifact_id = (row.get("artifact_id") or "").strip()
+        source_kind = (row.get("source_kind") or "").strip()
+        status_bits = []
+        if artifact_id:
+            status_bits.append(f"artifact_id={artifact_id}")
+        if source_kind:
+            status_bits.append(f"source_kind={source_kind}")
+        suffix = f" [{' ; '.join(status_bits)}]" if status_bits else ""
+        body_lines.append(f"- {name}{suffix}")
+        output_rows.append({
+            "file_id": row.get("id"),
+            "name": name,
+            "artifact_id": artifact_id or None,
+            "source_kind": source_kind or None,
+            "scope_type": scope_label,
+        })
+
+    create_conversation_scaffold_event(
+        conversation_id=cid,
+        message_id=None,
+        event_kind="file_upload",
+        title="File upload",
+        body_text="".join(body_lines).strip(),
+        input_json={"scope_type": scope_label, "file_count": len(files)},
+        output_json={"files": output_rows},
+        status="ok",
+    )
 
 
 def _tool_result_to_input_message(result: ToolResult) -> dict[str, Any]:
@@ -2433,7 +2479,14 @@ async def api_upload_file(
                 invalidate_context_cache_for_project(proj_id)
 
             # re-artifact / reindex through normal path
-            artifact_file(file_row)
+            artifact_id = artifact_file(file_row)
+            try:
+                file_row["artifact_id"] = artifact_id
+                arts = list_artifacts_for_file(fid, include_deleted=False)
+                if arts:
+                    file_row["source_kind"] = arts[0].get("source_kind")
+            except Exception:
+                pass
         else:
             if final_path.exists():
                 # if some stray file exists on disk but no live DB row owns it, keep temp unique
@@ -2464,7 +2517,39 @@ async def api_upload_file(
             artifact_file(file_row)        
 
         # stream the file to disk
-        results.append({"id": fid, "name": orig_name, "path": str(final_path)}) # dest_path
+        results.append({
+            "id": fid,
+            "name": orig_name,
+            "path": str(final_path),
+            "artifact_id": file_row.get("artifact_id"),
+            "source_kind": file_row.get("source_kind"),
+            "scope_type": scope_type_norm,
+        })
+
+        if conv_id and file_row.get("artifact_id"):
+            try:
+                retain_conversation_artifact(
+                    conversation_id=conv_id,
+                    artifact_id=str(file_row.get("artifact_id") or "").strip(),
+                    origin_kind="file_upload",
+                    retention_state="forced",
+                    carry_summary_text=None,
+                    inclusion_kind="whole",
+                    retrieval_channel="upload",
+                    message_id=None,
+                    note_text="Uploaded file retained for conversation continuity",
+                    meta_json={"file_id": fid, "scope_type": scope_type_norm},
+                    increment_include_count=False,
+                )
+            except Exception as exc:
+                print(f"[upload] failed to retain uploaded artifact {file_row.get('artifact_id')}: {exc}")
+
+    if conv_id and results:
+        _create_upload_scaffold_event(
+            conversation_id=conv_id,
+            scope_type=scope_type_norm,
+            files=results,
+        )
 
     return {"files": results}
 
@@ -2587,6 +2672,44 @@ async def api_upload_conversation_file(conversation_id: str, file: UploadFile = 
         conversation_link_file(conversation_id, file_id)
         if project_id is not None:
             db_project_add_file(project_id, file_id)
+
+        artifact_id = artifact_file(file_row)
+        source_kind = None
+        try:
+            arts = list_artifacts_for_file(file_id, include_deleted=False)
+            if arts:
+                source_kind = arts[0].get("source_kind")
+        except Exception:
+            pass
+
+        try:
+            retain_conversation_artifact(
+                conversation_id=conversation_id,
+                artifact_id=artifact_id,
+                origin_kind="file_upload",
+                retention_state="forced",
+                carry_summary_text=None,
+                inclusion_kind="whole",
+                retrieval_channel="upload",
+                message_id=None,
+                note_text="Uploaded file retained for conversation continuity",
+                meta_json={"file_id": file_id, "scope_type": "conversation"},
+                increment_include_count=False,
+            )
+        except Exception as exc:
+            print(f"[upload] failed to retain uploaded artifact {artifact_id}: {exc}")
+
+        _create_upload_scaffold_event(
+            conversation_id=conversation_id,
+            scope_type="conversation",
+            files=[{
+                "id": file_id,
+                "name": file.filename,
+                "path": str(dest_path),
+                "artifact_id": artifact_id,
+                "source_kind": source_kind,
+            }],
+        )
 
         invalidate_context_cache_for_conversation(conversation_id)
     except ValueError as e:

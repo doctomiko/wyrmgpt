@@ -9086,6 +9086,14 @@ def artifact_file(file_row) -> str:
         aid = upsert_file_artifact(
             conn,
             file_row=file_row,
+
+    # Newly uploaded or refreshed file artifacts need corpus chunks immediately,
+    # otherwise conversation-scoped files can exist in the DB but never appear in
+    # retrieval/expansion until some later maintenance pass runs.
+    try:
+        reindex_artifact_by_id(aid)
+    except Exception as exc:
+        print(f"[db] artifact_file reindex failed for {aid}: {exc}")
             scope_type=scope_type,
             scope_id=scope_id,
         )

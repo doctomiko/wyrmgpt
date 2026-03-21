@@ -822,6 +822,57 @@ def _artifact_to_input_message(art: dict, *, label: str) -> dict:
     return {"role": "user", "content": text}
 
 
+def _build_scoped_file_artifact_inventory_message(conversation_id: str, *, max_items: int = 12) -> dict | None:
+    files_by_id: dict[str, dict] = gather_scoped_files(conversation_id)
+    if not files_by_id:
+        return None
+
+    try:
+        ensure_artifacts_for_files(files_by_id)
+    except Exception:
+        pass
+
+    rows = list(files_by_id.values())
+    rows.sort(key=lambda r: (r.get("updated_at") or r.get("created_at") or ""), reverse=True)
+
+    lines = [
+        "AVAILABLE FILE ARTIFACTS",
+        "These files are in scope for this conversation even when their full text is not expanded.",
+        "Use the artifact id when you want to plan or read one explicitly.",
+        "",
+    ]
+
+    added = 0
+    for file_row in rows:
+        if added >= max(1, int(max_items)):
+            break
+        file_id = str(file_row.get("id") or "").strip()
+        if not file_id:
+            continue
+        try:
+            artifacts = list_artifacts_for_file(file_id, include_deleted=False)
+        except Exception:
+            artifacts = []
+        if not artifacts:
+            continue
+
+        art = artifacts[0]
+        artifact_id = (art.get("id") or "").strip()
+        if not artifact_id:
+            continue
+
+        name = (file_row.get("original_name") or file_row.get("name") or Path(file_row.get("path") or "").name or file_id).strip()
+        scope_type = (file_row.get("scope_type") or "global").strip() or "global"
+        source_kind = (art.get("source_kind") or "").strip()
+        lines.append(f"- {name} | artifact_id={artifact_id} | scope={scope_type} | source_kind={source_kind}")
+        added += 1
+
+    if added <= 0:
+        return None
+
+    return {"role": "user", "content": "".join(lines).strip()}
+
+
 def _retained_artifact_summary_to_input_message(row: dict) -> dict:
     title = (row.get("artifact_title") or "").strip()
     artifact_id = (row.get("artifact_id") or "").strip()
@@ -1387,6 +1438,10 @@ def build_context(
         )
         whole_artifact_messages.extend(file_messages)
         included_artifact_ids.update(file_artifact_ids)
+    else:
+        inventory_msg = _build_scoped_file_artifact_inventory_message(conversation_id)
+        if inventory_msg:
+            whole_artifact_messages.append(inventory_msg)
 
     # Full chats last.
     if do_include_chats:

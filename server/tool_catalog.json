@@ -1,4 +1,39 @@
 {
+  "artifact.plan_reading": {
+    "module": "artifact_plan_reading",
+    "enabled": true,
+    "display_name": "Plan Artifact Reading",
+    "description": "Inspect an artifact and return whether it should be included whole or through summary/index fallback for the current reading budget.",
+    "tags": [
+      "artifact",
+      "reading",
+      "planner"
+    ],
+    "input_schema": {
+      "type": "object",
+      "required": [
+        "artifact_id"
+      ],
+      "properties": {
+        "artifact_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "user_text": {
+          "type": "string"
+        },
+        "budget_remaining_chars": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "whole_artifact_soft_cap_chars": {
+          "type": "integer",
+          "minimum": 1000
+        }
+      }
+    },
+    "system_usage": "Use when the user explicitly asks for a reading plan or wants to inspect how the scaffold would handle a large artifact before reading."
+  },
   "artifact.resolve_section": {
     "module": "artifact_resolve_section",
     "enabled": true,

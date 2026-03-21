@@ -3976,7 +3976,7 @@ async function startUpload() {
 
   const params = new URLSearchParams();
   params.set("scope_type", scope);
-  if (payloadConversationId) params.set("conversation_id", payloadConversationId);
+  if (conversationId) params.set("conversation_id", conversationId);
   if (payloadProjectId != null) params.set("project_id", String(payloadProjectId));
 
   const prevSendDisabled = chatWindowInputSendBtn.disabled;
