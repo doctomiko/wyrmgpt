@@ -28,3 +28,4 @@ Allowed tools:
 {{ALLOWED_TOOLS}}
 
 Enabled tool details:
+{{TOOL_DETAILS}}

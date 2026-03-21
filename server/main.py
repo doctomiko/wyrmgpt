@@ -1795,6 +1795,8 @@ def api_conversation_context(
         conversation_id=conversation_id,
         user_text=user_text or "",
         ctx_cfg=ctx_cfg,
+        tool_cfg=TOOL_CFG,
+        tool_registry=TOOL_REGISTRY,
     )
     return JSONResponse(payload)
 

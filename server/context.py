@@ -1864,6 +1864,8 @@ def build_context_panel_payload(
     user_text: str,
     ctx_cfg: ContextConfig | None = None,
     query_cfg: RetrievalConfig | None = None,
+    tool_cfg: ToolConfig | None = None,
+    tool_registry: ToolRegistry | None = None,
 ) -> dict:
     """
     Side-panel-only diagnostic payload.
@@ -1888,6 +1890,8 @@ def build_context_panel_payload(
         ctx_cfg=ctx_cfg,
         query_cfg=query_cfg,
         ctx=ctx,
+        tool_cfg=tool_cfg,
+        tool_registry=tool_registry,
     )
 
     preview_limit = max(1, int(ctx_cfg.preview_limit))
@@ -1924,6 +1928,11 @@ def build_context_panel_payload(
         "included_chat_summary_labels": included_chat_summary_labels,
         "included_retained_labels": included_retained_labels,
         "llm_input_messages": full_input,
+        "llm_system_messages": [
+            msg
+            for msg in full_input
+            if isinstance(msg, dict) and (msg.get("role") == "system")
+        ],
     }
 
 

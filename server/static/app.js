@@ -1896,7 +1896,8 @@ function renderContext(ctx) {
   const suppressedIncluded = (retrievalDebug.suppressed_included_artifact_rows || []).length;
   const suppressedExpanded = (retrievalDebug.suppressed_expanded_artifact_rows || []).length;
   const expandedCount = (ctx.expanded_artifact_ids || []).length;
-  const llmInputMessages = ctx.llm_input_messages || [];  const nextPayloadState = {};
+  const llmInputMessages = ctx.llm_input_messages || [];
+  const nextPayloadState = {};
   for (let i = 0; i < llmInputMessages.length; i++) {
     nextPayloadState[String(i)] = !!contextPayloadMessageState[String(i)];
   }
@@ -1967,19 +1968,41 @@ function renderContext(ctx) {
   // Prompt Layers
   {
     const wrap = document.createElement("div");
+    const llmSystemMessages = (ctx.llm_system_messages || []).filter((msg) => msg && msg.role === "system");
+    const primarySystem = llmSystemMessages.length
+      ? (llmSystemMessages[0]?.content || ctx.system_text || ctx.effective_system_prompt || "(none)")
+      : (ctx.system_text || ctx.effective_system_prompt || "(none)");
+    const extraSystemMessages = llmSystemMessages.slice(1);
+
     wrap.appendChild(
       createCtxSubBlock(
         "System Text",
-        createCtxPre(ctx.system_text || ctx.effective_system_prompt || "(none)")
+        createCtxPre(primarySystem)
       )
     );
+
+    if (extraSystemMessages.length) {
+      extraSystemMessages.forEach((msg, idx) => {
+        const text = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content, null, 2);
+        const firstLine = (text || "").split("")[0]?.trim() || `Supplemental System ${idx + 1}`;
+        wrap.appendChild(
+          createCtxSubBlock(
+            `Supplemental System ${idx + 1}`,
+            createCtxPre(text),
+            firstLine
+          )
+        );
+      });
+    } else {
+      wrap.appendChild(createCtxSubBlock("Supplemental System Prompts", createCtxPre("(none)")));
+    }
+
     wrap.appendChild(
       createCtxSubBlock(
         "Conversation Summary",
         createCtxPre((ctx.summary || "").trim() || "(none)")
       )
     );
-
     accordion.appendChild(
       createCtxSection(
         "promptLayers",
