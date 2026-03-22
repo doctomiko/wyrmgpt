@@ -1,4 +1,5 @@
 import time
+from dataclasses import replace
 from collections import OrderedDict
 from functools import lru_cache
 from typing import Dict, List, Tuple
@@ -109,6 +110,38 @@ def diversify_results(rows: list[dict], limit: int) -> list[dict]:
         if len(out) >= limit:
             break
 
+    return out
+
+
+
+def _fts_quote(term: str) -> str:
+    return f'"{(term or "").replace(chr(34), chr(34) * 2)}"'
+
+
+def _build_or_fallback_query(kept_phrases: list[str], kept_terms: list[str]) -> str:
+    parts: list[str] = []
+    for p in kept_phrases or []:
+        parts.append(_fts_quote(p))
+    for t in kept_terms or []:
+        parts.append(_fts_quote(t))
+    return " OR ".join(parts).strip()
+
+
+def _merge_rows_by_chunk(existing: list[dict], incoming: list[dict], *, limit: int) -> list[dict]:
+    out: list[dict] = []
+    seen: set[int] = set()
+    for row in existing + incoming:
+        try:
+            cid = int(row.get("chunk_id") or 0)
+        except Exception:
+            cid = 0
+        if cid and cid in seen:
+            continue
+        if cid:
+            seen.add(cid)
+        out.append(row)
+        if len(out) >= max(1, int(limit or 1)):
+            break
     return out
 
 def _retrieval_rank_key(r: dict) -> tuple:
@@ -338,10 +371,11 @@ def retrieve_chunks_for_message(
             except Exception as e:
                 log_debug("RAG search failed for shaped query %r: %r", q, e)
 
+            retry_q = None
             if not rows:
-                safe_q = " ".join(f'"{tok.replace(chr(34), chr(34) * 2)}"' for tok in qs.kept_terms)
+                safe_q = " ".join(_fts_quote(tok) for tok in qs.kept_terms)
                 if not safe_q and qs.kept_phrases:
-                    safe_q = " ".join(f'"{p.replace(chr(34), chr(34) * 2)}"' for p in qs.kept_phrases)
+                    safe_q = " ".join(_fts_quote(p) for p in qs.kept_phrases)
 
                 if safe_q or s:
                     retry_q = safe_q or s
@@ -352,6 +386,35 @@ def retrieve_chunks_for_message(
                         limit=per_slice_limit,
                         cfg=cfg,
                     )
+
+            sparse_threshold = max(2, min(per_slice_limit, int(cfg.rag_limit or per_slice_limit)))
+            if len(rows) < sparse_threshold and (len(qs.kept_terms) + len(qs.kept_phrases)) > 1:
+                or_q = _build_or_fallback_query(qs.kept_phrases, qs.kept_terms)
+                if or_q and or_q not in {q, retry_q}:
+                    log_debug("RAG OR fallback search: query=%r", or_q)
+                    or_rows = search_corpus_for_conversation(
+                        conversation_id=conversation_id,
+                        query=or_q,
+                        limit=per_slice_limit,
+                        cfg=cfg,
+                    )
+                    rows = _merge_rows_by_chunk(rows, or_rows, limit=per_slice_limit)
+
+            if len(rows) < sparse_threshold and app_cfg.search_chat_history and not cfg.query_include_recent_conversation_transcripts:
+                broad_cfg = replace(
+                    cfg,
+                    query_include_recent_conversation_transcripts=True,
+                    recent_conversation_transcript_limit=max(int(cfg.recent_conversation_transcript_limit or 0), 24),
+                )
+                broad_q = retry_q or q
+                log_debug("RAG broad transcript fallback: query=%r recent_limit=%d", broad_q, broad_cfg.recent_conversation_transcript_limit)
+                broad_rows = search_corpus_for_conversation(
+                    conversation_id=conversation_id,
+                    query=broad_q,
+                    limit=per_slice_limit,
+                    cfg=broad_cfg,
+                )
+                rows = _merge_rows_by_chunk(rows, broad_rows, limit=per_slice_limit)
 
             log_debug("RAG search: query=%r returned=%d", q, len(rows))
             for r in rows:

@@ -2886,9 +2886,6 @@ def corpus_search(req: CorpusSearchRequest):
         include_global=cfg.query_global_artifacts
     # Optional: self-heal missing artifacts before searching
     ensure_files_artifacted_for_conversation(conversation_id=cid, limit_per_scope=5, include_global=include_global)
-    # 3A lazy repair for conversation transcript artifacts
-    ensure_conversation_transcript_artifact_fresh(cid, force_full=False, reason="corpus_search")
-
     rows = search_corpus_for_conversation(
         conversation_id=cid,
         query=q,

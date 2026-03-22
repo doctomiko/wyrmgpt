@@ -227,7 +227,12 @@ def _maybe_apply_artifact_reading_plan(
         whole_artifact_soft_cap_chars=max(2000, int(ctx_cfg.max_tokens or 6000) * 2),
     )
 
-    if allow_derivative_refresh and plan.get("action") != "include_whole" and plan.get("needs_derivatives"):
+    is_transcript_artifact = (
+        artifact_id.startswith("conversation_transcript--")
+        or str(readiness.source_kind or "").strip().lower() in {"conversation:transcript", "conversation_transcript"}
+    )
+
+    if allow_derivative_refresh and not is_transcript_artifact and plan.get("action") != "include_whole" and plan.get("needs_derivatives"):
         from .artifact_derivative_builder import ensure_artifact_reading_derivatives
 
         try:
@@ -1286,15 +1291,9 @@ def build_context(
     ctx_cfg = ctx_cfg or load_context_config()
     ret_cfg = ret_cfg or load_retrieval_config()
 
-    # 3A lazy repair: keep the conversation transcript artifact reasonably fresh
-    try:
-        ensure_conversation_transcript_artifact_fresh(
-            conversation_id,
-            force_full=False,
-            reason="build_context",
-        )
-    except Exception as exc:
-        log_warn("Transcript lazy repair failed for %s: %s", conversation_id, exc)
+    # Do not lazily rebuild conversation transcript artifacts inside ordinary
+    # context assembly. Read paths should stay read-mostly; explicit refresh
+    # endpoints and message-write paths can handle transcript rebuilds.
 
     has_user_text = bool((user_text or "").strip())
 
@@ -1526,15 +1525,6 @@ def build_context(
 
         with db_session() as conn:
             for cid in scoped_conversation_ids:
-                try:
-                    ensure_conversation_transcript_artifact_fresh(
-                        cid,
-                        force_full=False,
-                        reason="build_context.include_chat",
-                    )
-                except Exception as exc:
-                    log_warn("Transcript lazy repair failed for included chat %s: %s", cid, exc)
-
                 try:
                     artifact_id = conversation_transcript_artifact_id(cid)
                 except Exception:
