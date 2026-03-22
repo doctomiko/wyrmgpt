@@ -855,10 +855,11 @@ def _build_scoped_file_artifact_inventory_message(conversation_id: str, *, max_i
         file_id = str(file_row.get("id") or "").strip()
         if not file_id:
             continue
-        try:
         artifacts = artifact_headers_by_file_id.get(file_id, [])
+        if not artifacts:
             continue
 
+        art = artifacts[0]
         artifact_id = (art.get("id") or "").strip()
         if not artifact_id:
             continue
@@ -1438,6 +1439,7 @@ def build_context(
             typed_history=typed_history,
             whole_artifact_messages=whole_artifact_messages,
             current_message_id=current_message_id,
+            allow_derivative_refresh=allow_derivative_refresh,
         )
         whole_artifact_messages.extend(file_messages)
         included_artifact_ids.update(file_artifact_ids)
@@ -2086,6 +2088,7 @@ def _build_file_messages_for_conversation(
     typed_history: list[dict],
     whole_artifact_messages: list[dict],
     current_message_id: int | None,
+    allow_derivative_refresh: bool = True,
 ) -> tuple[list[dict], list[str], set[str]]:
     files_by_id: dict[str, dict] = gather_scoped_files(conversation_id)
     if not files_by_id:
@@ -2112,8 +2115,8 @@ def _build_file_messages_for_conversation(
             if not file_id:
                 continue
 
-            try:
             artifacts = artifact_headers_by_file_id.get(file_id, [])
+            if not artifacts:
                 continue
 
             orig_name = file_row.get("original_name") or Path(file_row.get("path") or "").name
