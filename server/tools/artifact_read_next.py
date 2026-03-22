@@ -6,6 +6,7 @@ from ..db import (
     get_artifact_reading_session,
     get_artifact_reading_session_for_conversation_artifact,
     get_next_artifact_reading_step,
+    get_artifact_reading_step,
     list_artifact_reading_sessions_for_conversation,
 )
 from .artifact_read_section import execute as execute_read_section
@@ -65,13 +66,24 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         return read_result
 
     session = get_artifact_reading_session(session_id) or session
+    refreshed_current = session.get("current_section_ordinal")
+    current_step = None
+    if refreshed_current is not None:
+        try:
+            current_step = get_artifact_reading_step(session_id, int(refreshed_current))
+        except Exception:
+            current_step = None
+    next_step = get_next_artifact_reading_step(session_id, after_ordinal=refreshed_current)
+    done = str(session.get("status") or "").strip().lower() == "complete" or next_step is None
+
     payload = dict(read_result.result)
     payload["session"] = session
-    payload["next_step"] = step
-    payload["done"] = False
+    payload["current_step"] = current_step or step
+    payload["next_step"] = next_step
+    payload["done"] = done
     return ToolResult(
         ok=True,
         tool=TOOL_SPEC.name,
         result=payload,
-        display_text=f"Loaded next reading step {int(step.get('ordinal') or 0)} for session {session_id}.",
+        display_text=f"Loaded reading step {int((current_step or step).get('ordinal') or 0)} for session {session_id}.",
     )

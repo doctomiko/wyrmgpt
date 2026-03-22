@@ -932,7 +932,16 @@ def _format_active_reading_session_message(conversation_id: str) -> dict | None:
         status = (session.get("status") or "").strip() or "active"
         current_ordinal = session.get("current_section_ordinal")
         steps = list_artifact_reading_steps(session_id)
-        next_step = next((s for s in steps if (s.get("status") or "") in {"pending", "active"}), None)
+        next_step = None
+        for s in steps:
+            s_status = str(s.get("status") or "").strip().lower()
+            s_ordinal = int(s.get("ordinal") or 0)
+            if s_status not in {"pending", "active"}:
+                continue
+            if current_ordinal is not None and s_ordinal <= int(current_ordinal):
+                continue
+            next_step = s
+            break
         done_count = sum(1 for s in steps if (s.get("status") or "") == "done")
 
         title = artifact_id

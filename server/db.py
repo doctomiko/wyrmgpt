@@ -1568,9 +1568,8 @@ def _end_schema_init(conn: sqlite3.Connection, original: int, current: int = SCH
     if not _SCHEMA_INIT_LOGGED or original != current:
         print(f"DB initialized with schema version {current} (was {original})")
         _SCHEMA_INIT_LOGGED = True
-    print(f"DB initialized with schema version {current} (was {original})")
-    # TODO implement seperate log file and log there as well.
-    #log.logger.info(f"DB initialized with schema version {SCHEMA_VERSION} (was {current})")
+        # TODO implement seperate log file and log there as well.
+        #log.logger.info(f"DB initialized with schema version {SCHEMA_VERSION} (was {current})")
 
 def init_schema() -> None:
     with db_session() as conn:
