@@ -597,9 +597,8 @@ def ensure_default_app_settings() -> None:
 
 
 def load_app_config() -> AppConfig:
-    from .db import get_app_setting_bool, init_schema
+    from .db import get_app_setting_bool
 
-    init_schema()
     ensure_default_app_settings()
     return AppConfig(
         search_chat_history=get_app_setting_bool(APP_KEYS.search_chat_history)

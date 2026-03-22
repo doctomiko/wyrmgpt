@@ -1556,13 +1556,18 @@ def _start_schema_init(conn: sqlite3.Connection) -> int:
     current = int(row["value"]) if row and str(row["value"]).isdigit() else 0
     return current
 
+_SCHEMA_INIT_LOGGED = False
+
 def _end_schema_init(conn: sqlite3.Connection, original: int, current: int = SCHEMA_VERSION) -> None:
+    global _SCHEMA_INIT_LOGGED
     conn.execute(
         "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema_version', ?)",
         (str(current),),
     )
 
-    conn.execute("PRAGMA foreign_keys = ON;")
+    if not _SCHEMA_INIT_LOGGED or original != current:
+        print(f"DB initialized with schema version {current} (was {original})")
+        _SCHEMA_INIT_LOGGED = True
     print(f"DB initialized with schema version {current} (was {original})")
     # TODO implement seperate log file and log there as well.
     #log.logger.info(f"DB initialized with schema version {SCHEMA_VERSION} (was {current})")
