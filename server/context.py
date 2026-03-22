@@ -209,6 +209,7 @@ def _maybe_apply_artifact_reading_plan(
     origin_kind: str,
     retention_state: str,
     carry_summary_text: str | None = None,
+    allow_derivative_refresh: bool = True,
 ) -> bool:
     readiness = get_artifact_readiness(artifact_id)
     if not readiness:
@@ -225,10 +226,14 @@ def _maybe_apply_artifact_reading_plan(
         whole_artifact_soft_cap_chars=max(2000, int(ctx_cfg.max_tokens or 6000) * 2),
     )
 
-    if plan.get("action") != "include_whole" and plan.get("needs_derivatives"):
+    if allow_derivative_refresh and plan.get("action") != "include_whole" and plan.get("needs_derivatives"):
         from .artifact_derivative_builder import ensure_artifact_reading_derivatives
 
-        refreshed = ensure_artifact_reading_derivatives(artifact_id, clear_invalid=True)
+        try:
+            refreshed = ensure_artifact_reading_derivatives(artifact_id, clear_invalid=True)
+        except Exception as exc:
+            log_warn("Artifact derivative refresh failed for %s: %s", artifact_id, exc)
+            refreshed = None
         if refreshed:
             readiness = refreshed
             plan = plan_artifact_inclusion(
@@ -1217,6 +1222,7 @@ def build_context(
         ctx_cfg: ContextConfig | None = None,
         ret_cfg: RetrievalConfig | None = None,
         include_preview: bool = True,
+        allow_derivative_refresh: bool = True,
     ) -> dict:
     ctx_cfg = ctx_cfg or load_context_config()
     ret_cfg = ret_cfg or load_retrieval_config()
@@ -1531,6 +1537,7 @@ def build_context(
                         origin_kind=(rr.get("origin_kind") or "retrieval_expand"),
                         retention_state=state,
                         carry_summary_text=carry_summary,
+                        allow_derivative_refresh=allow_derivative_refresh,
                     ):
                         continue
 
@@ -1727,6 +1734,7 @@ def build_context(
                             origin_kind=origin_kind,
                             retention_state="active",
                             carry_summary_text=None,
+                            allow_derivative_refresh=allow_derivative_refresh,
                         ):
                             if kind == "MEMORY":
                                 label_sink[-1] = f"{title} [expanded via reading-plan]"
@@ -2003,6 +2011,7 @@ def build_context_panel_payload(
         ctx_cfg=ctx_cfg,
         ret_cfg=query_cfg,
         include_preview=False,
+        allow_derivative_refresh=False,
     )
 
     # Build the ACTUAL model input from the same ctx so the side panel reflects reality
@@ -2179,6 +2188,7 @@ def _build_file_messages_for_conversation(
                         origin_kind="file_attach",
                         retention_state="forced",
                         carry_summary_text=None,
+                        allow_derivative_refresh=allow_derivative_refresh,
                     ):
                         known_artifact_ids.add(artifact_id)
                         file_had_any = True

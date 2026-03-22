@@ -587,19 +587,6 @@ def ensure_artifact_reading_derivatives(
             or bool(summary_info.get("is_stale"))
         )
 
-        if not has_content_evidence:
-            if clear_invalid:
-                if summary_info and (summary_info.get("summary_text") or "").strip():
-                    set_artifact_summary(conn, aid, "", "artifact_derivative_builder")
-                _clear_index_derivatives(conn, aid)
-        elif needs_summary:
-            summary_text, summary_model = _summarize_artifact_text(
-                title=title,
-                artifact_text=trusted_content_text,
-            )
-            if summary_text:
-                set_artifact_summary(conn, aid, summary_text, summary_model)
-                
         index_der = get_artifact_derivative(
             aid,
             derivative_kind="index",
@@ -623,12 +610,31 @@ def ensure_artifact_reading_derivatives(
                 existing_status = (index_der.get("status") or "").strip().lower()
                 needs_index = existing_hash != source_hash or existing_status != "ready"
 
+    summary_text = ""
+    summary_model = ""
+    if has_content_evidence and needs_summary:
+        summary_text, summary_model = _summarize_artifact_text(
+            title=title,
+            artifact_text=trusted_content_text,
+        )
+
+    index_text = ""
+    index_payload = None
+    sections = []
+    if has_content_evidence and needs_index:
+        index_text, index_payload, sections = _build_index_payload(title, chunks)
+
+    with db_session() as conn:
         if not has_content_evidence:
-            if clear_invalid and index_der:
+            if clear_invalid:
+                current_summary = get_artifact_summary(conn, aid, include_stale=True)
+                if current_summary and (current_summary.get("summary_text") or "").strip():
+                    set_artifact_summary(conn, aid, "", "artifact_derivative_builder")
                 _clear_index_derivatives(conn, aid)
-        elif needs_index:
-            index_text, index_payload, sections = _build_index_payload(title, chunks)
-            if index_text or sections:
+        else:
+            if needs_summary and summary_text:
+                set_artifact_summary(conn, aid, summary_text, summary_model)
+            if needs_index and (index_text or sections):
                 derivative_id = upsert_artifact_derivative_conn(
                     conn,
                     artifact_id=aid,
