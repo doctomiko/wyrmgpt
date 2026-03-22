@@ -44,7 +44,7 @@ from .config import (
 )
 from .db import (
     # Schema and connection
-    init_schema, db_debug_info,
+    init_schema, db_debug_info, db_session,
     # Shared paths
     DATA_DIR,
     # this is the reverse end of AppConfig
@@ -57,6 +57,7 @@ from .db import (
     list_citation_scope_cards_for_project,
     replace_citations_for_message,
     create_conversation_scaffold_event,
+    update_conversation_scaffold_event,
     save_conversation_summary_artifact,
     update_ab_canonical,
     get_artifact_reading_session, get_artifact_reading_step, list_artifact_reading_steps,
@@ -66,7 +67,7 @@ from .db import (
     list_conversations, create_conversation,
     delete_conversation, set_conversation_archived,
     get_conversation_title, update_conversation_title,
-    get_conversation_context,
+    get_conversation_context, get_conversation_project_id,
     # Projects and subordinate entities
     list_projects, get_or_create_project,
     get_or_create_project as db_get_or_create_project,  # optional convenience endpoint
@@ -986,20 +987,39 @@ def _persist_tool_event(
     message_id: int | None,
     request: ToolInvocationRequest,
     result: ToolResult,
-) -> None:
+) -> int | None:
     try:
-        create_conversation_scaffold_event(
+        body_lines = [
+            f"Tool: {request.tool}",
+            f"Status: {'ok' if result.ok else 'error'}",
+        ]
+        if result.display_text:
+            body_lines.extend(["", result.display_text.strip()])
+        elif result.error:
+            body_lines.extend(["", result.error.strip()])
+        return create_conversation_scaffold_event(
             conversation_id=conversation_id,
             message_id=message_id,
             event_kind=result.event_kind or "tool_result",
             status="ready" if result.ok else "error",
             title=f"Tool · {request.tool}",
-            body_text=(result.display_text or result.error or request.tool),
+            body_text="\n".join(body_lines).strip(),
             input_json={"tool": request.tool, "arguments": request.arguments},
             output_json=result.as_dict(),
         )
     except Exception as exc:
         log_warn(f"Tool scaffold event persistence failed for {request.tool}: {exc}")
+        return None
+
+
+def _attach_scaffold_events_to_message(event_ids: list[int], message_id: int | None) -> None:
+    if not message_id:
+        return
+    for event_id in event_ids:
+        try:
+            update_conversation_scaffold_event(event_id=event_id, message_id=message_id)
+        except Exception as exc:
+            log_warn(f"Tool scaffold event attachment failed for event {event_id}: {exc}")
 
 
 def _stringify_recent_notes(notes: Any) -> str:
@@ -1151,13 +1171,22 @@ def _execute_tool_requests(
     conversation_id: str,
     user_text: str,
     requests: list[ToolInvocationRequest],
-    user_message_id: int | None,
-) -> list[ToolResult]:
+) -> tuple[list[ToolResult], list[int]]:
+    project_id = None
+    if conversation_id:
+        try:
+            with db_session() as conn:
+                project_id = get_conversation_project_id(conn, conversation_id)
+        except Exception as exc:
+            log_warn(f"Tool execution could not resolve project for conversation {conversation_id}: {exc}")
+
     exec_ctx = ToolExecutionContext(
         conversation_id=conversation_id,
+        project_id=project_id,
         user_text=user_text,
     )
     out: list[ToolResult] = []
+    event_ids: list[int] = []
     for request in requests:
         try:
             result = tool_registry.execute(request, ctx=exec_ctx)
@@ -1174,14 +1203,16 @@ def _execute_tool_requests(
                 tool=request.tool,
                 error=f"{type(exc).__name__}: {exc}",
             )
-        _persist_tool_event(
+        event_id = _persist_tool_event(
             conversation_id=conversation_id,
-            message_id=user_message_id,
+            message_id=None,
             request=request,
             result=result,
         )
+        if event_id:
+            event_ids.append(int(event_id))
         out.append(result)
-    return out
+    return out, event_ids
 
 
 def _should_attempt_tool_preflight(
@@ -1217,9 +1248,9 @@ def _expand_input_with_tool_requests(
     tool_registry: ToolRegistry | None,
     user_message_id: int | None = None,
     initial_assistant_text: str | None = None,
-) -> tuple[ModelInput, str | None, bool]:
+) -> tuple[ModelInput, str | None, bool, list[int]]:
     if not _tooling_enabled(tool_cfg, tool_registry):
-        return list(base_input), initial_assistant_text, False
+        return list(base_input), initial_assistant_text, False, []
     if PROVIDER_REGISTRY is None:
         raise RuntimeError("Provider registry is not initialized.")
     assert tool_registry is not None
@@ -1229,6 +1260,7 @@ def _expand_input_with_tool_requests(
     remaining_calls = max(1, int(tool_cfg.max_calls_per_message))
     used_tools = False
     pending_text = initial_assistant_text
+    event_ids: list[int] = []
 
     while remaining_calls > 0:
         if pending_text is None:
@@ -1237,26 +1269,26 @@ def _expand_input_with_tool_requests(
 
         requests = tool_registry.extract_requests_from_text(pending_text or "")
         if not _response_requests_tool_execution(pending_text or "", tool_registry):
-            return working_input, pending_text, used_tools
+            return working_input, pending_text, used_tools, event_ids
 
         working_input.append({"role": "assistant", "content": pending_text or ""})
         allowed = requests[:remaining_calls]
         remaining_calls -= len(allowed)
-        tool_results = _execute_tool_requests(
+        tool_results, new_event_ids = _execute_tool_requests(
             target=target,
             tool_registry=tool_registry,
             conversation_id=conversation_id,
             user_text=user_text,
             requests=allowed,
-            user_message_id=user_message_id,
         )
+        event_ids.extend(new_event_ids)
         for result in tool_results:
             working_input.append(_tool_result_to_input_message(result))
 
         used_tools = True
         pending_text = None
 
-    return working_input, None, used_tools
+    return working_input, None, used_tools, event_ids
 
 
 async def _expand_input_with_tool_requests_async(**kwargs):
@@ -1310,10 +1342,11 @@ def chat(req: ChatRequest, model: str | None = None):
     preflight_input = raw_input
     preflight_terminal_text: str | None = None
     used_preflight_tools = False
+    pending_tool_event_ids: list[int] = []
 
     if _should_attempt_tool_preflight(user_text=full, ctx=ctx, tool_cfg=tool_cfg, tool_registry=TOOL_REGISTRY):
         try:
-            preflight_input, preflight_terminal_text, used_preflight_tools = _expand_input_with_tool_requests(
+            preflight_input, preflight_terminal_text, used_preflight_tools, pending_tool_event_ids = _expand_input_with_tool_requests(
                 target=target,
                 base_input=raw_input,
                 conversation_id=cid,
@@ -1327,6 +1360,7 @@ def chat(req: ChatRequest, model: str | None = None):
             preflight_input = raw_input
             preflight_terminal_text = None
             used_preflight_tools = False
+            pending_tool_event_ids = []
 
     def gen():
         final_text = ""
@@ -1353,7 +1387,7 @@ def chat(req: ChatRequest, model: str | None = None):
 
                 streamed_text = strip_zeitgeber_prefix("".join(parts))
                 if _response_requests_tool_execution(streamed_text, TOOL_REGISTRY):
-                    expanded_input, terminal_text, used_tools = _expand_input_with_tool_requests(
+                    expanded_input, terminal_text, used_tools, stream_tool_event_ids = _expand_input_with_tool_requests(
                         target=target,
                         base_input=raw_input,
                         conversation_id=cid,
@@ -1364,6 +1398,7 @@ def chat(req: ChatRequest, model: str | None = None):
                         initial_assistant_text=streamed_text,
                     )
                     if used_tools:
+                        pending_tool_event_ids.extend(stream_tool_event_ids)
                         if terminal_text is None:
                             follow_input = _remove_tool_prompt_messages(expanded_input)
                             follow_parts: list[str] = []
@@ -1391,6 +1426,7 @@ def chat(req: ChatRequest, model: str | None = None):
                         "deployment_id": target.id,
                     },
                 )
+                _attach_scaffold_events_to_message(pending_tool_event_ids, assistant_message_id)
                 _persist_citations_for_assistant_message(assistant_message_id, ctx)
         except ProviderExecutionError as e:
             yield f"\n[server exception: {type(e).__name__}]"
@@ -1545,10 +1581,11 @@ async def chat_ab(req: ABChatRequest):
     planner_text_a: str | None = None
     used_shared_tools = False
     final_input = raw_input
+    shared_tool_event_ids: list[int] = []
 
     if _should_attempt_tool_preflight(user_text=full, ctx=ctx, tool_cfg=tool_cfg, tool_registry=TOOL_REGISTRY):
         try:
-            expanded_input, planner_text_a, used_shared_tools = await _expand_input_with_tool_requests_async(
+            expanded_input, planner_text_a, used_shared_tools, shared_tool_event_ids = await _expand_input_with_tool_requests_async(
                 target=target_a,
                 base_input=raw_input,
                 conversation_id=cid,
@@ -1562,6 +1599,7 @@ async def chat_ab(req: ABChatRequest):
             log_warn(f"Shared tool planning failed for conversation {cid}: {exc}")
             planner_text_a = None
             used_shared_tools = False
+            shared_tool_event_ids = []
             final_input = _remove_tool_prompt_messages(raw_input)
     else:
         final_input = _remove_tool_prompt_messages(raw_input)
@@ -1595,7 +1633,10 @@ async def chat_ab(req: ABChatRequest):
 
     assert a_res is not None and b_res is not None
 
+    attached_shared_tool_events = False
+
     def store(slot: str, target, requested_model_name: str, res: dict):
+        nonlocal attached_shared_tool_events
         if res.get("ok"):
             text = res.get("text") or ""
             full = postprocess_text(text)
@@ -1610,6 +1651,9 @@ async def chat_ab(req: ABChatRequest):
                     "kind": "ab",
                     "recovery": res.get("recovery"),
                 })
+                if shared_tool_event_ids and not attached_shared_tool_events:
+                    _attach_scaffold_events_to_message(shared_tool_event_ids, assistant_message_id)
+                    attached_shared_tool_events = True
                 _persist_citations_for_assistant_message(assistant_message_id, ctx)
         else:
             payload = res.get("error") or {}

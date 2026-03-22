@@ -7026,6 +7026,7 @@ def update_conversation_scaffold_event_conn(
     conn: sqlite3.Connection,
     *,
     event_id: int,
+    message_id: int | None = None,
     status: str | None = None,
     title: str | None = None,
     body_text: str | None = None,
@@ -7048,6 +7049,7 @@ def update_conversation_scaffold_event_conn(
         """
         UPDATE conversation_scaffold_events
         SET
+            message_id = COALESCE(?, message_id),
             status = COALESCE(?, status),
             title = COALESCE(?, title),
             body_text = COALESCE(?, body_text),
@@ -7057,6 +7059,7 @@ def update_conversation_scaffold_event_conn(
         WHERE id = ?
         """,
         (
+            int(message_id) if message_id is not None else None,
             (status or "").strip() or None,
             (title or "").strip() or None,
             (body_text or "").strip() or None,
@@ -7071,6 +7074,7 @@ def update_conversation_scaffold_event_conn(
 def update_conversation_scaffold_event(
     *,
     event_id: int,
+    message_id: int | None = None,
     status: str | None = None,
     title: str | None = None,
     body_text: str | None = None,
@@ -7081,6 +7085,7 @@ def update_conversation_scaffold_event(
         update_conversation_scaffold_event_conn(
             conn,
             event_id=event_id,
+            message_id=message_id,
             status=status,
             title=title,
             body_text=body_text,
@@ -7127,14 +7132,22 @@ def list_conversation_scaffold_events(
         return [dict(r) for r in rows]
 
 
+def _scaffold_event_anchor_before_message(event_kind: str) -> bool:
+    ek = (event_kind or "").strip().lower()
+    return ek.startswith("tool") or ek in {"artifact_reading_notes"}
+
+
 def list_conversation_history_with_scaffold_events(
     conversation_id: str,
 ) -> list[dict]:
     """
     Returns messages interleaved with scaffold events.
 
-    Scaffold events tied to a message_id are placed immediately after that message.
-    Orphan scaffold events (message_id is NULL or not found) are appended in created_at order.
+    Message-linked scaffold events are placed adjacent to their anchor message.
+    Tool-ish events are shown before their assistant anchor so they appear above the
+    assistant reply they informed. Other anchored events are shown after the anchor.
+    Orphan scaffold events are placed before the first later assistant message when
+    possible; otherwise they are appended in created_at order.
     """
     cid = (conversation_id or "").strip()
     if not cid:
@@ -7161,7 +7174,6 @@ def list_conversation_history_with_scaffold_events(
             (cid,),
         ).fetchall()
 
-    #messages = [dict(r) for r in msg_rows]
     messages: list[dict] = []
     for r in msg_rows:
         row = dict(r)
@@ -7188,7 +7200,8 @@ def list_conversation_history_with_scaffold_events(
 
     events = [dict(r) for r in event_rows]
 
-    events_by_message: dict[int, list[dict]] = {}
+    events_before_message: dict[int, list[dict]] = {}
+    events_after_message: dict[int, list[dict]] = {}
     orphan_events: list[dict] = []
 
     message_ids = {int(m["id"]) for m in messages if m.get("id") is not None}
@@ -7209,24 +7222,50 @@ def list_conversation_history_with_scaffold_events(
             orphan_events.append(e)
             continue
 
-        events_by_message.setdefault(mid_int, []).append(e)
+        bucket = events_before_message if _scaffold_event_anchor_before_message(e.get("event_kind") or "") else events_after_message
+        bucket.setdefault(mid_int, []).append(e)
 
     out: list[dict] = []
+    orphan_used: set[int] = set()
     for m in messages:
+        mid = m.get("id")
+        mid_int = int(mid) if mid is not None else None
+
+        if mid_int is not None:
+            for e in events_before_message.get(mid_int, []):
+                erow = dict(e)
+                erow["row_type"] = "scaffold_event"
+                out.append(erow)
+
+            # place suitable orphan events before the next assistant message
+            if str(m.get("role") or "").strip().lower() == "assistant":
+                msg_created_at = str(m.get("created_at") or "")
+                for idx, e in enumerate(orphan_events):
+                    if idx in orphan_used:
+                        continue
+                    ev_created_at = str(e.get("created_at") or "")
+                    if ev_created_at and msg_created_at and ev_created_at > msg_created_at:
+                        continue
+                    erow = dict(e)
+                    erow["row_type"] = "scaffold_event"
+                    out.append(erow)
+                    orphan_used.add(idx)
+
         row = dict(m)
         row["row_type"] = "message"
         out.append(row)
 
-        mid = m.get("id")
-        if mid is None:
+        if mid_int is None:
             continue
 
-        for e in events_by_message.get(int(mid), []):
+        for e in events_after_message.get(mid_int, []):
             erow = dict(e)
             erow["row_type"] = "scaffold_event"
             out.append(erow)
 
-    for e in orphan_events:
+    for idx, e in enumerate(orphan_events):
+        if idx in orphan_used:
+            continue
         erow = dict(e)
         erow["row_type"] = "scaffold_event"
         out.append(erow)

@@ -16,6 +16,7 @@ When to use tools:
 * Use `artifact.resolve_section` when the user names a section, chapter, heading, or page-like reference and you need the chunk range.
 * Use `artifact.read_section` when the user explicitly wants a section read or after resolving a section.
 * Use `artifact.update_session_notes` only after a section has been read and you are storing retained notes.
+* Use `memory.create` when something the user said or established is worth preserving as a durable project or global memory for later retrieval.
 
 Rules:
 * Only use the tools listed below.

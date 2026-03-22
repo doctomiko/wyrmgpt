@@ -1019,16 +1019,17 @@ function addScaffoldEventCard(evRow) {
   if ((evRow.body_text || "").trim()) wrap.appendChild(body);
 
   const detailsBits = [];
-  if (evRow.input_json) detailsBits.push(`Input:${typeof evRow.input_json === "string" ? evRow.input_json : JSON.stringify(evRow.input_json, null, 2)}`);
-  if (evRow.output_json) detailsBits.push(`Output:${typeof evRow.output_json === "string" ? evRow.output_json : JSON.stringify(evRow.output_json, null, 2)}`);
+  if (evRow.input_json) detailsBits.push(`Input:\n${typeof evRow.input_json === "string" ? evRow.input_json : JSON.stringify(evRow.input_json, null, 2)}`);
+  if (evRow.output_json) detailsBits.push(`Output:\n${typeof evRow.output_json === "string" ? evRow.output_json : JSON.stringify(evRow.output_json, null, 2)}`);
   if (detailsBits.length) {
     const details = document.createElement("details");
     details.className = "scaffoldDetails";
     const summary = document.createElement("summary");
-    summary.textContent = "Planner details";
+    const kind = String(evRow.event_kind || "").toLowerCase();
+    summary.textContent = kind.startsWith("tool") ? "Tool details" : "Scaffold details";
     const pre = document.createElement("pre");
     pre.className = "ctxPre";
-    pre.textContent = detailsBits.join("");
+    pre.textContent = detailsBits.join("\n\n");
     details.appendChild(summary);
     details.appendChild(pre);
     wrap.appendChild(details);

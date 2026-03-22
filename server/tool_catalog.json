@@ -384,5 +384,55 @@
       }
     },
     "system_usage": "Use when the assistant wants to retrieve a specific URL it has seen and turn it into a readable artifact in the current conversation."
+  },
+  "memory.create": {
+    "module": "memory_create",
+    "enabled": true,
+    "display_name": "Create Memory",
+    "description": "Create a durable memory at project or global scope from information worth remembering later.",
+    "tags": [
+      "memory",
+      "corpus",
+      "persistence"
+    ],
+    "input_schema": {
+      "type": "object",
+      "required": [
+        "content"
+      ],
+      "properties": {
+        "content": {
+          "type": "string",
+          "minLength": 1
+        },
+        "importance": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100,
+          "default": 50
+        },
+        "tags": {
+          "type": [
+            "string",
+            "array"
+          ]
+        },
+        "scope_type": {
+          "type": "string",
+          "enum": [
+            "project",
+            "global"
+          ]
+        },
+        "scope_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "origin_kind": {
+          "type": "string"
+        }
+      }
+    },
+    "system_usage": "Use when the assistant wants to save a durable project or global memory from the current conversation for later retrieval. Prefer project scope when the memory is specific to this project; otherwise use global."
   }
 }
