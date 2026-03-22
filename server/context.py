@@ -20,6 +20,7 @@ from .db import (
     list_conversation_retained_artifacts,
     retain_conversation_artifact_conn,
     create_or_update_conversation_scaffold_event_by_input_conn,
+    list_artifact_reading_sessions,
     list_artifact_reading_sessions_for_conversation,
     list_artifact_reading_steps,
 )
@@ -919,7 +920,53 @@ def _artifact_reading_plan_guidance_text() -> str:
     return text
 
 
-def _format_active_reading_session_message(conversation_id: str) -> dict | None:
+def _reading_note_text(notes: object) -> str:
+    if notes is None:
+        return ""
+    if isinstance(notes, str):
+        return notes.strip()
+    try:
+        return json.dumps(notes, ensure_ascii=False)
+    except Exception:
+        return str(notes).strip()
+
+
+def _query_terms_for_reading_notes(user_text: str) -> set[str]:
+    terms: set[str] = set()
+    for raw in _QUERY_WORD_RE.findall((user_text or "").lower()):
+        tok = raw.strip().lower()
+        if len(tok) < 4 or tok in _QUERY_STOP:
+            continue
+        terms.add(tok)
+    return terms
+
+
+def _select_reading_note_snapshots(steps: list[dict], *, user_text: str, max_recent: int = 3, max_hits: int = 2) -> tuple[list[dict], list[dict]]:
+    noted = [s for s in steps if s.get("notes")]
+    if not noted:
+        return [], []
+    recent = noted[-max_recent:]
+    terms = _query_terms_for_reading_notes(user_text)
+    if not terms:
+        return recent, []
+    recent_ordinals = {int(s.get("ordinal") or 0) for s in recent}
+    scored: list[tuple[int, int, dict]] = []
+    for step in noted:
+        ordinal = int(step.get("ordinal") or 0)
+        if ordinal in recent_ordinals:
+            continue
+        note_text = _reading_note_text(step.get("notes")).lower()
+        if not note_text:
+            continue
+        score = sum(1 for t in terms if t in note_text)
+        if score > 0:
+            scored.append((score, ordinal, step))
+    scored.sort(key=lambda item: (-item[0], -item[1]))
+    hits = [step for _score, _ordinal, step in scored[:max_hits]]
+    return recent, hits
+
+
+def _format_active_reading_session_message(conversation_id: str, *, user_text: str = "") -> dict | None:
     sessions = list_artifact_reading_sessions_for_conversation(conversation_id)
     if not sessions:
         return None
@@ -972,16 +1019,21 @@ def _format_active_reading_session_message(conversation_id: str) -> dict | None:
         summary_so_far = (session.get("summary_so_far") or "").strip()
         if summary_so_far:
             lines.append(f"  Summary so far: {summary_so_far}")
-        recent_notes = None
-        for step in reversed(steps):
-            if step.get("notes"):
-                recent_notes = step.get("notes")
-                break
-        if recent_notes:
-            recent_text = str(recent_notes).strip()
-            if len(recent_text) > 700:
-                recent_text = recent_text[:697].rstrip() + "..."
-            lines.append(f"  Most recent notes: {recent_text}")
+        recent_steps, matched_steps = _select_reading_note_snapshots(steps, user_text=user_text)
+        if recent_steps:
+            lines.append("  Recent note snapshots:")
+            for step in recent_steps:
+                note_text = _reading_note_text(step.get("notes"))
+                if len(note_text) > 300:
+                    note_text = note_text[:297].rstrip() + "..."
+                lines.append(f"    - Section {int(step.get('ordinal') or 0)}: {note_text}")
+        if matched_steps:
+            lines.append("  Relevant earlier note hits:")
+            for step in matched_steps:
+                note_text = _reading_note_text(step.get("notes"))
+                if len(note_text) > 260:
+                    note_text = note_text[:257].rstrip() + "..."
+                lines.append(f"    - Section {int(step.get('ordinal') or 0)}: {note_text}")
         lines.append("  Guidance: Reuse this session with artifact.read_next unless the user explicitly wants a restart.")
         lines.append("")
 
@@ -1248,8 +1300,15 @@ def build_context(
 
     preview_limit = max(1, int(ctx_cfg.preview_limit))
 
+    active_session_rows = list_artifact_reading_sessions_for_conversation(conversation_id)
+    active_reading_mode = bool(active_session_rows)
+
     history_rows = get_messages(conversation_id, limit=ctx_cfg.history_limit)
     history_rows_raw = get_messages_raw(conversation_id, limit=ctx_cfg.history_limit)
+    if active_reading_mode:
+        reading_history_limit = min(max(8, preview_limit * 2), 16)
+        history_rows = history_rows[-reading_history_limit:]
+        history_rows_raw = history_rows_raw[-reading_history_limit:]
 
     current_message_id = None
     if history_rows_raw:
@@ -1587,8 +1646,8 @@ def build_context(
     emb_cfg = load_embedding_config()
     vec_cfg = load_vector_config()
 
-    rag_limit = ret_cfg.rag_limit
-    max_chars = ret_cfg.max_chars
+    rag_limit = max(ret_cfg.rag_limit, 14) if active_reading_mode else ret_cfg.rag_limit
+    max_chars = max(ret_cfg.max_chars, 12000) if active_reading_mode else ret_cfg.max_chars
     if do_fts_rag or do_vector_rag:
         chunks_resp = retrieve_chunks_for_message(
             conversation_id=conversation_id,
@@ -1818,7 +1877,7 @@ def build_context(
             #"reason": f"query_mode={query_cfg.query_mode} user_text_present={bool(user_text.strip())}",
         }
 
-    active_reading_session_message = _format_active_reading_session_message(conversation_id)
+    active_reading_session_message = _format_active_reading_session_message(conversation_id, user_text=user_text)
     if active_reading_session_message:
         whole_artifact_messages.append(active_reading_session_message)
 

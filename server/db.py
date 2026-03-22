@@ -6333,6 +6333,58 @@ def list_artifact_reading_sessions_for_conversation(
         return [dict(r) for r in rows]
 
 
+
+def list_artifact_reading_sessions(
+    *,
+    conversation_id: str | None = None,
+    artifact_id: str | None = None,
+    title_query: str | None = None,
+    created_after: str | None = None,
+    created_before: str | None = None,
+    include_complete: bool = True,
+    limit: int = 50,
+) -> list[dict]:
+    clauses: list[str] = []
+    params: list[Any] = []
+
+    cid = (conversation_id or "").strip()
+    aid = (artifact_id or "").strip()
+    title_q = (title_query or "").strip()
+    after = (created_after or "").strip()
+    before = (created_before or "").strip()
+
+    if cid:
+        clauses.append("ars.conversation_id = ?")
+        params.append(cid)
+    if aid:
+        clauses.append("ars.artifact_id = ?")
+        params.append(aid)
+    if title_q:
+        clauses.append("COALESCE(a.title, '') LIKE ?")
+        params.append(f"%{title_q}%")
+    if after:
+        clauses.append("ars.created_at >= ?")
+        params.append(after)
+    if before:
+        clauses.append("ars.created_at <= ?")
+        params.append(before)
+    if not include_complete:
+        clauses.append("ars.status IN ('active', 'paused')")
+
+    sql = """
+        SELECT ars.*, a.title AS artifact_title, a.source_kind AS artifact_source_kind
+        FROM artifact_reading_sessions ars
+        LEFT JOIN artifacts a ON a.id = ars.artifact_id
+    """
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+    sql += " ORDER BY ars.updated_at DESC, ars.id DESC LIMIT ?"
+    params.append(max(1, int(limit)))
+
+    with db_session() as conn:
+        rows = conn.execute(sql, tuple(params)).fetchall()
+        return [dict(r) for r in rows]
+
 def upsert_artifact_reading_session(
     *,
     conversation_id: str,

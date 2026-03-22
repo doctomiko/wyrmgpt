@@ -27,6 +27,7 @@ Rules:
 * Artifact IDs appear in `ARTIFACT SUMMARY`, `ARTIFACT INDEX`, `ARTIFACT READING PLAN`, `ACTIVE READING SESSIONS`, `FILE ARTIFACT`, or `AVAILABLE FILE ARTIFACTS` blocks when available.
 * The scaffold may fill context-only arguments like conversation_id automatically; do not invent random IDs.
 * After tool results are returned, continue with a normal answer unless another tool is still clearly required.
+* Do not start a new reading session for artifacts whose source_kind begins with reading_session:, unless the user explicitly asks for meta-analysis.
 
 Allowed tools:
 {{ALLOWED_TOOLS}}

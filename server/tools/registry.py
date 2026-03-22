@@ -179,7 +179,9 @@ def _render_tool_detail(spec: ToolSpec) -> str:
         f"- {spec.name}",
         f"  Purpose: {(spec.system_usage or spec.description or '').strip()}",
         "  Call shape:",
-        f"  ```tool  {json.dumps(example, ensure_ascii=False)}  ```",
+        "  ```tool",
+        f"  {json.dumps(example, ensure_ascii=False)}",
+        "  ```",
     ]
     return "\n".join(lines)
 

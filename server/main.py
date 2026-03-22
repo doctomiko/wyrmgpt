@@ -1060,7 +1060,7 @@ def _maybe_capture_reading_notes_for_result(
     selected_modes = strategy.get("modes") or ["core", "reader_experience", "meta"]
 
     recent_done = [s for s in steps if int(s.get("ordinal") or 0) < ordinal and s.get("notes")]
-    recent_done = recent_done[-2:]
+    recent_done = recent_done[-3:]
     recent_notes_text = "".join(
         f"Section {int(s.get('ordinal') or 0)} notes: {_stringify_recent_notes(s.get('notes'))}"
         for s in recent_done

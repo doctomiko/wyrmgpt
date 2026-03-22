@@ -259,5 +259,130 @@
       }
     },
     "system_usage": "Use after reading a section to store the running summary and short reflective notes for later continuation or retrieval."
+  },
+  "artifact.list_sessions": {
+    "module": "artifact_list_sessions",
+    "enabled": true,
+    "display_name": "List Artifact Reading Sessions",
+    "description": "Enumerate existing reading sessions filtered by artifact, title, date range, or conversation.",
+    "tags": [
+      "artifact",
+      "reading",
+      "session",
+      "listing"
+    ],
+    "input_schema": {
+      "type": "object",
+      "required": [],
+      "properties": {
+        "conversation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifact_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title_query": {
+          "type": "string",
+          "minLength": 1
+        },
+        "created_after": {
+          "type": "string",
+          "minLength": 4
+        },
+        "created_before": {
+          "type": "string",
+          "minLength": 4
+        },
+        "include_complete": {
+          "type": "boolean",
+          "default": true
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 20
+        }
+      }
+    },
+    "system_usage": "Use when the user wants to see existing reading sessions for a conversation, artifact, title match, or date range."
+  },
+  "artifact.publish_session": {
+    "module": "artifact_publish_session",
+    "enabled": true,
+    "display_name": "Publish Reading Session",
+    "description": "Create a durable artifact from a reading session, either as a compact recap or a fuller journal transcript.",
+    "tags": [
+      "artifact",
+      "reading",
+      "session",
+      "publish"
+    ],
+    "input_schema": {
+      "type": "object",
+      "required": [
+        "session_id"
+      ],
+      "properties": {
+        "session_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "publish_kind": {
+          "type": "string",
+          "enum": [
+            "reading_recap",
+            "reading_journal_transcript"
+          ],
+          "default": "reading_journal_transcript"
+        },
+        "title": {
+          "type": "string"
+        },
+        "retain_in_conversation": {
+          "type": "boolean",
+          "default": true
+        },
+        "scope_type": {
+          "type": "string",
+          "enum": [
+            "conversation",
+            "project",
+            "global"
+          ]
+        }
+      }
+    },
+    "system_usage": "Use when the user wants to preserve a completed or in-progress reading session as a durable artifact that can be referenced later."
+  },
+  "web.ingest_url": {
+    "module": "web_ingest_url",
+    "enabled": true,
+    "display_name": "Fetch Web URL",
+    "description": "Fetch and ingest a specific web URL into the current conversation as a retained artifact.",
+    "tags": [
+      "web",
+      "artifact",
+      "ingest"
+    ],
+    "input_schema": {
+      "type": "object",
+      "required": [
+        "url"
+      ],
+      "properties": {
+        "url": {
+          "type": "string",
+          "minLength": 8
+        },
+        "conversation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "system_usage": "Use when the assistant wants to retrieve a specific URL it has seen and turn it into a readable artifact in the current conversation."
   }
 }
