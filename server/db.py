@@ -8869,17 +8869,14 @@ def ensure_artifacts_for_files(files_by_id: dict[str, dict]) -> None:
     files_by_id is a dict of file_id -> file_row (as dict) for all files relevant to a context build, keyed by file_id which feeds into artifacts source_id.
     """
 
-    print(f"[context] ensure_artifacts_for_files: checking {len(files_by_id)} files")     
+    if not files_by_id:
+        return
+    existing_by_file_id = list_artifacts_for_file_ids(files_by_id.keys(), include_deleted=False, hydrate=False)
     for file_id, file_row in files_by_id.items():
         # If file row doesn't have data, we are the data layer, so let's go get it!!
-        if file_row == None:
+        if file_row is None:
             file_row = get_file_by_id(file_id)
-        try:
-            existing = list_artifacts_for_file(file_id, include_deleted=False)
-            print(f"[context] file {file_id}: {len(existing)} existing artifacts")
-        except Exception as exc:
-            print(f"[context] list_artifacts_for_file failed for file {file_id}: {exc}")
-            continue
+        existing = existing_by_file_id.get(str(file_id).strip(), [])
 
         if existing:
             continue  # already artifacted
@@ -8891,6 +8888,67 @@ def ensure_artifacts_for_files(files_by_id: dict[str, dict]) -> None:
             print(f"[context] artifact_file failed for file {file_id}: {exc}")
             continue
 
+
+def list_artifacts_for_file_ids(
+    file_ids,
+    include_deleted: bool = False,
+    *,
+    hydrate: bool = False,
+) -> dict[str, list[dict]]:
+    file_id_strs = [str(fid).strip() for fid in file_ids if str(fid).strip()]
+    if not file_id_strs:
+        return {}
+
+    out: dict[str, list[dict]] = {fid: [] for fid in file_id_strs}
+
+    with db_session() as conn:
+        for i in range(0, len(file_id_strs), 200):
+            batch = file_id_strs[i:i + 200]
+            placeholders = ",".join("?" for _ in batch)
+            sql = f"""
+                SELECT *
+                FROM artifacts
+                WHERE source_id IN ({placeholders})
+                  AND source_kind LIKE 'file:%'
+            """
+            params: list[object] = list(batch)
+            if not include_deleted:
+                sql += " AND (is_deleted IS NULL OR is_deleted = 0)"
+            sql += " ORDER BY source_id ASC, updated_at ASC"
+            rows = conn.execute(sql, params).fetchall()
+            for row in rows:
+                art = dict(row)
+                out.setdefault(str(art.get("source_id") or "").strip(), []).append(art)
+
+    if hydrate:
+        for arts in out.values():
+            for art in arts:
+                _hydrate_artifact_content_text(art)
+
+    return out
+
+
+def get_artifact_by_id(artifact_id: str, *, include_deleted: bool = False, hydrate: bool = True) -> dict | None:
+    artifact_id = str(artifact_id).strip()
+    if not artifact_id:
+        return None
+
+    with db_session() as conn:
+        sql = "SELECT * FROM artifacts WHERE id = ?"
+        params: list[object] = [artifact_id]
+        if not include_deleted:
+            sql += " AND (is_deleted IS NULL OR is_deleted = 0)"
+        row = conn.execute(sql, params).fetchone()
+
+    if not row:
+        return None
+
+    art = dict(row)
+    if hydrate:
+        _hydrate_artifact_content_text(art)
+    return art
+
+
 def list_artifacts_for_file(
     file_id: int | str,
     include_deleted: bool = False,
@@ -8901,23 +8959,8 @@ def list_artifacts_for_file(
 
     with db_session() as conn:
         _ensure_file_exists(conn, file_id_str)
-        sql = """
-            SELECT *
-            FROM artifacts
-            WHERE source_id = ?
-        """
-        params: list[object] = [file_id_str]
-        if not include_deleted:
-            sql += " AND (is_deleted IS NULL OR is_deleted = 0)"
-        sql += " ORDER BY updated_at ASC" # chunk_index ASC, 
-        rows = conn.execute(sql, params).fetchall()
 
-    out = [dict(r) for r in rows]
-    for art in out:
-        _hydrate_artifact_content_text(art)
-
-    print(f"[db] list_artifacts_for_file({file_id_str!r}, include_deleted={include_deleted}) -> {len(out)} rows")
-    return out
+    return list_artifacts_for_file_ids([file_id_str], include_deleted=include_deleted, hydrate=True).get(file_id_str, [])
 
 def iter_artifacts_with_file_hints_for_scope_keys(conn, scope_keys: list[str]) -> list[dict]:
     """

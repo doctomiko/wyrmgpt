@@ -12,9 +12,9 @@ from .db import (
     get_app_setting, get_conversation_summary_text,
     get_messages, get_messages_raw, get_context_sources,
     list_memory_pins, list_memories, list_conversations,
-    ensure_artifacts_for_files, gather_scoped_files,
+    ensure_artifacts_for_files, gather_scoped_files, list_artifacts_for_file_ids, get_artifact_by_id,
     ensure_conversation_transcript_artifact_fresh,
-    load_artifact_row_for_context, list_artifacts_for_file,
+    load_artifact_row_for_context,
     memory_artifact_id, conversation_summary_artifact_id,
     conversation_transcript_artifact_id, db_session,
     list_conversation_retained_artifacts,
@@ -839,6 +839,7 @@ def _build_scoped_file_artifact_inventory_message(conversation_id: str, *, max_i
 
     rows = list(files_by_id.values())
     rows.sort(key=lambda r: (r.get("updated_at") or r.get("created_at") or ""), reverse=True)
+    artifact_headers_by_file_id = list_artifacts_for_file_ids([str(r.get("id") or "").strip() for r in rows], include_deleted=False, hydrate=False)
 
     lines = [
         "AVAILABLE FILE ARTIFACTS",
@@ -855,13 +856,9 @@ def _build_scoped_file_artifact_inventory_message(conversation_id: str, *, max_i
         if not file_id:
             continue
         try:
-            artifacts = list_artifacts_for_file(file_id, include_deleted=False)
-        except Exception:
-            artifacts = []
-        if not artifacts:
+        artifacts = artifact_headers_by_file_id.get(file_id, [])
             continue
 
-        art = artifacts[0]
         artifact_id = (art.get("id") or "").strip()
         if not artifact_id:
             continue
@@ -2104,6 +2101,7 @@ def _build_file_messages_for_conversation(
     file_rows = list(files_by_id.values())
     file_rows.sort(key=lambda r: (r.get("updated_at") or r.get("created_at") or ""), reverse=True)
 
+    artifact_headers_by_file_id = list_artifacts_for_file_ids([str(r.get("id") or "").strip() for r in file_rows], include_deleted=False, hydrate=False)
     files_taken = 0
     with db_session() as conn:
         for file_row in file_rows:
@@ -2115,12 +2113,7 @@ def _build_file_messages_for_conversation(
                 continue
 
             try:
-                artifacts = list_artifacts_for_file(file_id, include_deleted=False)
-            except Exception as exc:
-                print(f"[context] list_artifacts_for_file failed for file {file_id}: {exc}")
-                continue
-
-            if not artifacts:
+            artifacts = artifact_headers_by_file_id.get(file_id, [])
                 continue
 
             orig_name = file_row.get("original_name") or Path(file_row.get("path") or "").name
@@ -2135,6 +2128,12 @@ def _build_file_messages_for_conversation(
                 source_kind = art.get("source_kind") or ""
                 content = art.get("content_text") or ""
 
+                if not content and artifact_id:
+                    hydrated_art = get_artifact_by_id(artifact_id, include_deleted=False, hydrate=True)
+                    if hydrated_art:
+                        art = hydrated_art
+                        source_kind = art.get("source_kind") or source_kind
+                        content = art.get("content_text") or ""
                 if source_kind.startswith("file:image"):
                     try:
                         payload = json.loads(content)
