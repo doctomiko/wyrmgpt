@@ -7734,27 +7734,33 @@ def list_all_files(include_deleted: bool = False) -> list[dict]:
 def list_global_files(include_deleted: bool = False) -> list[dict]:
     """
     Returns all globally scoped files.
-    A more robust version that is agnostic about what method was used to mark a file.
-    Respects the global project id.
-    Treats explicit scope_type='global' and legacy unscoped rows as global.
+    Supports both:
+      - explicit global/unscoped rows in files.scope_type
+      - legacy rows linked to the global project through project_files
     """
     global_id: int = get_global_project_id()
     with db_session() as conn:
-        sql = f"""
+        sql = """
             SELECT *
             FROM files
             WHERE (
-                project_id = {global_id}
+                EXISTS (
+                    SELECT 1
+                    FROM project_files pf
+                    WHERE pf.file_id = files.id
+                      AND pf.project_id = ?
+                )
                 OR scope_type IS NULL
                 OR scope_type = ''
                 OR scope_type = 'global'
             )
         """
+        params: list[object] = [int(global_id)]
         if not include_deleted:
             sql += " AND (is_deleted IS NULL OR is_deleted = 0)"
         sql += " ORDER BY COALESCE(updated_at, created_at, '') DESC, name COLLATE NOCASE"
 
-        rows = conn.execute(sql).fetchall()
+        rows = conn.execute(sql, params).fetchall()
 
     return [dict(r) for r in rows]
 
@@ -8139,11 +8145,16 @@ def move_artifact_scope(
             raise ValueError("Artifacts can only be promoted to the same or a higher scope.")
 
         if target_scope_type == "project":
-            _ensure_project_exists(conn, int(scope_id))
-            new_project_id = int(scope_id)
-            new_scope_id = int(scope_id)
+            if scope_id is None:
+                raise ValueError("scope_id is required for project scope.")
+            project_scope_id = int(scope_id)
+            _ensure_project_exists(conn, project_scope_id)
+            new_project_id = project_scope_id
+            new_scope_id = project_scope_id
             new_scope_uuid = None
         elif target_scope_type == "conversation":
+            if target_scope_uuid is None:
+                raise ValueError("scope_uuid is required for conversation scope.")
             _ensure_conversation_exists(conn, target_scope_uuid)
             conv_row = conn.execute("SELECT project_id FROM conversations WHERE id = ?", (target_scope_uuid,)).fetchone()
             new_project_id = int(conv_row["project_id"]) if conv_row and conv_row["project_id"] is not None else None

@@ -1,9 +1,10 @@
 import hashlib
 import anyio
 import asyncio
+import mimetypes
 import re
-import uuid
 import json
+import uuid
 import time
 import traceback
 from pathlib import Path
@@ -24,6 +25,7 @@ from .summary_helper import summarize_conversation_text, suggest_conversation_ti
 from .artifact_reading_planner import get_artifact_readiness
 from .reading_session_notes import build_reading_notes_prompts, coerce_reading_strategy, load_reading_questions, parse_reading_notes_output
 from .web_ingest import ingest_urls_from_user_message
+from .image_helpers import is_image_file
 
 # Big Include Blocks for config and db
 from .providers.registry import ProviderRegistry
@@ -82,7 +84,7 @@ from .db import (
     project_add_file as db_project_add_file,
     register_scoped_file, update_file_description,
     conversation_link_file, list_files_for_conversation,
-    list_files_for_project, list_all_files,
+    list_files_for_project, list_all_files, get_file_by_id,
     get_files_summary, list_global_files,
     FileDeleteAction, delete_file_cascade, move_artifact_scope,
     move_file_scope, find_same_scope_same_name_file,
@@ -2014,7 +2016,11 @@ def _promote_targets_for_scope(scope_type: str, *, project_id: int | None = None
 
 def _make_file_library_item(file_row: dict, *, inherited_from: str, project_id: int | None = None, conversation_title: str | None = None) -> dict:
     scope_type = _normalize_scope_type(file_row.get("scope_type"))
-    meta: list[str] = [f"MIME: {file_row.get('mime_type') or 'unknown'}", f"Scope: {scope_type}"]
+    mime_type = (file_row.get("mime_type") or "").strip() or None
+    file_path = Path(str(file_row.get("path") or "")).expanduser()
+    is_image = bool(file_path and is_image_file(file_path, mime_type))
+
+    meta: list[str] = [f"MIME: {mime_type or 'unknown'}", f"Scope: {scope_type}"]
     if conversation_title:
         meta.append(f"Conversation: {conversation_title}")
     if file_row.get("description"):
@@ -2028,7 +2034,8 @@ def _make_file_library_item(file_row: dict, *, inherited_from: str, project_id: 
         "scope_type": scope_type,
         "updated_at": file_row.get("updated_at") or file_row.get("created_at"),
         "inherited_from": inherited_from,
-        "badges": [],
+        "badges": ["image"] if is_image else [],
+        "thumbnail_url": f"/api/files/{file_row['id']}/thumbnail" if is_image else None,
         "promote_targets": _promote_targets_for_scope(scope_type, project_id=project_id),
     }
 
@@ -2759,6 +2766,28 @@ def api_list_files():
 @app.get("/api/files/global")
 def api_list_global_files():
     return JSONResponse({"files": list_global_files()})
+
+
+@app.get("/api/files/{file_id}/thumbnail")
+def api_file_thumbnail(file_id: str):
+    try:
+        file_row = get_file_by_id(file_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    path = Path(str(file_row.get("path") or "")).expanduser()
+    mime_type = (file_row.get("mime_type") or "").strip() or None
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="File content not found on disk.")
+    if not is_image_file(path, mime_type):
+        raise HTTPException(status_code=400, detail="Only image files support thumbnail preview.")
+
+    media_type = mime_type or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return FileResponse(
+        path,
+        media_type=media_type,
+        headers={"Cache-Control": "private, max-age=300"},
+    )
 
 @app.get("/api/files/summary")
 def api_files_summary():

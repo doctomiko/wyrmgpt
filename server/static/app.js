@@ -221,6 +221,8 @@ let uploadProjectIdForced = null;
 let libraryModalMode = null; // "conversation" | "project" | "global"
 let libraryModalConversationId = null;
 let libraryModalProjectId = null;
+const LIBRARY_COLLAPSE_THRESHOLD = 12;
+const libraryGroupCollapseState = new Map();
 // Files modal state:
 let filesModalMode = null; // "conversation" | "project" | "global" | "all"
 let filesModalConversationId = null;
@@ -4339,9 +4341,29 @@ function renderLibraryItemCard(item) {
   const card = document.createElement("div");
   card.className = "libraryCard";
 
+  const body = document.createElement("div");
+  body.className = "libraryCardBody";
+  card.appendChild(body);
+
+  if (item.thumbnail_url) {
+    const thumbWrap = document.createElement("div");
+    thumbWrap.className = "libraryThumbWrap";
+    const thumb = document.createElement("img");
+    thumb.className = "libraryThumb";
+    thumb.src = item.thumbnail_url;
+    thumb.alt = item.title || item.id || "Image preview";
+    thumb.loading = "lazy";
+    thumb.addEventListener("error", () => thumbWrap.remove());
+    thumbWrap.appendChild(thumb);
+    body.appendChild(thumbWrap);
+  }
+
+  const content = document.createElement("div");
+  content.className = "libraryCardContent";
+  body.appendChild(content);
+
   const header = document.createElement("div");
   header.className = "libraryCardHeader";
-
   const left = document.createElement("div");
   const title = document.createElement("div");
   title.className = "libraryCardTitle";
@@ -4367,7 +4389,7 @@ function renderLibraryItemCard(item) {
     const ts = document.createElement("span");
     ts.className = "libraryBadge";
     ts.textContent = formatReadableDateTime(item.updated_at);
-    right.appendChild(ts);
+  content.appendChild(header);
   }
 
   header.appendChild(left);
@@ -4376,7 +4398,7 @@ function renderLibraryItemCard(item) {
 
   const meta = document.createElement("div");
   meta.className = "libraryMeta";
-  (item.meta || []).forEach((line) => {
+  content.appendChild(meta);
     const row = document.createElement("div");
     row.textContent = line;
     meta.appendChild(row);
@@ -4425,12 +4447,72 @@ function renderLibraryItemCard(item) {
 
   if (!actions.children.length && item.promote_disabled_reason) {
     const hint = document.createElement("div");
-    hint.className = "libraryEmpty";
+    content.appendChild(actions);
     hint.textContent = item.promote_disabled_reason;
     actions.appendChild(hint);
   }
 
   if (actions.children.length) {
+function renderLibraryGroup(section, group, scopeKey) {
+  const wrap = document.createElement("div");
+  wrap.className = "libraryGroup";
+
+  const items = Array.isArray(group?.items) ? group.items : [];
+  const itemCount = items.length;
+  const groupKey = `${scopeKey}:${section?.key || "section"}:${group?.key || "group"}`;
+  const canCollapse = itemCount > LIBRARY_COLLAPSE_THRESHOLD;
+  const collapsed = canCollapse ? (libraryGroupCollapseState.get(groupKey) ?? true) : false;
+  if (collapsed) wrap.classList.add("is-collapsed");
+
+  const header = document.createElement(canCollapse ? "button" : "div");
+  header.className = "libraryGroupHeader";
+  if (canCollapse) {
+    header.type = "button";
+    header.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  }
+
+  const titleRow = document.createElement("div");
+  titleRow.className = "libraryGroupTitleRow";
+
+  if (canCollapse) {
+    const caret = document.createElement("span");
+    caret.className = "libraryCaret";
+    caret.textContent = collapsed ? "▸" : "▾";
+    titleRow.appendChild(caret);
+  }
+
+  const gt = document.createElement("div");
+  gt.className = "libraryGroupTitle";
+  gt.textContent = group.title || group.key || "Group";
+  titleRow.appendChild(gt);
+
+  const count = document.createElement("div");
+  count.className = "libraryGroupCount";
+  count.textContent = `${itemCount} item${itemCount === 1 ? "" : "s"}`;
+
+  header.appendChild(titleRow);
+  header.appendChild(count);
+  wrap.appendChild(header);
+
+  const cards = document.createElement("div");
+  cards.className = "libraryCards";
+  items.forEach((item) => cards.appendChild(renderLibraryItemCard(item)));
+  wrap.appendChild(cards);
+
+  if (canCollapse) {
+    header.addEventListener("click", () => {
+      const next = !wrap.classList.contains("is-collapsed");
+      wrap.classList.toggle("is-collapsed", next);
+      libraryGroupCollapseState.set(groupKey, next);
+      header.setAttribute("aria-expanded", next ? "false" : "true");
+      const caret = header.querySelector(".libraryCaret");
+      if (caret) caret.textContent = next ? "▸" : "▾";
+    });
+  }
+
+  return wrap;
+}
+
     card.appendChild(actions);
   }
 
@@ -4444,24 +4526,12 @@ function renderLibraryModal(data) {
   libraryScopeNoteEl.textContent = data?.scope_note || "";
 
   const sections = Array.isArray(data?.sections) ? data.sections : [];
+  const scopeKey = `${data?.scope_type || "library"}:${data?.scope_id || "root"}`;
   if (!sections.length) {
     librarySectionsEl.textContent = "Nothing here yet.";
-    return;
-  }
-
-  let renderedAny = false;
-  sections.forEach((section) => {
-    const groups = Array.isArray(section?.groups) ? section.groups : [];
-    if (!groups.length) return;
-    renderedAny = true;
-
-    const sec = document.createElement("div");
-    sec.className = "librarySection";
-
-    const title = document.createElement("div");
-    title.className = "librarySectionTitle";
-    title.textContent = section.title || section.key || "Section";
-    sec.appendChild(title);
+    groups.forEach((group) => {
+      sec.appendChild(renderLibraryGroup(section, group, scopeKey));
+    });
 
     groups.forEach((group) => {
       const wrap = document.createElement("div");

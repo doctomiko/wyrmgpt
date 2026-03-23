@@ -1105,10 +1105,50 @@ blockquote blockquote {
   margin-bottom: 14px;
 }
 
+.libraryGroupHeader {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+button.libraryGroupHeader {
+  cursor: pointer;
+}
+
+.libraryGroupTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.libraryCaret {
+  width: 1em;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+
 .libraryGroupTitle {
   font-size: 0.9rem;
   color: var(--muted);
-  margin-bottom: 8px;
+}
+
+.libraryGroupCount {
+  font-size: 0.82rem;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+
+.libraryGroup.is-collapsed .libraryCards {
+  display: none;
 }
 
 .libraryCards {
@@ -1119,6 +1159,34 @@ blockquote blockquote {
 
 .libraryCard {
   border: 1px solid var(--border);
+.libraryCardBody {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.libraryCardContent {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.libraryThumbWrap {
+  width: 64px;
+  height: 64px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  flex: 0 0 auto;
+}
+
+.libraryThumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
   border-radius: 8px;
   padding: 10px 12px;
   background: rgba(255, 255, 255, 0.03);
