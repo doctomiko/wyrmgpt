@@ -195,7 +195,7 @@
         }
       }
     },
-    "system_usage": "Use when the user says to continue reading or when the assistant wants the next section in an active reading session."
+    "system_usage": "Use only when the user clearly wants to continue reading, resume an in-progress session, or load the next section. Do not use for listing sessions, publishing transcripts, recaps, or other session-management requests."
   },
   "artifact.update_session_notes": {
     "module": "artifact_update_session_notes",
@@ -307,7 +307,7 @@
         }
       }
     },
-    "system_usage": "Use when the user wants to see existing reading sessions for a conversation, artifact, title match, or date range."
+    "system_usage": "Use when the user wants to list, enumerate, search, inspect, or choose among existing reading sessions for a conversation, artifact, title match, or date range. Prefer this over artifact.read_next when the request is about session discovery or metadata."
   },
   "artifact.publish_session": {
     "module": "artifact_publish_session",
@@ -355,7 +355,7 @@
         }
       }
     },
-    "system_usage": "Use when the user wants to preserve a completed or in-progress reading session as a durable artifact that can be referenced later."
+    "system_usage": "Use when the user wants a transcript, journal transcript, recap, export, publication, or other durable artifact derived from a completed or in-progress reading session. Prefer this over artifact.read_next when the request is about outputs from the session rather than reading more text."
   },
   "web.ingest_url": {
     "module": "web_ingest_url",
