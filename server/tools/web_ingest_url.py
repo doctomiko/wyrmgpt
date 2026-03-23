@@ -53,7 +53,25 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
 
     # Treat successful artifact creation as success, even if a later
     # step (like reindexing) emitted warnings.
+    warnings = [str(e) for e in (ingest.get("errors") or []) if str(e).strip()]
+    artifact_id = artifact_ids[0] if artifact_ids else None
+
+    # Treat successful artifact creation as success, even if a later
+    # step (like reindexing) emitted warnings.
     ok = bool(artifact_id)
+
+    error_text = None
+    if not ok:
+        if warnings:
+            error_text = "; ".join(warnings)
+        else:
+            error_text = "URL ingest produced no artifact"
+
+    display_text = f"Fetched and ingested {url} as artifact {artifact_id}."
+    if ok and warnings:
+        display_text += f" Warnings: {'; '.join(warnings)}"
+    elif not ok:
+        display_text = f"Failed to ingest {url}."
 
     error_text = None
     if not ok:
