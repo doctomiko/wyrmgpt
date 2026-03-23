@@ -46,8 +46,28 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         max_urls=1,
         fetch_method="python",
     )
+
     artifact_ids = list(ingest.get("artifact_ids") or [])
-    ok = bool(ingest.get("ok")) and bool(artifact_ids)
+    warnings = [str(e) for e in (ingest.get("errors") or []) if str(e).strip()]
+    artifact_id = artifact_ids[0] if artifact_ids else None
+
+    # Treat successful artifact creation as success, even if a later
+    # step (like reindexing) emitted warnings.
+    ok = bool(artifact_id)
+
+    error_text = None
+    if not ok:
+        if warnings:
+            error_text = "; ".join(warnings)
+        else:
+            error_text = "URL ingest produced no artifact"
+
+    display_text = f"Fetched and ingested {url} as artifact {artifact_id}."
+    if ok and warnings:
+        display_text += f" Warnings: {'; '.join(warnings)}"
+    elif not ok:
+        display_text = f"Failed to ingest {url}."
+
     return ToolResult(
         ok=ok,
         tool=TOOL_SPEC.name,
@@ -55,12 +75,10 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
             "url": url,
             "conversation_id": conversation_id,
             "ingest": ingest,
-            "artifact_id": artifact_ids[0] if artifact_ids else None,
+            "artifact_id": artifact_id,
+            "warnings": warnings,
         },
-        error=None if ok else ("URL ingest failed" if not ingest.get("errors") else "; ".join(str(e) for e in ingest.get("errors") or [])),
-        display_text=(
-            f"Fetched and ingested {url} as artifact {artifact_ids[0]}."
-            if ok else f"Failed to ingest {url}."
-        ),
+        error=error_text,
+        display_text=display_text,
         event_kind="tool_result",
     )
