@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import itertools
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -24,6 +25,27 @@ _REFERENCE_WORDS = {
     "find", "lookup", "look", "reference", "cite", "citation", "where",
     "which", "what", "when", "who", "search", "retrieve", "rag", "quote",
 }
+_REFERENCE_FIRST_SOURCE_KINDS = {
+    "conversation:transcript",
+    "conversation_transcript",
+}
+_EXPLICIT_SEQUENTIAL_READING_PHRASES = (
+    "read this transcript",
+    "read the transcript",
+    "walk through the transcript",
+    "walk me through the transcript",
+    "go through the transcript",
+    "step through the transcript",
+    "read it front to back",
+    "read it from the top",
+    "sequential read",
+    "sequential reading",
+    "continue reading",
+    "resume reading",
+    "start a reading session",
+    "continue the reading session",
+    "resume the reading session",
+)
 
 
 @dataclass
@@ -50,6 +72,32 @@ def _safe_json_loads(raw: str | None) -> Any:
         return json.loads(text)
     except Exception:
         return None
+
+
+def is_reference_first_artifact(source_kind: str | None) -> bool:
+    sk = (source_kind or "").strip().lower()
+    return sk in _REFERENCE_FIRST_SOURCE_KINDS
+
+
+def user_explicitly_requests_sequential_reading(user_text: str) -> bool:
+    text = (user_text or "").strip().lower()
+    if not text:
+        return False
+
+    if any(phrase in text for phrase in _EXPLICIT_SEQUENTIAL_READING_PHRASES):
+        return True
+
+    words = set(re.findall(r"[a-z0-9_']+", text))
+    has_transcript = "transcript" in words or "chatlog" in words or "chat" in words
+    has_reading_verb = bool(words & {"read", "reading", "resume", "continue", "walk", "through", "sequential"})
+
+    if has_transcript and has_reading_verb:
+        return True
+
+    if ("front to back" in text or "from the top" in text or "chunk by chunk" in text) and has_transcript:
+        return True
+
+    return False
 
 
 def classify_reading_intent(user_text: str) -> str:
@@ -144,6 +192,13 @@ def plan_artifact_inclusion(
     whole_artifact_soft_cap_chars: int = 12000,
 ) -> dict[str, Any]:
     intent = classify_reading_intent(user_text)
+    forced_reference_first = (
+        is_reference_first_artifact(readiness.source_kind)
+        and not user_explicitly_requests_sequential_reading(user_text)
+    )
+    if forced_reference_first:
+        intent = "reference"
+
     est_chars = int(readiness.estimated_message_chars or 0)
     remaining = max(0, int(budget_remaining_chars or 0))
     whole_remaining = remaining if include_whole_budget_chars is None else max(0, int(include_whole_budget_chars or 0))
@@ -152,16 +207,25 @@ def plan_artifact_inclusion(
     fits_whole = est_chars <= min(whole_remaining, soft_cap) if whole_remaining > 0 else est_chars <= soft_cap
 
     if fits_whole:
+        strategies = ["include_whole"]
+        if forced_reference_first:
+            strategies.append("reference_first_transcript")
         return {
             "mode": intent,
             "artifact_id": readiness.artifact_id,
             "title": readiness.title,
             "action": "include_whole",
-            "reason": f"Estimated whole-artifact size ({est_chars} chars) fits current budget.",
-            "strategies": ["include_whole"],
+            "reason": (
+                "Conversation transcripts default to reference mode unless the user explicitly asks for a sequential read. "
+                f"Estimated whole-artifact size ({est_chars} chars) fits current budget."
+                if forced_reference_first
+                else f"Estimated whole-artifact size ({est_chars} chars) fits current budget."
+            ),
+            "strategies": strategies,
             "needs_derivatives": [],
             "budget_remaining_chars": remaining,
             "estimated_message_chars": est_chars,
+            "forced_reference_first": forced_reference_first,
         }
 
     strategies: list[str] = []
@@ -173,6 +237,9 @@ def plan_artifact_inclusion(
     else:
         needs_derivatives.append("summary")
         fallback_messages.append("summary missing")
+
+    if forced_reference_first:
+        strategies.append("reference_first_transcript")
 
     if readiness.has_index:
         strategies.append("use_index")
@@ -195,6 +262,10 @@ def plan_artifact_inclusion(
             f"expansion budget is exhausted, using fallback planner reserve {remaining}."
         )
     reason_parts = [whole_reason]
+    if forced_reference_first:
+        reason_parts.append(
+            "Conversation transcripts default to reference mode unless the user explicitly requests a sequential read."
+        )
     if fallback_messages:
         reason_parts.append("Fallback metadata unavailable: " + ", ".join(fallback_messages) + ".")
     else:
@@ -210,6 +281,7 @@ def plan_artifact_inclusion(
         "needs_derivatives": needs_derivatives,
         "budget_remaining_chars": remaining,
         "estimated_message_chars": est_chars,
+        "forced_reference_first": forced_reference_first,
     }
 
 

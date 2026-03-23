@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..artifact_reading_planner import get_artifact_readiness
+from ..artifact_reading_planner import (
+    get_artifact_readiness,
+    is_reference_first_artifact,
+    user_explicitly_requests_sequential_reading,
+)
 from ..reading_session_notes import coerce_reading_strategy, load_reading_questions
 from ..db import (
     get_artifact_reading_session_for_conversation_artifact,
@@ -128,7 +132,7 @@ def _build_steps_from_readiness(
 def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
     conversation_id = str(arguments.get("conversation_id") or ctx.conversation_id or "").strip()
     artifact_id = str(arguments.get("artifact_id") or "").strip()
-    mode = str(arguments.get("mode") or "reading").strip() or "reading"
+    mode = str(arguments.get("mode") or "reading").strip().lower() or "reading"
     strategy = arguments.get("strategy")
     restart = bool(arguments.get("restart", False))
 
@@ -145,6 +149,12 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
             error="reading-session-derived artifacts are not eligible for automatic reading sessions",
             display_text="Refusing to start a recursive reading session on a reading-session artifact.",
         )
+
+    explicit_sequential = user_explicitly_requests_sequential_reading(ctx.user_text or "")
+    if readiness and is_reference_first_artifact(readiness.source_kind):
+        requested_mode = str(arguments.get("mode") or "").strip().lower()
+        if not explicit_sequential and requested_mode in ("", "reading"):
+            mode = "reference"
 
     question_sets = load_reading_questions()
     strategy_payload = coerce_reading_strategy(

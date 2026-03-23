@@ -1084,6 +1084,98 @@ blockquote blockquote {
   white-space: nowrap;
 }
 
+.librarySection {
+  margin-bottom: 18px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.librarySection:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.librarySectionTitle {
+  font-size: 1rem;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+.libraryGroup {
+  margin-bottom: 14px;
+}
+
+.libraryGroupTitle {
+  font-size: 0.9rem;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.libraryCards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.libraryCard {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.libraryCardHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.libraryCardTitle {
+  font-weight: 600;
+}
+
+.libraryCardSubtitle {
+  color: var(--muted);
+  font-size: 0.88rem;
+  margin-top: 2px;
+}
+
+.libraryBadges {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.libraryBadge {
+  font-size: 0.72rem;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+}
+
+.libraryMeta {
+  font-size: 0.83rem;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.libraryActions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.libraryEmpty {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 .files-disabled {
   opacity: 0.5;
   pointer-events: none;

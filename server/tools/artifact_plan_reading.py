@@ -73,11 +73,15 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
     }
 
     action = str(plan.get("action") or "fallback_derivatives")
-    if action == "include_whole":
+    if bool(plan.get("forced_reference_first")):
+        display_text = (
+            f"Reading plan: {readiness.title} defaults to reference mode because conversation transcripts are "
+            "reference-first unless the user explicitly asks for a sequential read."
+        )
+    elif action == "include_whole":
         display_text = f"Reading plan: {readiness.title} fits whole-context inclusion right now."
     else:
         display_text = f"Reading plan: {readiness.title} should use summary/index fallback before sequential reading."
-
     return ToolResult(
         ok=True,
         tool=TOOL_SPEC.name,

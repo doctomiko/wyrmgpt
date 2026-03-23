@@ -8082,6 +8082,96 @@ def move_file_scope(
         "old_scope_uuid": old_scope_uuid,
     }
 
+
+
+def move_artifact_scope(
+    artifact_id: str,
+    *,
+    scope_type: str,
+    scope_id: int | None = None,
+    scope_uuid: str | None = None,
+) -> dict:
+    """
+    Promote a non-file artifact to a broader scope.
+
+    Intended UI use-cases:
+      conversation -> project
+      conversation -> global
+      project -> global
+    """
+    artifact_id = (artifact_id or "").strip()
+    target_scope_type = (scope_type or "").strip().lower()
+    target_scope_uuid = (scope_uuid or "").strip() or None
+
+    if not artifact_id:
+        raise ValueError("artifact_id is required.")
+    if target_scope_type not in ("global", "project", "conversation"):
+        raise ValueError("scope_type must be 'global', 'project', or 'conversation'.")
+    if target_scope_type == "project" and scope_id is None:
+        raise ValueError("scope_id is required for project scope.")
+    if target_scope_type == "conversation" and not target_scope_uuid:
+        raise ValueError("scope_uuid is required for conversation scope.")
+
+    with db_session() as conn:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM artifacts
+            WHERE id = ?
+              AND (is_deleted IS NULL OR is_deleted = 0)
+            """,
+            (artifact_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Artifact not found: {artifact_id}")
+
+        art = dict(row)
+        source_kind = (art.get("source_kind") or "").strip().lower()
+        old_scope_type = (art.get("scope_type") or "").strip().lower() or "global"
+        old_scope_id = art.get("scope_id")
+        old_scope_uuid = (art.get("scope_uuid") or "").strip() or None
+
+        if source_kind == "file":
+            raise ValueError("File-backed artifacts should be promoted by moving the underlying file instead.")
+        if source_kind in ("conversation:transcript", "conversation_transcript"):
+            raise ValueError("Conversation transcript artifacts are reference-first and should stay bound to their conversation.")
+        if scope_rank(target_scope_type) < scope_rank(old_scope_type):
+            raise ValueError("Artifacts can only be promoted to the same or a higher scope.")
+
+        if target_scope_type == "project":
+            _ensure_project_exists(conn, int(scope_id))
+            new_project_id = int(scope_id)
+            new_scope_id = int(scope_id)
+            new_scope_uuid = None
+        elif target_scope_type == "conversation":
+            _ensure_conversation_exists(conn, target_scope_uuid)
+            conv_row = conn.execute("SELECT project_id FROM conversations WHERE id = ?", (target_scope_uuid,)).fetchone()
+            new_project_id = int(conv_row["project_id"]) if conv_row and conv_row["project_id"] is not None else None
+            new_scope_id = None
+            new_scope_uuid = target_scope_uuid
+        else:
+            new_project_id = get_global_project_id()
+            new_scope_id = None
+            new_scope_uuid = None
+
+        conn.execute("DELETE FROM conversation_artifacts WHERE artifact_id = ?", (artifact_id,))
+        if target_scope_type == "conversation" and new_scope_uuid:
+            conn.execute(
+                "INSERT OR IGNORE INTO conversation_artifacts (conversation_id, artifact_id) VALUES (?, ?)",
+                (new_scope_uuid, artifact_id),
+            )
+
+        conn.execute(
+            """
+            UPDATE artifacts
+            SET scope_type = ?, scope_id = ?, scope_uuid = ?, project_id = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (target_scope_type, new_scope_id, new_scope_uuid, new_project_id, _utc_now_iso(), artifact_id),
+        )
+
+    invalidate_all_context_cache()
+    return {"id": artifact_id, "scope_type": target_scope_type, "scope_id": scope_id, "scope_uuid": target_scope_uuid, "old_scope_type": old_scope_type, "old_scope_id": old_scope_id, "old_scope_uuid": old_scope_uuid}
 def get_file_by_id(file_id: str) -> dict:
     """
     Fetch a file row by id from the files table.
@@ -9177,6 +9267,7 @@ def list_artifacts_for_project(
         _hydrate_artifact_content_text(art)
     return out
 
+
 def list_artifacts_for_conversation(
     conversation_id: str,
     include_deleted: bool = False,
@@ -9197,11 +9288,34 @@ def list_artifacts_for_conversation(
         if not include_deleted:
             sql += " AND (a.is_deleted IS NULL OR a.is_deleted = 0)"
         rows = conn.execute(sql, params).fetchall()
-
     out = [dict(r) for r in rows]
     for art in out:
         _hydrate_artifact_content_text(art)
     return out
+
+
+def list_global_artifacts(include_deleted: bool = False) -> list[dict]:
+    with db_session() as conn:
+        global_project_id = get_global_project_id()
+        sql = """
+            SELECT DISTINCT *
+            FROM artifacts
+            WHERE (
+                COALESCE(NULLIF(TRIM(scope_type), ''), 'global') = 'global'
+                OR project_id = ?
+            )
+        """
+        params: list[object] = [int(global_project_id)]
+        if not include_deleted:
+            sql += " AND (is_deleted IS NULL OR is_deleted = 0)"
+        rows = conn.execute(sql, params).fetchall()
+
+    out = [dict(r) for r in rows]
+    seen: set[str] = set()
+    deduped = [art for art in out if not (art["id"] in seen or seen.add(art["id"]))]
+    for art in deduped:
+        _hydrate_artifact_content_text(art)
+    return deduped
 
 # region Add/Upsert File-Artifact
 

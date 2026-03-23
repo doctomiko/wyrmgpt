@@ -25,6 +25,7 @@
             -->
             <button id="openMemory">Personalization…</button>
             <button id="manageFilesTop">Manage Files…</button>
+            <button id="openLibraryTop">Library…</button>
             <button id="artifactsDebugTop">View Artifacts</button>
             <label class="menuAdvanced">
               <input type="checkbox" id="searchChatHistoryToggle" />
@@ -305,6 +306,22 @@
       </div>
     </div>
   </div>
+  <div id="libraryModal" class="modal hidden">
+    <div class="modalBackdrop"></div>
+    <div class="modalPanel" style="max-width: 980px;">
+      <div class="modalHeader">
+        <div>
+          <div class="modalTitle" id="libraryModalTitle">Library</div>
+          <div id="libraryScopeNote" class="memHint"></div>
+        </div>
+        <button id="libraryClose" class="iconButton" title="Close">&times;</button>
+      </div>
+      <div class="modalBody">
+        <div id="librarySections"></div>
+      </div>
+      <div class="modalActions"><button id="libraryCloseBottom">Close</button></div>
+    </div>
+  </div>
   <div id="citationsModal" class="modal hidden">
     <div class="modalBackdrop"></div>
     <div class="modalPanel" style="max-width: 980px;">
@@ -339,6 +356,7 @@
     <hr />
     <button id="menuMoveTo">Move To…</button>
     <button id="menuExportTranscript">Export Transcript</button>
+    <button id="menuConvLibrary">Library…</button>
     <!-- TODO normalize the naming conventions so all start with "menuConvViewFiles" between here and app.js -->
     <button id="menuConvViewFiles">Manage files…</button>
     <button id="menuConvCitations">View citations…</button>
@@ -353,6 +371,7 @@
     <button id="projDesc">Edit description…</button>
     <button id="projSettings">Project Settings…</button>
     <button id="projToggleVisibility">Toggle Global Availability</button>
+    <button id="projLibrary">Library…</button>
     <hr />
     <button id="projUpload">Add files…</button>
     <button id="projFiles">Manage files…</button>

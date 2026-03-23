@@ -17,6 +17,7 @@ const topMenu = document.getElementById("topMenu");
 // const topMenuRenameChatBtn = document.getElementById("renameChat");
 // const topMenuSuggestTitleBtn = document.getElementById("suggestChat");
 const topMenuManageFilesBtn = document.getElementById("manageFilesTop");
+const topMenuLibraryBtn = document.getElementById("openLibraryTop");
 const topMenuOpenMemoryBtn = document.getElementById("openMemory");
 const topMenuAdvancedABToggle = document.getElementById("advancedCheckbox");
 const topMenuSearchChatHistoryToggle = document.getElementById("searchChatHistoryToggle");
@@ -57,6 +58,7 @@ const convMenuRenameBtn = document.getElementById("menuRename");
 const convMenuSuggestTitleBtn = document.getElementById("menuSuggest");
 const convMenuMoveToBtn = document.getElementById("menuMoveTo");
 const convMenuManageFilesBtn = document.getElementById("menuConvViewFiles");
+const convMenuLibraryBtn = document.getElementById("menuConvLibrary");
 const convMenuCitationsBtn = document.getElementById("menuConvCitations");
 const convMenuExportTranscriptBtn = document.getElementById("menuExportTranscript");
 const convMenuSummarizeBtn = document.getElementById("menuSummarize");
@@ -73,6 +75,7 @@ const projMenuSettingsBtn = document.getElementById("projSettings");
 const projMenuToggleVisibility = document.getElementById("projToggleVisibility");
 const projMenuFileUploadBtn = document.getElementById("projUpload");
 const projMenuManageFilesBtn = document.getElementById("projFiles");
+const projMenuLibraryBtn = document.getElementById("projLibrary");
 const projMenuCitationsBtn = document.getElementById("projCitations");
 // #endregion
 
@@ -164,6 +167,15 @@ const filesSaveBtn = document.getElementById("filesSave");
 const filesCloseBottomBtn = document.getElementById("filesCloseBottom");
 const filesBackdrop = filesModal ? filesModal.querySelector(".modalBackdrop") : null;
 // #endregion
+// #region Library modal
+const libraryModal = document.getElementById("libraryModal");
+const libraryTitleEl = document.getElementById("libraryModalTitle");
+const libraryScopeNoteEl = document.getElementById("libraryScopeNote");
+const librarySectionsEl = document.getElementById("librarySections");
+const libraryCloseBtn = document.getElementById("libraryClose");
+const libraryCloseBottomBtn = document.getElementById("libraryCloseBottom");
+const libraryBackdrop = libraryModal ? libraryModal.querySelector(".modalBackdrop") : null;
+// #endregion
 // #region Artifact debug modal and launch buttons
 const artifactsDebugTopBtn = document.getElementById("artifactsDebugTop");
 const artifactsDebugModal = document.getElementById("artifactsDebugModal");
@@ -205,6 +217,10 @@ let metaInfoTitleEl = null;
 let metaInfoPreEl = null;
 // Upload modal state:
 let uploadProjectIdForced = null;
+// Library modal state:
+let libraryModalMode = null; // "conversation" | "project" | "global"
+let libraryModalConversationId = null;
+let libraryModalProjectId = null;
 // Files modal state:
 let filesModalMode = null; // "conversation" | "project" | "global" | "all"
 let filesModalConversationId = null;
@@ -4290,6 +4306,213 @@ async function saveFileDescription(fileId, description) {
   }
 }
 
+function openLibraryModalForConversation(convId) {
+  libraryModalMode = "conversation";
+  libraryModalConversationId = convId;
+  libraryModalProjectId = null;
+  loadLibraryModal();
+}
+
+function openLibraryModalForProject(pid) {
+  libraryModalMode = "project";
+  libraryModalProjectId = pid;
+  libraryModalConversationId = null;
+  loadLibraryModal();
+}
+
+function openLibraryModalGlobal() {
+  libraryModalMode = "global";
+  libraryModalConversationId = null;
+  libraryModalProjectId = null;
+  loadLibraryModal();
+}
+
+function closeLibraryModal() {
+  if (!libraryModal) return;
+  libraryModal.classList.add("hidden");
+  libraryModalMode = null;
+  libraryModalConversationId = null;
+  libraryModalProjectId = null;
+}
+
+function renderLibraryItemCard(item) {
+  const card = document.createElement("div");
+  card.className = "libraryCard";
+
+  const header = document.createElement("div");
+  header.className = "libraryCardHeader";
+
+  const left = document.createElement("div");
+  const title = document.createElement("div");
+  title.className = "libraryCardTitle";
+  title.textContent = item.title || item.id || "Untitled";
+  left.appendChild(title);
+
+  if (item.subtitle) {
+    const subtitle = document.createElement("div");
+    subtitle.className = "libraryCardSubtitle";
+    subtitle.textContent = item.subtitle;
+    left.appendChild(subtitle);
+  }
+
+  const right = document.createElement("div");
+  right.className = "libraryBadges";
+  (item.badges || []).forEach((badge) => {
+    const el = document.createElement("span");
+    el.className = "libraryBadge";
+    el.textContent = badge;
+    right.appendChild(el);
+  });
+  if (item.updated_at) {
+    const ts = document.createElement("span");
+    ts.className = "libraryBadge";
+    ts.textContent = formatReadableDateTime(item.updated_at);
+    right.appendChild(ts);
+  }
+
+  header.appendChild(left);
+  header.appendChild(right);
+  card.appendChild(header);
+
+  const meta = document.createElement("div");
+  meta.className = "libraryMeta";
+  (item.meta || []).forEach((line) => {
+    const row = document.createElement("div");
+    row.textContent = line;
+    meta.appendChild(row);
+  });
+  card.appendChild(meta);
+
+  const actions = document.createElement("div");
+  actions.className = "libraryActions";
+
+  (item.promote_targets || []).forEach((target) => {
+    const btn = document.createElement("button");
+    btn.textContent = target.label || "Promote";
+    btn.addEventListener("click", async () => {
+      const what = item.item_kind === "file" ? "file" : "artifact";
+      const ok = confirm(`${target.label} “${item.title || item.id}”?`);
+      if (!ok) return;
+
+      const url = item.item_kind === "file"
+        ? `/api/files/${encodeURIComponent(item.id)}/move_scope`
+        : `/api/artifacts/${encodeURIComponent(item.id)}/move_scope`;
+
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scope_type: target.scope_type,
+          scope_id: target.scope_id ?? null,
+          scope_uuid: target.scope_uuid ?? null,
+        }),
+      });
+
+      if (!res.ok) {
+        const txt = await res.text().catch(() => "");
+        alert(`Failed to promote ${what} (HTTP ${res.status}). ${txt.slice(0, 200)}`);
+        return;
+      }
+
+      try { await refreshContext(); } catch (e) { console.warn("refreshContext failed after librarian promote", e); }
+      try { await refreshConversationLists(); } catch (e) { console.warn("refreshConversationLists failed after librarian promote", e); }
+      try { await refreshGlobalFilesState(); } catch (e) { console.warn("refreshGlobalFilesState failed after librarian promote", e); }
+
+      await loadLibraryModal();
+    });
+    actions.appendChild(btn);
+  });
+
+  if (!actions.children.length && item.promote_disabled_reason) {
+    const hint = document.createElement("div");
+    hint.className = "libraryEmpty";
+    hint.textContent = item.promote_disabled_reason;
+    actions.appendChild(hint);
+  }
+
+  if (actions.children.length) {
+    card.appendChild(actions);
+  }
+
+  return card;
+}
+
+function renderLibraryModal(data) {
+  if (!librarySectionsEl) return;
+  librarySectionsEl.innerHTML = "";
+  libraryTitleEl.textContent = `${data?.scope_label || "Library"}`;
+  libraryScopeNoteEl.textContent = data?.scope_note || "";
+
+  const sections = Array.isArray(data?.sections) ? data.sections : [];
+  if (!sections.length) {
+    librarySectionsEl.textContent = "Nothing here yet.";
+    return;
+  }
+
+  let renderedAny = false;
+  sections.forEach((section) => {
+    const groups = Array.isArray(section?.groups) ? section.groups : [];
+    if (!groups.length) return;
+    renderedAny = true;
+
+    const sec = document.createElement("div");
+    sec.className = "librarySection";
+
+    const title = document.createElement("div");
+    title.className = "librarySectionTitle";
+    title.textContent = section.title || section.key || "Section";
+    sec.appendChild(title);
+
+    groups.forEach((group) => {
+      const wrap = document.createElement("div");
+      wrap.className = "libraryGroup";
+
+      const gt = document.createElement("div");
+      gt.className = "libraryGroupTitle";
+      gt.textContent = group.title || group.key || "Group";
+      wrap.appendChild(gt);
+
+      const cards = document.createElement("div");
+      cards.className = "libraryCards";
+      (group.items || []).forEach((item) => cards.appendChild(renderLibraryItemCard(item)));
+      wrap.appendChild(cards);
+      sec.appendChild(wrap);
+    });
+
+    librarySectionsEl.appendChild(sec);
+  });
+
+  if (!renderedAny) {
+    const empty = document.createElement("div");
+    empty.className = "libraryEmpty";
+    empty.textContent = "Nothing here yet.";
+    librarySectionsEl.appendChild(empty);
+  }
+}
+
+async function loadLibraryModal() {
+  if (!libraryModal || !librarySectionsEl) return;
+  hideAllTransientUI({ except: [libraryModal] });
+
+  let url = "/api/library/global";
+  if (libraryModalMode === "conversation" && libraryModalConversationId) {
+    url = `/api/conversation/${encodeURIComponent(libraryModalConversationId)}/library`;
+  } else if (libraryModalMode === "project" && libraryModalProjectId != null) {
+    url = `/api/projects/${encodeURIComponent(libraryModalProjectId)}/library`;
+  }
+
+  librarySectionsEl.textContent = "Loading…";
+  libraryModal.classList.remove("hidden");
+
+  try {
+    const data = await fetchJsonDebug(url);
+    renderLibraryModal(data || {});
+  } catch (err) {
+    console.error("library load failed", err);
+    librarySectionsEl.textContent = "Failed to load library.";
+  }
+}
+
 function setFilesButtonEnabled(btn, enabled) {
   if (!btn) return;
   if (enabled) {
@@ -4469,6 +4692,38 @@ if (topMenuManageFilesBtn) {
   });
 }
 
+
+if (topMenuLibraryBtn) {
+  topMenuLibraryBtn.addEventListener("click", () => {
+    openLibraryModalGlobal();
+  });
+}
+
+if (convMenuLibraryBtn) {
+  convMenuLibraryBtn.addEventListener("click", () => {
+    convMenuEl.classList.add("hidden");
+    const cid = menuTargetConversationId || conversationId;
+    if (!cid) {
+      alert("No conversation selected.");
+      return;
+    }
+    openLibraryModalForConversation(cid);
+  });
+}
+
+if (projMenuLibraryBtn) {
+  projMenuLibraryBtn.addEventListener("click", () => {
+    projMenuEl.classList.add("hidden");
+    const pid = menuTargetProjectId;
+    if (!pid) {
+      alert("No project selected.");
+      return;
+    }
+    openLibraryModalForProject(pid);
+  });
+}
+
+
 // All of these do the same thing (close the modal, saving descriptions)
 // TODO filesCloseBtn and maybe filesCloseBottomBtn should maybe send False since the button says "Cancel"?
 if (filesCloseBtn) {
@@ -4491,6 +4746,15 @@ if (citationsCloseBottomBtn) {
 }
 if (citationsBackdrop) {
   citationsBackdrop.addEventListener("click", closeCitationsModal);
+}
+if (libraryCloseBtn) {
+  libraryCloseBtn.addEventListener("click", closeLibraryModal);
+}
+if (libraryCloseBottomBtn) {
+  libraryCloseBottomBtn.addEventListener("click", closeLibraryModal);
+}
+if (libraryBackdrop) {
+  libraryBackdrop.addEventListener("click", closeLibraryModal);
 }
 
 // #endregion
@@ -4976,6 +5240,9 @@ document.addEventListener("keydown", (e) => {
   // optional: Esc closes modal
   if (e.key === "Escape" && persModal && !persModal.classList.contains("hidden")) {
     closeMemoryModal();
+  }
+  if (e.key === "Escape" && libraryModal && !libraryModal.classList.contains("hidden")) {
+    closeLibraryModal();
   }
 });
 

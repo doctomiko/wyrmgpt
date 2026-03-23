@@ -84,10 +84,11 @@ from .db import (
     conversation_link_file, list_files_for_conversation,
     list_files_for_project, list_all_files,
     get_files_summary, list_global_files,
-    FileDeleteAction, delete_file_cascade,
+    FileDeleteAction, delete_file_cascade, move_artifact_scope,
     move_file_scope, find_same_scope_same_name_file,
     # Artifacts
-    get_scoped_artifact_debug,
+    get_scoped_artifact_debug, list_artifacts_for_conversation, 
+    list_artifacts_for_project, list_global_artifacts, list_artifact_reading_sessions,
     # File Artifacts
     artifact_file, ensure_files_artifacted_for_conversation,
     list_artifacts_for_file,
@@ -189,6 +190,13 @@ class FileMoveScopeRequest(BaseModel):
     scope_type: str
     scope_id: int | None = None
     scope_uuid: str | None = None
+
+
+class ArtifactMoveScopeRequest(BaseModel):
+    scope_type: str
+    scope_id: int | None = None
+    scope_uuid: str | None = None
+
 
 class ProjectUpdateRequest(BaseModel):
     name: Optional[str] = None
@@ -1984,6 +1992,223 @@ def api_conversation_artifacts_debug(conversation_id: str):
     )
     return JSONResponse(data)
 
+
+def _normalize_scope_type(scope_type: str | None) -> str:
+    st = (scope_type or "").strip().lower()
+    if st in ("conversation", "chat"):
+        return "conversation"
+    if st == "project":
+        return "project"
+    return "global"
+
+
+def _promote_targets_for_scope(scope_type: str, *, project_id: int | None = None) -> list[dict]:
+    st = _normalize_scope_type(scope_type)
+    targets: list[dict] = []
+    if st == "conversation" and project_id is not None:
+        targets.append({"label": "Promote to Project", "scope_type": "project", "scope_id": int(project_id), "scope_uuid": None})
+    if st in ("conversation", "project"):
+        targets.append({"label": "Promote to Global", "scope_type": "global", "scope_id": None, "scope_uuid": None})
+    return targets
+
+
+def _make_file_library_item(file_row: dict, *, inherited_from: str, project_id: int | None = None, conversation_title: str | None = None) -> dict:
+    scope_type = _normalize_scope_type(file_row.get("scope_type"))
+    meta: list[str] = [f"MIME: {file_row.get('mime_type') or 'unknown'}", f"Scope: {scope_type}"]
+    if conversation_title:
+        meta.append(f"Conversation: {conversation_title}")
+    if file_row.get("description"):
+        meta.append(f"Description: {file_row.get('description')}")
+    return {
+        "item_kind": "file",
+        "id": file_row["id"],
+        "title": file_row.get("name") or file_row["id"],
+        "subtitle": file_row.get("description") or "",
+        "meta": meta,
+        "scope_type": scope_type,
+        "updated_at": file_row.get("updated_at") or file_row.get("created_at"),
+        "inherited_from": inherited_from,
+        "badges": [],
+        "promote_targets": _promote_targets_for_scope(scope_type, project_id=project_id),
+    }
+
+
+def _make_artifact_library_item(artifact_row: dict, *, inherited_from: str, project_id: int | None = None, conversation_title: str | None = None) -> dict:
+    scope_type = _normalize_scope_type(artifact_row.get("scope_type"))
+    source_kind = (artifact_row.get("source_kind") or "").strip()
+    readiness = get_artifact_readiness(artifact_row["id"])
+    badges: list[str] = []
+    if readiness and readiness.has_summary:
+        badges.append("summary")
+    if readiness and readiness.has_index:
+        badges.append("index")
+    if source_kind in ("conversation:transcript", "conversation_transcript"):
+        badges.append("reference-first transcript")
+
+    meta: list[str] = [
+        f"Source: {source_kind or 'artifact'}",
+        f"Scope: {scope_type}",
+    ]
+    if conversation_title:
+        meta.append(f"Conversation: {conversation_title}")
+    if artifact_row.get("provenance"):
+        meta.append(f"Provenance: {artifact_row.get('provenance')}")
+
+    promote_targets: list[dict] = []
+    promote_disabled_reason: str | None = None
+    if source_kind == "file":
+        promote_disabled_reason = "Promote the underlying file instead of the derived file artifact."
+    elif source_kind in ("conversation:transcript", "conversation_transcript"):
+        promote_disabled_reason = "Conversation transcripts stay reference-first and conversation-bound by default."
+    else:
+        promote_targets = _promote_targets_for_scope(scope_type, project_id=project_id)
+
+    return {
+        "item_kind": "artifact",
+        "id": artifact_row["id"],
+        "title": artifact_row.get("title") or artifact_row["id"],
+        "subtitle": "",
+        "meta": meta,
+        "scope_type": scope_type,
+        "updated_at": artifact_row.get("updated_at"),
+        "inherited_from": inherited_from,
+        "badges": badges,
+        "promote_targets": promote_targets,
+        "promote_disabled_reason": promote_disabled_reason,
+    }
+
+
+def _make_session_library_item(session_row: dict, *, inherited_from: str, conversation_title: str | None = None) -> dict:
+    meta = [
+        f"Mode: {session_row.get('mode') or 'reading'}",
+        f"Status: {session_row.get('status') or 'active'}",
+        f"Artifact: {session_row.get('artifact_title') or session_row.get('artifact_id')}",
+    ]
+    if conversation_title:
+        meta.append(f"Conversation: {conversation_title}")
+    return {
+        "item_kind": "reading_session",
+        "id": str(session_row.get("id")),
+        "title": session_row.get("artifact_title") or f"Session {session_row.get('id')}",
+        "subtitle": "",
+        "meta": meta,
+        "scope_type": "conversation",
+        "updated_at": session_row.get("updated_at"),
+        "inherited_from": inherited_from,
+        "badges": [session_row.get("status") or "active"],
+        "promote_targets": [],
+    }
+
+
+def _pack_library_section(key: str, title: str, groups: list[dict]) -> dict:
+    live_groups = [g for g in groups if g.get("items")]
+    return {"key": key, "title": title, "groups": live_groups}
+
+
+@app.get("/api/conversation/{conversation_id}/library")
+def api_conversation_library(conversation_id: str):
+    conversation_title = get_conversation_title(conversation_id) or "Conversation"
+    with db_session() as conn:
+        project_id = get_conversation_project_id(conn=conn, conversation_id=conversation_id)
+
+    files_groups = [
+        {"key": "conversation", "title": "Conversation scope", "items": [_make_file_library_item(f, inherited_from="conversation", project_id=project_id) for f in list_files_for_conversation(conversation_id)]},
+        {"key": "project", "title": "Inherited from project", "items": [_make_file_library_item(f, inherited_from="project", project_id=project_id) for f in (list_files_for_project(project_id) if project_id is not None else [])]},
+        {"key": "global", "title": "Inherited from global", "items": [_make_file_library_item(f, inherited_from="global", project_id=project_id) for f in list_global_files()]},
+    ]
+    artifact_groups = [
+        {"key": "conversation", "title": "Conversation scope", "items": [_make_artifact_library_item(a, inherited_from="conversation", project_id=project_id) for a in list_artifacts_for_conversation(conversation_id)]},
+        {"key": "project", "title": "Inherited from project", "items": [_make_artifact_library_item(a, inherited_from="project", project_id=project_id) for a in (list_artifacts_for_project(project_id) if project_id is not None else [])]},
+        {"key": "global", "title": "Inherited from global", "items": [_make_artifact_library_item(a, inherited_from="global", project_id=project_id) for a in list_global_artifacts()]},
+    ]
+    session_groups = [
+        {"key": "conversation", "title": "Reading sessions in this conversation", "items": [_make_session_library_item(s, inherited_from="conversation") for s in list_artifact_reading_sessions(conversation_id=conversation_id, limit=200)]},
+    ]
+    return JSONResponse(
+        {
+            "scope_type": "conversation",
+            "scope_id": conversation_id,
+            "scope_label": conversation_title,
+            "scope_note": "Showing items local to this conversation plus inherited project/global material. Reading plans are still derived live; reading-session state is durable and shown here.",
+            "sections": [
+                _pack_library_section("files", "Files", files_groups),
+                _pack_library_section("artifacts", "Artifacts", artifact_groups),
+                _pack_library_section("reading_sessions", "Reading Sessions", session_groups),
+            ],
+        }
+    )
+
+
+@app.get("/api/projects/{project_id}/library")
+def api_project_library(project_id: int):
+    projects = list_projects(include_global=True)
+    project = next((p for p in projects if int(p["id"]) == int(project_id)), None)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+
+    convs = [c for c in list_conversations(limit=1000000, include_archived=True) if int(c["project_id"]) == int(project_id)]
+    conv_title_by_id = {c["id"]: (c.get("title") or c["id"]) for c in convs}
+
+    descendant_files: list[dict] = []
+    seen_files: set[str] = set()
+    descendant_artifacts: list[dict] = []
+    seen_artifacts: set[str] = set()
+    for conv in convs:
+        for f in list_files_for_conversation(conv["id"]):
+            if f["id"] in seen_files:
+                continue
+            seen_files.add(f["id"])
+            descendant_files.append(_make_file_library_item(f, inherited_from="conversation", project_id=project_id, conversation_title=conv_title_by_id.get(conv["id"])))
+        for a in list_artifacts_for_conversation(conv["id"]):
+            if a["id"] in seen_artifacts:
+                continue
+            seen_artifacts.add(a["id"])
+            descendant_artifacts.append(_make_artifact_library_item(a, inherited_from="conversation", project_id=project_id, conversation_title=conv_title_by_id.get(conv["id"])))
+
+    files_groups = [
+        {"key": "project", "title": "Project scope", "items": [_make_file_library_item(f, inherited_from="project", project_id=project_id) for f in list_files_for_project(project_id)]},
+        {"key": "conversations", "title": "Conversation-scoped items in this project", "items": descendant_files},
+        {"key": "global", "title": "Inherited from global", "items": [_make_file_library_item(f, inherited_from="global", project_id=project_id) for f in list_global_files()]},
+    ]
+    artifact_groups = [
+        {"key": "project", "title": "Project scope", "items": [_make_artifact_library_item(a, inherited_from="project", project_id=project_id) for a in list_artifacts_for_project(project_id)]},
+        {"key": "conversations", "title": "Conversation-scoped items in this project", "items": descendant_artifacts},
+        {"key": "global", "title": "Inherited from global", "items": [_make_artifact_library_item(a, inherited_from="global", project_id=project_id) for a in list_global_artifacts()]},
+    ]
+    session_groups = [
+        {"key": "project_sessions", "title": "Reading sessions across this project", "items": [_make_session_library_item(s, inherited_from="conversation", conversation_title=conv_title_by_id.get(s.get("conversation_id"))) for s in list_artifact_reading_sessions(project_id=project_id, limit=500)]},
+    ]
+    return JSONResponse(
+        {
+            "scope_type": "project",
+            "scope_id": int(project_id),
+            "scope_label": project.get("name") or f"Project {project_id}",
+            "scope_note": "Showing project-scoped items, conversation-scoped descendants, and inherited global material. Reading plans are still derived live; durable reading-session state is shown here.",
+            "sections": [
+                _pack_library_section("files", "Files", files_groups),
+                _pack_library_section("artifacts", "Artifacts", artifact_groups),
+                _pack_library_section("reading_sessions", "Reading Sessions", session_groups),
+            ],
+        }
+    )
+
+
+@app.get("/api/library/global")
+def api_global_library():
+    return JSONResponse(
+        {
+            "scope_type": "global",
+            "scope_id": "global",
+            "scope_label": "Global Library",
+            "scope_note": "Showing globally scoped files and artifacts. Reading sessions remain conversation-bound, so there is no global session bucket.",
+            "sections": [
+                _pack_library_section("files", "Files", [{"key": "global", "title": "Global scope", "items": [_make_file_library_item(f, inherited_from="global") for f in list_global_files()]}]),
+                _pack_library_section("artifacts", "Artifacts", [{"key": "global", "title": "Global scope", "items": [_make_artifact_library_item(a, inherited_from="global") for a in list_global_artifacts()]}]),
+                _pack_library_section("reading_sessions", "Reading Sessions", []),
+            ],
+        }
+    )
+
 # endregion
 
 # region Memory Endpoints
@@ -2570,6 +2795,21 @@ def api_move_file_scope(file_id: str, body: FileMoveScopeRequest):
         return JSONResponse(out)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/artifacts/{artifact_id}/move_scope")
+def api_move_artifact_scope(artifact_id: str, body: ArtifactMoveScopeRequest):
+    try:
+        out = move_artifact_scope(
+            artifact_id,
+            scope_type=body.scope_type,
+            scope_id=body.scope_id,
+            scope_uuid=body.scope_uuid,
+        )
+        return JSONResponse(out)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 
 @app.post("/api/files")
 def api_register_file(req: FileRegister):
