@@ -6338,6 +6338,7 @@ def list_artifact_reading_sessions(
     *,
     conversation_id: str | None = None,
     artifact_id: str | None = None,
+    project_id: int | None = None,
     title_query: str | None = None,
     created_after: str | None = None,
     created_before: str | None = None,
@@ -6349,6 +6350,7 @@ def list_artifact_reading_sessions(
 
     cid = (conversation_id or "").strip()
     aid = (artifact_id or "").strip()
+    pid = int(project_id) if project_id not in (None, "") else None
     title_q = (title_query or "").strip()
     after = (created_after or "").strip()
     before = (created_before or "").strip()
@@ -6356,6 +6358,9 @@ def list_artifact_reading_sessions(
     if cid:
         clauses.append("ars.conversation_id = ?")
         params.append(cid)
+    elif pid is not None:
+        clauses.append("c.project_id = ?")
+        params.append(pid)
     if aid:
         clauses.append("ars.artifact_id = ?")
         params.append(aid)
@@ -6372,6 +6377,7 @@ def list_artifact_reading_sessions(
         clauses.append("ars.status IN ('active', 'paused')")
 
     sql = """
+        LEFT JOIN conversations c ON c.id = ars.conversation_id
         SELECT ars.*, a.title AS artifact_title, a.source_kind AS artifact_source_kind
         FROM artifact_reading_sessions ars
         LEFT JOIN artifacts a ON a.id = ars.artifact_id

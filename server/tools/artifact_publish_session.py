@@ -130,9 +130,9 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
 
     title_override = str(arguments.get("title") or "").strip()
     retain_in_conversation = bool(arguments.get("retain_in_conversation", True))
-    scope_type = str(arguments.get("scope_type") or "conversation").strip().lower() or "conversation"
+    scope_type = str(arguments.get("scope_type") or "").strip().lower()
     if scope_type not in {"conversation", "project", "global"}:
-        scope_type = "conversation"
+        scope_type = ""
 
     conversation_id = str(session.get("conversation_id") or ctx.conversation_id or "").strip()
     source_title, markdown_text = _build_session_markdown(
@@ -148,12 +148,26 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
     artifact_id = None
     scope_id = None
     with db_session() as conn:
+        explicit_project_id = None
+        if conversation_id:
+            row = conn.execute(
+                "SELECT project_id FROM conversations WHERE id = ?",
+                (conversation_id,),
+            ).fetchone()
+            if row and row["project_id"] not in (None, ""):
+                explicit_project_id = int(row["project_id"])
+
+        if not scope_type:
+            scope_type = "project" if explicit_project_id is not None else "conversation"
+
         if scope_type == "conversation":
             scope_id = conversation_id or None
         elif scope_type == "project":
-            scope_id = get_conversation_project_id(conn, conversation_id) if conversation_id else None
+            scope_id = explicit_project_id
+            if scope_id is None and conversation_id:
+                scope_id = get_conversation_project_id(conn, conversation_id)
             if scope_id is None:
-                scope_type = "global"
+                scope_type = "conversation"
         artifact_id = upsert_artifact_text(
             conn=conn,
             source_kind=source_kind,

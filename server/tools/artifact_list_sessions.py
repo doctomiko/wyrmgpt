@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..db import list_artifact_reading_sessions, list_artifact_reading_steps
+from ..db import db_session, list_artifact_reading_sessions, list_artifact_reading_steps
 from .base import ToolExecutionContext, ToolResult, ToolSpec
 
 TOOL_SPEC = ToolSpec(
@@ -16,16 +16,42 @@ TOOL_SPEC = ToolSpec(
 
 
 def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
-    conversation_id = str(arguments.get("conversation_id") or ctx.conversation_id or "").strip() or None
+    conversation_id = str(arguments.get("conversation_id") or "").strip() or None
     artifact_id = str(arguments.get("artifact_id") or "").strip() or None
     title_query = str(arguments.get("title_query") or "").strip() or None
     created_after = str(arguments.get("created_after") or "").strip() or None
     created_before = str(arguments.get("created_before") or "").strip() or None
     include_complete = bool(arguments.get("include_complete", True))
     limit = max(1, min(int(arguments.get("limit") or 20), 100))
+    project_id = arguments.get("project_id")
+    if project_id not in (None, ""):
+        try:
+            project_id = int(project_id)
+        except (TypeError, ValueError):
+            project_id = None
+    else:
+        project_id = None
+
+    # Default to project-wide search when the current conversation belongs to a
+    # real project; otherwise fall back to the current conversation.
+    if conversation_id is None and project_id is None and ctx.conversation_id:
+        try:
+            with db_session() as conn:
+                row = conn.execute(
+                    "SELECT project_id FROM conversations WHERE id = ?",
+                    (ctx.conversation_id,),
+                ).fetchone()
+                explicit_project_id = int(row["project_id"]) if row and row["project_id"] not in (None, "") else None
+        except Exception:
+            explicit_project_id = None
+        if explicit_project_id is not None:
+            project_id = explicit_project_id
+        else:
+            conversation_id = str(ctx.conversation_id).strip() or None
 
     rows = list_artifact_reading_sessions(
         conversation_id=conversation_id,
+        project_id=project_id,
         artifact_id=artifact_id,
         title_query=title_query,
         created_after=created_after,
@@ -78,6 +104,7 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
     return ToolResult(
         ok=True,
         tool=TOOL_SPEC.name,
+                "project_id": project_id,
         result={
             "count": len(sessions),
             "filters": {
