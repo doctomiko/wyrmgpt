@@ -37,9 +37,23 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         sessions = list_artifact_reading_sessions_for_conversation(conversation_id)
         if len(sessions) == 1:
             session = sessions[0]
+        elif sessions:
+            active_sessions = [
+                s for s in sessions
+                if str(s.get("status") or "").strip().lower() == "active"
+            ]
+            if len(active_sessions) == 1:
+                session = active_sessions[0]
+            elif active_sessions:
+                # Prefer the most recently updated active session rather than
+                # failing just because multiple sessions exist in the conversation.
+                session = active_sessions[0]
+            else:
+                # Fall back to the most recently updated paused session.
+                session = sessions[0]
 
     if not session:
-        return ToolResult(ok=False, tool=TOOL_SPEC.name, error="session_id or artifact_id is required for artifact.read_next")
+        return ToolResult(ok=False, tool=TOOL_SPEC.name, error="No resumable reading session was found. Pass session_id or artifact_id, or start a new reading session.")
 
     session_id = int(session.get("id") or 0)
 
