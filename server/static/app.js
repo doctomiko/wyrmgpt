@@ -4364,12 +4364,12 @@ function renderLibraryItemCard(item) {
 
   const header = document.createElement("div");
   header.className = "libraryCardHeader";
+
   const left = document.createElement("div");
   const title = document.createElement("div");
   title.className = "libraryCardTitle";
   title.textContent = item.title || item.id || "Untitled";
   left.appendChild(title);
-
   if (item.subtitle) {
     const subtitle = document.createElement("div");
     subtitle.className = "libraryCardSubtitle";
@@ -4385,29 +4385,29 @@ function renderLibraryItemCard(item) {
     el.textContent = badge;
     right.appendChild(el);
   });
+
   if (item.updated_at) {
     const ts = document.createElement("span");
     ts.className = "libraryBadge";
     ts.textContent = formatReadableDateTime(item.updated_at);
-  content.appendChild(header);
+    right.appendChild(ts);
   }
 
   header.appendChild(left);
   header.appendChild(right);
-  card.appendChild(header);
+  content.appendChild(header);
 
   const meta = document.createElement("div");
   meta.className = "libraryMeta";
-  content.appendChild(meta);
+  (item.meta || []).forEach((line) => {
     const row = document.createElement("div");
     row.textContent = line;
     meta.appendChild(row);
   });
-  card.appendChild(meta);
+  content.appendChild(meta);
 
   const actions = document.createElement("div");
   actions.className = "libraryActions";
-
   (item.promote_targets || []).forEach((target) => {
     const btn = document.createElement("button");
     btn.textContent = target.label || "Promote";
@@ -4419,7 +4419,6 @@ function renderLibraryItemCard(item) {
       const url = item.item_kind === "file"
         ? `/api/files/${encodeURIComponent(item.id)}/move_scope`
         : `/api/artifacts/${encodeURIComponent(item.id)}/move_scope`;
-
       const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -4429,17 +4428,14 @@ function renderLibraryItemCard(item) {
           scope_uuid: target.scope_uuid ?? null,
         }),
       });
-
       if (!res.ok) {
         const txt = await res.text().catch(() => "");
         alert(`Failed to promote ${what} (HTTP ${res.status}). ${txt.slice(0, 200)}`);
         return;
       }
-
       try { await refreshContext(); } catch (e) { console.warn("refreshContext failed after librarian promote", e); }
       try { await refreshConversationLists(); } catch (e) { console.warn("refreshConversationLists failed after librarian promote", e); }
       try { await refreshGlobalFilesState(); } catch (e) { console.warn("refreshGlobalFilesState failed after librarian promote", e); }
-
       await loadLibraryModal();
     });
     actions.appendChild(btn);
@@ -4447,16 +4443,21 @@ function renderLibraryItemCard(item) {
 
   if (!actions.children.length && item.promote_disabled_reason) {
     const hint = document.createElement("div");
-    content.appendChild(actions);
+    hint.className = "libraryEmpty";
     hint.textContent = item.promote_disabled_reason;
     actions.appendChild(hint);
   }
 
   if (actions.children.length) {
+    content.appendChild(actions);
+   }
+ 
+   return card;
+}
+
 function renderLibraryGroup(section, group, scopeKey) {
   const wrap = document.createElement("div");
   wrap.className = "libraryGroup";
-
   const items = Array.isArray(group?.items) ? group.items : [];
   const itemCount = items.length;
   const groupKey = `${scopeKey}:${section?.key || "section"}:${group?.key || "group"}`;
@@ -4473,7 +4474,6 @@ function renderLibraryGroup(section, group, scopeKey) {
 
   const titleRow = document.createElement("div");
   titleRow.className = "libraryGroupTitleRow";
-
   if (canCollapse) {
     const caret = document.createElement("span");
     caret.className = "libraryCaret";
@@ -4489,7 +4489,6 @@ function renderLibraryGroup(section, group, scopeKey) {
   const count = document.createElement("div");
   count.className = "libraryGroupCount";
   count.textContent = `${itemCount} item${itemCount === 1 ? "" : "s"}`;
-
   header.appendChild(titleRow);
   header.appendChild(count);
   wrap.appendChild(header);
@@ -4498,7 +4497,6 @@ function renderLibraryGroup(section, group, scopeKey) {
   cards.className = "libraryCards";
   items.forEach((item) => cards.appendChild(renderLibraryItemCard(item)));
   wrap.appendChild(cards);
-
   if (canCollapse) {
     header.addEventListener("click", () => {
       const next = !wrap.classList.contains("is-collapsed");
@@ -4509,14 +4507,7 @@ function renderLibraryGroup(section, group, scopeKey) {
       if (caret) caret.textContent = next ? "▸" : "▾";
     });
   }
-
   return wrap;
-}
-
-    card.appendChild(actions);
-  }
-
-  return card;
 }
 
 function renderLibraryModal(data) {
@@ -4526,27 +4517,28 @@ function renderLibraryModal(data) {
   libraryScopeNoteEl.textContent = data?.scope_note || "";
 
   const sections = Array.isArray(data?.sections) ? data.sections : [];
-  const scopeKey = `${data?.scope_type || "library"}:${data?.scope_id || "root"}`;
   if (!sections.length) {
     librarySectionsEl.textContent = "Nothing here yet.";
+    return;
+  }
+
+  let renderedAny = false;
+  const scopeKey = `${data?.scope_type || "library"}:${data?.scope_id || "root"}`;
+  sections.forEach((section) => {
+    const groups = Array.isArray(section?.groups) ? section.groups : [];
+    if (!groups.length) return;
+    renderedAny = true;
+
+    const sec = document.createElement("div");
+    sec.className = "librarySection";
+
+    const title = document.createElement("div");
+    title.className = "librarySectionTitle";
+    title.textContent = section.title || section.key || "Section";
+    sec.appendChild(title);
+
     groups.forEach((group) => {
       sec.appendChild(renderLibraryGroup(section, group, scopeKey));
-    });
-
-    groups.forEach((group) => {
-      const wrap = document.createElement("div");
-      wrap.className = "libraryGroup";
-
-      const gt = document.createElement("div");
-      gt.className = "libraryGroupTitle";
-      gt.textContent = group.title || group.key || "Group";
-      wrap.appendChild(gt);
-
-      const cards = document.createElement("div");
-      cards.className = "libraryCards";
-      (group.items || []).forEach((item) => cards.appendChild(renderLibraryItemCard(item)));
-      wrap.appendChild(cards);
-      sec.appendChild(wrap);
     });
 
     librarySectionsEl.appendChild(sec);
