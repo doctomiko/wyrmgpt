@@ -135,14 +135,6 @@
           "type": "string",
           "minLength": 1
         },
-        "project_id": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "current_conversation_only": {
-          "type": "boolean",
-          "default": false
-        },
         "artifact_id": {
           "type": "string",
           "minLength": 1
