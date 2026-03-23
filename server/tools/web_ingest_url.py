@@ -40,11 +40,11 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         return ToolResult(ok=False, tool=TOOL_SPEC.name, error="conversation_id is required")
 
     ingest = ingest_urls_from_user_message(
-        user_text=url,
+        conversation_id=conversation_id,
+        request_message_id=None,
         raw_message=url,
         max_urls=1,
         fetch_method="python",
-        request_message_id=None,
     )
     artifact_ids = list(ingest.get("artifact_ids") or [])
     ok = bool(ingest.get("ok")) and bool(artifact_ids)
