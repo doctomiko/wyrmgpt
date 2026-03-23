@@ -135,6 +135,14 @@
           "type": "string",
           "minLength": 1
         },
+        "project_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "current_conversation_only": {
+          "type": "boolean",
+          "default": false
+        },
         "artifact_id": {
           "type": "string",
           "minLength": 1
@@ -279,6 +287,14 @@
           "type": "string",
           "minLength": 1
         },
+        "project_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "current_conversation_only": {
+          "type": "boolean",
+          "default": false
+        },
         "artifact_id": {
           "type": "string",
           "minLength": 1
@@ -307,7 +323,7 @@
         }
       }
     },
-    "system_usage": "Use when the user wants to list, enumerate, search, inspect, or choose among existing reading sessions for a conversation, artifact, title match, or date range. Prefer this over artifact.read_next when the request is about session discovery or metadata."
+    "system_usage": "Use when the user wants to list, enumerate, search, inspect, or choose among existing reading sessions. Within a project, default to project-wide search unless the user explicitly asks for only the current conversation. Prefer this over artifact.read_next when the request is about session discovery or metadata."
   },
   "artifact.publish_session": {
     "module": "artifact_publish_session",
