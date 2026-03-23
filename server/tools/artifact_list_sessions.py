@@ -104,10 +104,10 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
     return ToolResult(
         ok=True,
         tool=TOOL_SPEC.name,
-                "project_id": project_id,
         result={
             "count": len(sessions),
             "filters": {
+                "project_id": project_id,
                 "conversation_id": conversation_id,
                 "artifact_id": artifact_id,
                 "title_query": title_query,

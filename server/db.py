@@ -6377,9 +6377,9 @@ def list_artifact_reading_sessions(
         clauses.append("ars.status IN ('active', 'paused')")
 
     sql = """
-        LEFT JOIN conversations c ON c.id = ars.conversation_id
         SELECT ars.*, a.title AS artifact_title, a.source_kind AS artifact_source_kind
         FROM artifact_reading_sessions ars
+        LEFT JOIN conversations c ON c.id = ars.conversation_id
         LEFT JOIN artifacts a ON a.id = ars.artifact_id
     """
     if clauses:
