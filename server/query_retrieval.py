@@ -377,28 +377,36 @@ def retrieve_chunks_for_message(
                 if not safe_q and qs.kept_phrases:
                     safe_q = " ".join(_fts_quote(p) for p in qs.kept_phrases)
 
-                if safe_q or s:
-                    retry_q = safe_q or s
+                if safe_q:
+                    retry_q = safe_q
                     log_debug("RAG retry search: query=%r", retry_q)
-                    rows = search_corpus_for_conversation(
-                        conversation_id=conversation_id,
-                        query=retry_q,
-                        limit=per_slice_limit,
-                        cfg=cfg,
-                    )
+                    try:
+                        rows = search_corpus_for_conversation(
+                            conversation_id=conversation_id,
+                            query=retry_q,
+                            limit=per_slice_limit,
+                            cfg=cfg,
+                        )
+                    except Exception as e:
+                        log_debug("RAG retry search failed for query %r: %r", retry_q, e)
+                else:
+                    log_debug("RAG retry skipped: no safe FTS query for slice %r", s[:160])
 
             sparse_threshold = max(2, min(per_slice_limit, int(cfg.rag_limit or per_slice_limit)))
             if len(rows) < sparse_threshold and (len(qs.kept_terms) + len(qs.kept_phrases)) > 1:
                 or_q = _build_or_fallback_query(qs.kept_phrases, qs.kept_terms)
                 if or_q and or_q not in {q, retry_q}:
                     log_debug("RAG OR fallback search: query=%r", or_q)
-                    or_rows = search_corpus_for_conversation(
-                        conversation_id=conversation_id,
-                        query=or_q,
-                        limit=per_slice_limit,
-                        cfg=cfg,
-                    )
-                    rows = _merge_rows_by_chunk(rows, or_rows, limit=per_slice_limit)
+                    try:
+                        or_rows = search_corpus_for_conversation(
+                            conversation_id=conversation_id,
+                            query=or_q,
+                            limit=per_slice_limit,
+                            cfg=cfg,
+                        )
+                        rows = _merge_rows_by_chunk(rows, or_rows, limit=per_slice_limit)
+                    except Exception as e:
+                        log_debug("RAG OR fallback search failed for query %r: %r", or_q, e)
 
             if len(rows) < sparse_threshold and app_cfg.search_chat_history and not cfg.query_include_recent_conversation_transcripts:
                 broad_cfg = replace(
@@ -408,13 +416,16 @@ def retrieve_chunks_for_message(
                 )
                 broad_q = retry_q or q
                 log_debug("RAG broad transcript fallback: query=%r recent_limit=%d", broad_q, broad_cfg.recent_conversation_transcript_limit)
-                broad_rows = search_corpus_for_conversation(
-                    conversation_id=conversation_id,
-                    query=broad_q,
-                    limit=per_slice_limit,
-                    cfg=broad_cfg,
-                )
-                rows = _merge_rows_by_chunk(rows, broad_rows, limit=per_slice_limit)
+                try:
+                    broad_rows = search_corpus_for_conversation(
+                        conversation_id=conversation_id,
+                        query=broad_q,
+                        limit=per_slice_limit,
+                        cfg=broad_cfg,
+                    )
+                    rows = _merge_rows_by_chunk(rows, broad_rows, limit=per_slice_limit)
+                except Exception as e:
+                    log_debug("RAG broad transcript fallback failed for query %r: %r", broad_q, e)
 
             log_debug("RAG search: query=%r returned=%d", q, len(rows))
             for r in rows:

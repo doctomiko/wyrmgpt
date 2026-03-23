@@ -140,14 +140,16 @@ def plan_artifact_inclusion(
     user_text: str,
     readiness: ArtifactReadiness,
     budget_remaining_chars: int,
+    include_whole_budget_chars: int | None = None,
     whole_artifact_soft_cap_chars: int = 12000,
 ) -> dict[str, Any]:
     intent = classify_reading_intent(user_text)
     est_chars = int(readiness.estimated_message_chars or 0)
     remaining = max(0, int(budget_remaining_chars or 0))
+    whole_remaining = remaining if include_whole_budget_chars is None else max(0, int(include_whole_budget_chars or 0))
     soft_cap = max(1000, int(whole_artifact_soft_cap_chars or 12000))
 
-    fits_whole = est_chars <= min(remaining, soft_cap) if remaining > 0 else est_chars <= soft_cap
+    fits_whole = est_chars <= min(whole_remaining, soft_cap) if whole_remaining > 0 else est_chars <= soft_cap
 
     if fits_whole:
         return {
@@ -183,9 +185,16 @@ def plan_artifact_inclusion(
     else:
         strategies.extend(["focus_reference", "selective_reference_rag"])
 
-    reason_parts = [
-        f"Whole artifact estimated at {est_chars} chars exceeds current budget {remaining}.",
-    ]
+    if whole_remaining > 0:
+        whole_reason = (
+            f"Whole artifact estimated at {est_chars} chars exceeds current whole-artifact budget {whole_remaining}."
+        )
+    else:
+        whole_reason = (
+            f"Whole artifact estimated at {est_chars} chars exceeds current whole-artifact budget; "
+            f"expansion budget is exhausted, using fallback planner reserve {remaining}."
+        )
+    reason_parts = [whole_reason]
     if fallback_messages:
         reason_parts.append("Fallback metadata unavailable: " + ", ".join(fallback_messages) + ".")
     else:

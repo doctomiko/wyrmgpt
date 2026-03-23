@@ -218,12 +218,17 @@ def _maybe_apply_artifact_reading_plan(
 
     rough_budget_total_chars = max(4000, int(ctx_cfg.max_tokens or 6000) * 4)
     rough_budget_used_chars = _messages_char_count(typed_history) + _messages_char_count(whole_artifact_messages)
-    rough_budget_remaining_chars = max(0, rough_budget_total_chars - rough_budget_used_chars)
+    # Real remaining room for whole-artifact expansion.
+    rough_budget_actual_remaining_chars = max(0, rough_budget_total_chars - rough_budget_used_chars)
+    # Never let planner/fallback logic believe it has literally zero room.
+    planner_floor_chars = 1500
+    rough_budget_remaining_chars = max(planner_floor_chars, rough_budget_actual_remaining_chars)
 
     plan = plan_artifact_inclusion(
         user_text=user_text,
         readiness=readiness,
         budget_remaining_chars=rough_budget_remaining_chars,
+        include_whole_budget_chars=rough_budget_actual_remaining_chars,
         whole_artifact_soft_cap_chars=max(2000, int(ctx_cfg.max_tokens or 6000) * 2),
     )
 
@@ -247,6 +252,7 @@ def _maybe_apply_artifact_reading_plan(
                 readiness=readiness,
                 budget_remaining_chars=rough_budget_remaining_chars,
                 whole_artifact_soft_cap_chars=max(2000, int(ctx_cfg.max_tokens or 6000) * 2),
+                include_whole_budget_chars=rough_budget_actual_remaining_chars,
             )
 
     if plan.get("action") == "include_whole":
