@@ -47,23 +47,20 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         fetch_method="python",
     )
 
+    ingest_results = list(ingest.get("results") or [])
     artifact_ids = list(ingest.get("artifact_ids") or [])
     warnings = [str(e) for e in (ingest.get("errors") or []) if str(e).strip()]
-    artifact_id = artifact_ids[0] if artifact_ids else None
-
-    # Treat successful artifact creation as success, even if a later
-    # step (like reindexing) emitted warnings.
-    warnings = [str(e) for e in (ingest.get("errors") or []) if str(e).strip()]
-    artifact_id = artifact_ids[0] if artifact_ids else None
-
-    # Treat successful artifact creation as success, even if a later
-    # step (like reindexing) emitted warnings.
+    first_result = ingest_results[0] if ingest_results else {}
+    artifact_id = first_result.get("artifact_id") or (artifact_ids[0] if artifact_ids else None)
     ok = bool(artifact_id)
 
     error_text = None
     if not ok:
+        artifact_error = str(first_result.get("artifact_error") or "").strip()
         if warnings:
             error_text = "; ".join(warnings)
+        elif artifact_error:
+            error_text = artifact_error
         else:
             error_text = "URL ingest produced no artifact"
 
@@ -71,20 +68,14 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
     if ok and warnings:
         display_text += f" Warnings: {'; '.join(warnings)}"
     elif not ok:
-        display_text = f"Failed to ingest {url}."
-
-    error_text = None
-    if not ok:
-        if warnings:
-            error_text = "; ".join(warnings)
+        snapshot_id = first_result.get("snapshot_id")
+        if snapshot_id:
+            display_text = (
+                f"Fetched {url} into snapshot {snapshot_id}, "
+                f"but no artifact was created."
+            )
         else:
-            error_text = "URL ingest produced no artifact"
-
-    display_text = f"Fetched and ingested {url} as artifact {artifact_id}."
-    if ok and warnings:
-        display_text += f" Warnings: {'; '.join(warnings)}"
-    elif not ok:
-        display_text = f"Failed to ingest {url}."
+            display_text = f"Failed to ingest {url}."
 
     return ToolResult(
         ok=ok,
@@ -94,6 +85,9 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
             "conversation_id": conversation_id,
             "ingest": ingest,
             "artifact_id": artifact_id,
+            "snapshot_id": first_result.get("snapshot_id"),
+            "source_id": first_result.get("source_id"),
+            "url_result": first_result,
             "warnings": warnings,
         },
         error=error_text,

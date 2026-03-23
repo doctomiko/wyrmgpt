@@ -43,6 +43,7 @@ def ingest_urls_from_user_message(
     touched_sources = 0
     created_snapshots = 0
     artifact_ids: list[str] = []
+    results: list[dict] = []
     errors: list[str] = []
     artifact_ids_to_reindex: list[str] = []
 
@@ -87,6 +88,7 @@ def ingest_urls_from_user_message(
                 )
 
                 artifact_id = None
+                artifact_error = None
                 if payload:
                     artifact_id = upsert_artifact_text(
                         conn,
@@ -97,6 +99,9 @@ def ingest_urls_from_user_message(
                         scope_id=conversation_id,
                         text=payload["text"],
                     )
+                else:
+                    artifact_error = "no artifact payload could be built from fetched content"
+                    errors.append(f"{url}: {artifact_error}")
 
                 if artifact_id:
                     artifact_ids.append(artifact_id)
@@ -120,7 +125,18 @@ def ingest_urls_from_user_message(
                             "fetch_method": fetch_method,
                         },
                         increment_include_count=True,
-                    )        
+                    )
+                results.append({
+                    "url": url,
+                    "source_id": source_id,
+                    "snapshot_id": snapshot_id,
+                    "artifact_id": artifact_id,
+                    "artifact_created": bool(artifact_id),
+                    "artifact_error": artifact_error,
+                    "final_url": fetched.get("final_url"),
+                    "content_type": fetched.get("content_type"),
+                    "http_status": fetched.get("http_status"),
+                })
             except Exception as e:
                 errors.append(f"{url}: {type(e).__name__}: {e}")
                 log_warn(f"URL ingest failed for {url}: {e}")
@@ -133,11 +149,13 @@ def ingest_urls_from_user_message(
             log_warn(f"Artifact reindex failed for {artifact_id}: {e}")
 
     return {
-        "ok": len(errors) == 0,
+        "ok": len(errors) == 0 and len(artifact_ids) == len(urls),
         "detected": len(urls),
-        "ingested": created_snapshots,
+        "snapshots_created": created_snapshots,
+        "ingested": len(artifact_ids),
         "urls": urls,
         "artifact_ids": artifact_ids,
+        "results": results,
         "errors": errors,
         "request_message_id": request_message_id,
     }
