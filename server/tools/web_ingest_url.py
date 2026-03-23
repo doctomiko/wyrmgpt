@@ -8,7 +8,23 @@ from .base import ToolExecutionContext, ToolResult, ToolSpec
 TOOL_SPEC = ToolSpec(
     name="web.ingest_url",
     description="Fetch and ingest a specific web URL into the current conversation as an artifact.",
-    input_schema={"type": "object"},
+    input_schema={
+        "type": "object",
+        "required": ["url"],
+        "properties": {
+            "url": {
+                "type": "string",
+                "minLength": 8,
+                "description": "The absolute web URL to fetch and ingest.",
+            },
+            "conversation_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Optional; defaults to the current conversation.",
+            },
+        },
+        "additionalProperties": False,
+    },
     system_usage="Use when the assistant wants to fetch a specific URL and turn it into a retained web artifact.",
     display_name="Fetch Web URL",
     tags=("web", "artifact", "ingest"),
@@ -24,8 +40,10 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         return ToolResult(ok=False, tool=TOOL_SPEC.name, error="conversation_id is required")
 
     ingest = ingest_urls_from_user_message(
-        conversation_id=conversation_id,
         user_text=url,
+        raw_message=url,
+        max_urls=1,
+        fetch_method="python",
         request_message_id=None,
     )
     artifact_ids = list(ingest.get("artifact_ids") or [])
