@@ -1084,6 +1084,19 @@ blockquote blockquote {
   white-space: nowrap;
 }
 
+.filesCardControls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.filesCardActions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .librarySection {
   margin-bottom: 18px;
   border-top: 1px solid var(--border);

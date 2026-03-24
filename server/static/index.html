@@ -287,9 +287,12 @@
   </div>  
   <div id="filesModal" class="modal hidden">
     <div class="modalBackdrop"></div>
-    <div class="modalPanel" style="max-width: 640px;">
+    <div class="modalPanel" style="max-width: 980px;">
       <div class="modalHeader">
-        <div class="modalTitle">Files</div>
+        <div>
+          <div class="modalTitle" id="filesModalTitle">Files</div>
+          <div id="filesScopeNote" class="memHint"></div>
+        </div>
         <button id="filesClose" class="iconButton" title="Close">&times;</button>
       </div>
       <div class="modalBody">
