@@ -5280,8 +5280,9 @@ if (projMenuDeleteBtn) {
 
     const didDelete = await deleteProjectWithConfirmation(pid, proj.name);
     if (!didDelete) return;
-
-    await refreshConversationLists();
+    const [p2, c2] = await Promise.all([fetchProjects(), fetchConversations()]);
+    renderProjects(p2, c2);
+    //await refreshConversationLists();
     await refreshContext();
   });
 }
