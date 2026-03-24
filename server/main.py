@@ -2065,8 +2065,6 @@ def _make_artifact_library_item(artifact_row: dict, *, inherited_from: str, proj
     promote_disabled_reason: str | None = None
     if source_kind == "file":
         promote_disabled_reason = "Promote the underlying file instead of the derived file artifact."
-    elif source_kind in ("conversation:transcript", "conversation_transcript"):
-        promote_disabled_reason = "Conversation transcripts stay reference-first and conversation-bound by default."
     else:
         promote_targets = _promote_targets_for_scope(scope_type, project_id=project_id)
 
@@ -2167,6 +2165,9 @@ def api_project_library(project_id: int):
             seen_files.add(f["id"])
             descendant_files.append(_make_file_library_item(f, inherited_from="conversation", project_id=project_id, conversation_title=conv_title_by_id.get(conv["id"])))
         for a in list_artifacts_for_conversation(conv["id"]):
+            scope_type = _normalize_scope_type(a.get("scope_type"))
+            if scope_type != "conversation":
+                continue
             if a["id"] in seen_artifacts:
                 continue
             seen_artifacts.add(a["id"])

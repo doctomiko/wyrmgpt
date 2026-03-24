@@ -2500,11 +2500,20 @@ def _ensure_conversation_transcript_artifact_row(
     ).fetchone()
     project_id = int(proj_row["project_id"]) if proj_row and proj_row["project_id"] is not None else None
 
+    if project_id is not None:
+        scope_type = "project"
+        scope_id = int(project_id)
+        scope_uuid = None
+    else:
+        scope_type = "global"
+        scope_id = None
+        scope_uuid = None
+
     conn.execute(
         """
         INSERT OR IGNORE INTO artifacts
-        (id, project_id, source_kind, source_id, title, scope_type, scope_uuid, updated_at)
-        VALUES (?, ?, ?, ?, ?, 'conversation', ?, ?)
+        (id, project_id, source_kind, source_id, title, scope_type, scope_id, scope_uuid, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             artifact_id,
@@ -2512,7 +2521,9 @@ def _ensure_conversation_transcript_artifact_row(
             TRANSCRIPT_SOURCE_KIND,
             conversation_id,
             title,
-            conversation_id,
+            scope_type,
+            scope_id,
+            scope_uuid,
             now,
         ),
     )
@@ -2524,7 +2535,8 @@ def _ensure_conversation_transcript_artifact_row(
             source_id = ?,
             project_id = ?,
             title = ?,
-            scope_type = 'conversation',
+            scope_type = ?,
+            scope_id = ?,
             scope_uuid = ?,
             updated_at = ?
         WHERE id = ?
@@ -2534,10 +2546,20 @@ def _ensure_conversation_transcript_artifact_row(
             conversation_id,
             project_id,
             title,
-            conversation_id,
+            scope_type,
+            scope_id,
+            scope_uuid,
             now,
             artifact_id,
         ),
+    )
+
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO conversation_artifacts (conversation_id, artifact_id)
+        VALUES (?, ?)
+        """,
+        (conversation_id, artifact_id),
     )
 
     return artifact_id
@@ -8139,10 +8161,8 @@ def move_artifact_scope(
 
         if source_kind == "file":
             raise ValueError("File-backed artifacts should be promoted by moving the underlying file instead.")
-        if source_kind in ("conversation:transcript", "conversation_transcript"):
-            raise ValueError("Conversation transcript artifacts are reference-first and should stay bound to their conversation.")
         if scope_rank(target_scope_type) < scope_rank(old_scope_type):
-            raise ValueError("Artifacts can only be promoted to the same or a higher scope.")
+             raise ValueError("Artifacts can only be promoted to the same or a higher scope.")
 
         if target_scope_type == "project":
             if scope_id is None:
@@ -8172,6 +8192,13 @@ def move_artifact_scope(
                 (new_scope_uuid, artifact_id),
             )
 
+        elif source_kind in ("conversation:transcript", "conversation_transcript"):
+            transcript_conversation_id = (art.get("source_id") or "").strip()
+            if transcript_conversation_id:
+                conn.execute(
+                    "INSERT OR IGNORE INTO conversation_artifacts (conversation_id, artifact_id) VALUES (?, ?)",
+                    (transcript_conversation_id, artifact_id),
+                )
         conn.execute(
             """
             UPDATE artifacts
