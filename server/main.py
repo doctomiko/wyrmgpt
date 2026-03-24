@@ -532,6 +532,7 @@ def _make_utility_completion(
     return complete_fn, target
 
 
+
 def _generate_image_caption_for_file(
     file_row: RowDict,
     *,
@@ -544,6 +545,13 @@ def _generate_image_caption_for_file(
     if not is_image_file(path, mime_type):
         raise ValueError("Only image files can be described.")
 
+    def _fallback_caption() -> str:
+        file_name = (file_row.get("name") or file_row.get("id") or "image").strip()
+        hint_description = (file_row.get("description") or "").strip()
+        if hint_description:
+            return hint_description
+        return f"Image file: {file_name}. Automatic visual summary was unavailable."
+
     data = load_image_bytes(path)
     if not data:
         raise ValueError("Image bytes could not be loaded.")
@@ -552,7 +560,8 @@ def _generate_image_caption_for_file(
     data_url = f"data:{mime_for_data_url};base64,{image_bytes_to_base64(data)}"
 
     target = _resolve_utility_target(
-        deployment_id or "summary_default",
+        deployment_id or "image_default",
+        "summary_default",
         "chat_default",
         required_capability="chat",
     )
@@ -562,7 +571,7 @@ def _generate_image_caption_for_file(
 
     hint_description = (file_row.get("description") or "").strip()
     hint_text = (
-        f"Existing file description (treat as a hint, not ground truth): {hint_description}"
+        f"Existing file description (treat as a hint, not ground truth): {hint_description}\n\n"
         if hint_description else ""
     )
 
@@ -589,7 +598,7 @@ def _generate_image_caption_for_file(
     result = provider.complete(target, model_input, request_options={"max_output_tokens": 220})
     caption = re.sub(r"\n{3,}", "\n\n", (result.text or "").strip())
     if not caption:
-        raise ValueError("The model returned an empty image description.")
+        caption = _fallback_caption()
     return caption, target.model
 
 
@@ -605,6 +614,9 @@ def _generate_image_ocr_for_file(
     if not is_image_file(path, mime_type):
         raise ValueError("Only image files can be OCR'd.")
 
+    def _fallback_ocr() -> tuple[str | None, str]:
+        return None, target.model
+
     data = load_image_bytes(path)
     if not data:
         raise ValueError("Image bytes could not be loaded.")
@@ -613,7 +625,8 @@ def _generate_image_ocr_for_file(
     data_url = f"data:{mime_for_data_url};base64,{image_bytes_to_base64(data)}"
 
     target = _resolve_utility_target(
-        deployment_id or "summary_default",
+        deployment_id or "image_default",
+        "summary_default",
         "chat_default",
         required_capability="chat",
     )
@@ -646,7 +659,7 @@ def _generate_image_ocr_for_file(
     result = provider.complete(target, model_input, request_options={"max_output_tokens": 500})
     text = re.sub(r"\n{3,}", "\n\n", (result.text or "").strip())
     if not text:
-        raise ValueError("The model returned an empty OCR response.")
+        return _fallback_ocr()
     if text.strip().lower() == "[no legible text]":
         return None, target.model
     return text, target.model

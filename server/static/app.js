@@ -4123,6 +4123,9 @@ async function ensureProjectsCacheLoaded() {
 }
 
 function lookupManageFileScopeLabel(file, scopeType) {
+  const direct = String(file?.scope_label || "").trim();
+  if (direct) return direct;
+
   if (scopeType === "project" && file?.scope_id != null) {
     const project = (projectsCache || []).find((p) => Number(p.id) === Number(file.scope_id));
     return project?.name || null;
@@ -4641,6 +4644,13 @@ function renderManageFilesItemCard(item) {
   title.textContent = item.title || item.id || "Untitled";
   left.appendChild(title);
 
+  if (item.scope_type && item.scope_type !== "global" && item.scope_label) {
+    const scopeSubtitle = document.createElement("div");
+    scopeSubtitle.className = "libraryCardSubtitle";
+    scopeSubtitle.textContent = `${item.scope_type === "project" ? "Project" : "Conversation"}: ${item.scope_label}`;
+    left.appendChild(scopeSubtitle);
+  }
+
   const right = document.createElement("div");
   right.className = "libraryBadges";
   (item.badges || []).forEach((badge) => {
@@ -4990,6 +5000,12 @@ function renderLibraryItemCard(item) {
     subtitle.className = "libraryCardSubtitle";
     subtitle.textContent = item.subtitle;
     left.appendChild(subtitle);
+  }
+  if (item.scope_type && item.scope_type !== "global" && item.scope_label) {
+    const scopeSubtitle = document.createElement("div");
+    scopeSubtitle.className = "libraryCardSubtitle";
+    scopeSubtitle.textContent = `${item.scope_type === "project" ? "Project" : "Conversation"}: ${item.scope_label}`;
+    left.appendChild(scopeSubtitle);
   }
 
   const right = document.createElement("div");

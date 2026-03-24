@@ -197,6 +197,14 @@ capabilities = ["chat"]
 enabled = true
 tags = ["title"]
 
+[deployments.image_default]
+provider = "openai"
+model = "gpt-5.4"
+display_name = "OpenAI Image Default"
+capabilities = ["chat"]
+enabled = true
+tags = ["image", "vision"]
+
 # TODO change to deployments.embeddings_default
 # TODO support tags and capabilities
 [embeddings]
