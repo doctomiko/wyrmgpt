@@ -1,15 +1,11 @@
 import sqlite3
 from pathlib import Path
 
-"""
 from .db import (
     _table_exists,
     _add_column_if_missing,
     SCHEMA_VERSION, 
-    DATA_DIR, 
-    DB_PATH
 )
-"""
 
 def _migrate_schema_legacy(conn: sqlite3.Connection) -> None:
         # Ensure all tables exist (idempotent)
@@ -24,8 +20,6 @@ def _migrate_schema_legacy(conn: sqlite3.Connection) -> None:
 # region Legacy Migrations for older schemas
 
 def _apply_schema_v2(conn: sqlite3.Connection) -> None:
-    from .db import SCHEMA_VERSION
-
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS schema_meta (
@@ -161,8 +155,6 @@ def _apply_schema_v2(conn: sqlite3.Connection) -> None:
     )
 
 def migrate_schema_v3(conn: sqlite3.Connection) -> None:
-    from .db import _table_exists, _add_column_if_missing
-
     # conversations: add updated_at + archived + summary_json + project_id if needed
     _add_column_if_missing(conn, "conversations", "project_id", "INTEGER")
     _add_column_if_missing(conn, "conversations", "summary_json", "TEXT")
@@ -175,8 +167,6 @@ def migrate_schema_v3(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(conn, "projects", "created_at", "TEXT")
 
 def migrate_schema_v4(conn: sqlite3.Connection) -> None:
-    from .db import _table_exists, _add_column_if_missing
-
     """
     Non-destructive migration for the file/url/artifact/context-cache design.
 
@@ -265,8 +255,6 @@ def migrate_schema_v5(conn: sqlite3.Connection) -> None:
     Adds:
       - chunk_index INTEGER on artifacts
     """
-    from .db import _table_exists, _add_column_if_missing
-
     if _table_exists(conn, "artifacts"):
         _add_column_if_missing(conn, "artifacts", "chunk_index", "INTEGER")
 
@@ -274,8 +262,6 @@ def migrate_schema_v6(conn: sqlite3.Connection) -> None:
     """
     Make sure messages have created_at and author_meta columns.
     """
-    from .db import _table_exists, _add_column_if_missing
-
     _add_column_if_missing(conn, "messages", "created_at", "TEXT")
     _add_column_if_missing(conn, "messages", "author_meta", "TEXT")
 
@@ -283,64 +269,7 @@ def migrate_schema_v7(conn: sqlite3.Connection) -> None:
     """
     Add is_global and is_hidden flags to projects.
     """
-    from .db import _table_exists, _add_column_if_missing
-
     _add_column_if_missing(conn, "projects", "is_global", "INTEGER DEFAULT 0")
     _add_column_if_missing(conn, "projects", "is_hidden", "INTEGER DEFAULT 0")
-
-if (False): # phased out in favor shoot-all-your-problems-away
-    def migrate_schema_v8_notimplemented(conn: sqlite3.Connection) -> None:
-        """
-        This migration makes changes to artifacts in support of future RAG implementation
-        """
-        _add_column_if_missing(conn, "artifacts", "content_text", "TEXT")
-        _add_column_if_missing(conn, "artifacts", "sidecar_path", "TEXT")
-        _add_column_if_missing(conn, "artifacts", "content_hash", "TEXT")
-        _add_column_if_missing(conn, "artifacts", "content_bytes", "INTEGER")
-        _add_column_if_missing(conn, "artifacts", "updated_at", "TEXT")
-        conn.executescript(f"""
-        CREATE TRIGGER IF NOT EXISTS trg_artifacts_exclusive_content_ins
-        BEFORE INSERT ON artifacts
-        FOR EACH ROW
-        BEGIN
-        SELECT
-            CASE
-            WHEN NEW.content_text IS NOT NULL AND NEW.sidecar_path IS NOT NULL
-            THEN RAISE(ABORT, 'artifacts: content_text and sidecar_path are mutually exclusive')
-            END;
-        END;
-
-        CREATE TRIGGER IF NOT EXISTS trg_artifacts_exclusive_content_upd
-        BEFORE UPDATE OF content_text, sidecar_path ON artifacts
-        FOR EACH ROW
-        BEGIN
-        SELECT
-            CASE
-            WHEN NEW.content_text IS NOT NULL AND NEW.sidecar_path IS NOT NULL
-            THEN RAISE(ABORT, 'artifacts: content_text and sidecar_path are mutually exclusive')
-            END;
-        END;
-                    
-        CREATE VIEW IF NOT EXISTS v_artifacts AS
-        SELECT
-        a.*,
-        CASE
-            WHEN a.content_text IS NOT NULL THEN 'inline'
-            WHEN a.sidecar_path IS NOT NULL THEN 'sidecar'
-            ELSE 'empty'
-        END AS storage_mode
-        FROM artifacts a;
-
-        CREATE INDEX IF NOT EXISTS idx_artifacts_content_hash ON artifacts(content_hash);
-        CREATE INDEX IF NOT EXISTS idx_artifacts_updated_at ON artifacts(updated_at);
-        """)
-        if (False): # phased out in favor shoot-all-your-problems-away
-            article_sidecar_threshold_bytes = 50 * 1024 * 1024 # cfg.article_sidecar_threshold_bytes
-            stats = merge_legacy_article_chunks_to_single_pass(
-                conn,
-                data_dir="data",
-                sidecar_threshold_bytes=article_sidecar_threshold_bytes,
-            )
-            print(f"Merged {stats['merged_count']} artifact groups, deleted {stats['deleted_rows']} rows.")
 
 # endregion

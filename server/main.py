@@ -123,6 +123,29 @@ core_cfg = load_core_config()
 TOOL_CFG = load_tool_config()
 
 DEBUG_ERRORS = core_cfg.debug_errors
+RowDict = dict[str, Any]
+
+
+def _coerce_optional_int(value: Any) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _load_json_object(value: Any) -> RowDict:
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return {}
+        try:
+            loaded = json.loads(text)
+        except Exception:
+            return {}
+        return dict(loaded) if isinstance(loaded, dict) else {}
+    if isinstance(value, dict):
+        return dict(value)
+    return {}
 
 # Replaces the old @app.on_event("startup") and @app.on_event("shutdown") handlers with a single async context manager that can do both setup and teardown.
 #@app.on_event("startup")
@@ -510,7 +533,7 @@ def _make_utility_completion(
 
 
 def _generate_image_caption_for_file(
-    file_row: dict,
+    file_row: RowDict,
     *,
     deployment_id: str | None = None,
 ) -> tuple[str, str]:
@@ -571,7 +594,7 @@ def _generate_image_caption_for_file(
 
 
 def _generate_image_ocr_for_file(
-    file_row: dict,
+    file_row: RowDict,
     *,
     deployment_id: str | None = None,
 ) -> tuple[str | None, str]:
@@ -941,7 +964,7 @@ def new_chat():
     return {"conversation_id": cid}
 
 
-def _build_citation_rows_from_context(ctx: dict | None) -> list[dict]:
+def _build_citation_rows_from_context(ctx: RowDict | None) -> list[RowDict]:
     if not ctx:
         return []
 
@@ -949,7 +972,7 @@ def _build_citation_rows_from_context(ctx: dict | None) -> list[dict]:
     if not retrieved_meta:
         return []
 
-    rows_by_chunk_id: dict[int, dict] = {}
+    rows_by_chunk_id: dict[int, RowDict] = {}
     for row in (ctx.get("retrieved_chunks_final") or []):
         chunk_id = row.get("chunk_id")
         if chunk_id is None:
@@ -959,7 +982,7 @@ def _build_citation_rows_from_context(ctx: dict | None) -> list[dict]:
         except Exception:
             continue
 
-    citations: list[dict] = []
+    citations: list[RowDict] = []
     for rank, meta in enumerate(retrieved_meta, start=1):
         chunk_id = meta.get("chunk_id")
         if chunk_id is None:
@@ -992,7 +1015,7 @@ def _build_citation_rows_from_context(ctx: dict | None) -> list[dict]:
     return citations
 
 
-def _persist_citations_for_assistant_message(assistant_message_id: int, ctx: dict | None) -> None:
+def _persist_citations_for_assistant_message(assistant_message_id: int, ctx: RowDict | None) -> None:
     if not assistant_message_id:
         return
 
@@ -1369,7 +1392,7 @@ def _execute_tool_requests(
 def _should_attempt_tool_preflight(
     *,
     user_text: str,
-    ctx: dict | None,
+    ctx: RowDict | None,
     tool_cfg,
     tool_registry: ToolRegistry | None,
 ) -> bool:
@@ -1631,7 +1654,7 @@ def _trim_history(model_input: ModelInput, keep_last_n: int = 30) -> ModelInput:
     non_system = [m for m in model_input if m.get("role") != "system"]
     return system + non_system[-keep_last_n:]
 
-async def call_model_with_recovery(target, model_input: list[dict]) -> dict:
+async def call_model_with_recovery(target, model_input: ModelInput) -> RowDict:
     """
     Returns either {"ok": True, "text": "..."} or {"ok": False, "error": {...}}.
     """
@@ -1786,7 +1809,7 @@ async def chat_ab(req: ABChatRequest):
 
     attached_shared_tool_events = False
 
-    def store(slot: str, target, requested_model_name: str, res: dict):
+    def store(slot: str, target, requested_model_name: str, res: RowDict):
         nonlocal attached_shared_tool_events
         if res.get("ok"):
             text = res.get("text") or ""
@@ -2145,9 +2168,9 @@ def _normalize_scope_type(scope_type: str | None) -> str:
     return "global"
 
 
-def _promote_targets_for_scope(scope_type: str, *, project_id: int | None = None) -> list[dict]:
+def _promote_targets_for_scope(scope_type: str, *, project_id: int | None = None) -> list[RowDict]:
     st = _normalize_scope_type(scope_type)
-    targets: list[dict] = []
+    targets: list[RowDict] = []
     if st == "conversation" and project_id is not None:
         targets.append({"label": "Promote to Project", "scope_type": "project", "scope_id": int(project_id), "scope_uuid": None})
     if st in ("conversation", "project"):
@@ -2156,35 +2179,27 @@ def _promote_targets_for_scope(scope_type: str, *, project_id: int | None = None
 
 
 def _make_file_library_item(
-    file_row: dict,
+    file_row: RowDict,
     *,
     inherited_from: str,
     project_id: int | None = None,
     project_title: str | None = None,
     conversation_title: str | None = None,
-) -> dict:
+) -> RowDict:
     scope_type = _normalize_scope_type(file_row.get("scope_type"))
     mime_type = (file_row.get("mime_type") or "").strip() or None
     file_path = Path(str(file_row.get("path") or "")).expanduser()
     is_image = bool(file_path and is_image_file(file_path, mime_type))
-    meta_json = file_row.get("meta_json")
-    if isinstance(meta_json, str):
-        try:
-            file_meta = json.loads(meta_json) if meta_json.strip() else {}
-        except Exception:
-            file_meta = {}
-    elif isinstance(meta_json, dict):
-        file_meta = dict(meta_json)
-    else:
-        file_meta = {}
+    file_meta: RowDict = _load_json_object(file_row.get("meta_json"))
 
     import_note = (file_meta.get("import_note") or "").strip()
     image_caption = (file_meta.get("image_caption") or "").strip()
     image_ocr_text = (file_meta.get("image_ocr_text") or "").strip()
+    file_scope_id = _coerce_optional_int(file_row.get("scope_id"))
 
     effective_project_title = project_title
-    if not effective_project_title and scope_type == "project" and file_row.get("scope_id") is not None:
-        proj = next((p for p in list_projects(include_global=True) if int(p["id"]) == int(file_row.get("scope_id"))), None)
+    if not effective_project_title and scope_type == "project" and file_scope_id is not None:
+        proj = next((p for p in list_projects(include_global=True) if _coerce_optional_int(p.get("id")) == file_scope_id), None)
         effective_project_title = proj.get("name") if proj else None
 
     effective_conversation_title = conversation_title
@@ -2236,7 +2251,7 @@ def _make_file_library_item(
     }
 
 
-def _make_artifact_library_item(artifact_row: dict, *, inherited_from: str, project_id: int | None = None, conversation_title: str | None = None) -> dict:
+def _make_artifact_library_item(artifact_row: RowDict, *, inherited_from: str, project_id: int | None = None, conversation_title: str | None = None) -> RowDict:
     scope_type = _normalize_scope_type(artifact_row.get("scope_type"))
     source_kind = (artifact_row.get("source_kind") or "").strip()
     readiness = get_artifact_readiness(artifact_row["id"])
@@ -2257,7 +2272,7 @@ def _make_artifact_library_item(artifact_row: dict, *, inherited_from: str, proj
     if artifact_row.get("provenance"):
         meta.append(f"Provenance: {artifact_row.get('provenance')}")
 
-    promote_targets: list[dict] = []
+    promote_targets: list[RowDict] = []
     promote_disabled_reason: str | None = None
     if source_kind == "file":
         promote_disabled_reason = "Promote the underlying file instead of the derived file artifact."
@@ -2279,7 +2294,7 @@ def _make_artifact_library_item(artifact_row: dict, *, inherited_from: str, proj
     }
 
 
-def _make_session_library_item(session_row: dict, *, inherited_from: str, conversation_title: str | None = None) -> dict:
+def _make_session_library_item(session_row: RowDict, *, inherited_from: str, conversation_title: str | None = None) -> RowDict:
     meta = [
         f"Mode: {session_row.get('mode') or 'reading'}",
         f"Status: {session_row.get('status') or 'active'}",
@@ -2301,7 +2316,7 @@ def _make_session_library_item(session_row: dict, *, inherited_from: str, conver
     }
 
 
-def _pack_library_section(key: str, title: str, groups: list[dict]) -> dict:
+def _pack_library_section(key: str, title: str, groups: list[RowDict]) -> RowDict:
     live_groups = [g for g in groups if g.get("items")]
     return {"key": key, "title": title, "groups": live_groups}
 
@@ -2355,9 +2370,9 @@ def api_project_library(project_id: int):
     convs = [c for c in list_conversations(limit=1000000, include_archived=True) if int(c["project_id"]) == int(project_id)]
     conv_title_by_id = {c["id"]: (c.get("title") or c["id"]) for c in convs}
 
-    descendant_files: list[dict] = []
+    descendant_files: list[RowDict] = []
     seen_files: set[str] = set()
-    descendant_artifacts: list[dict] = []
+    descendant_artifacts: list[RowDict] = []
     seen_artifacts: set[str] = set()
     for conv in convs:
         for f in list_files_for_conversation(conv["id"]):
@@ -2815,7 +2830,7 @@ async def api_upload_file(
 
     dest_root.mkdir(parents=True, exist_ok=True)
 
-    results: list[dict] = []
+    results: list[RowDict] = []
 
     for upload in files:
         if not upload.filename:
@@ -3062,7 +3077,7 @@ def api_describe_image_file(file_id: str, body: FileImageDescribeRequest | None 
         raise HTTPException(status_code=400, detail="Only image files can be described.")
 
     try:
-        meta = json.loads(file_row.get("meta_json") or "{}") if str(file_row.get("meta_json") or "").strip() else {}
+        meta = _load_json_object(file_row.get("meta_json"))
         existing_caption = (meta.get("image_caption") or "").strip()
         if existing_caption and not (body.overwrite if body is not None else True):
             return JSONResponse({
@@ -3104,7 +3119,7 @@ def api_ocr_image_file(file_id: str, body: FileImageOcrRequest | None = None):
         raise HTTPException(status_code=400, detail="Only image files can be OCR'd.")
 
     try:
-        meta = json.loads(file_row.get("meta_json") or "{}") if str(file_row.get("meta_json") or "").strip() else {}
+        meta = _load_json_object(file_row.get("meta_json"))
         existing_ocr_text = (meta.get("image_ocr_text") or "").strip()
         if existing_ocr_text and not (body.overwrite if body is not None else True):
             return JSONResponse({

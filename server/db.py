@@ -27,7 +27,7 @@ from .chunking import chunk_text_with_hints
 from .db_helpers import (
     _SAFE_ID_RE, DATA_DIR, SCHEMA_VERSION, DB_PATH, 
     _normalize_tags, new_uuid, _sha256_hex, _utc_now_iso, 
-    db_session, _start_schema_init, _end_schema_init, 
+    db_session, db_debug_info, _start_schema_init, _end_schema_init, 
     ensure_parent_dir, _table_exists, _add_column_if_missing, 
 )
 # Support legacy migrations from v1-v7. You can remove this after a few releases once most users have migrated or started fresh.

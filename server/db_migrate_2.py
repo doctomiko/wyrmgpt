@@ -1,9 +1,9 @@
 import sqlite3
 from pathlib import Path
 from typing import Iterable
-from server.db_helpers import (
-    SCHEMA_VERSION,  
-    _add_column_if_missing, _table_exists, 
+from .db_helpers import (
+    SCHEMA_VERSION,
+    _add_column_if_missing, _table_exists,
     _utc_now_iso, db_session, new_uuid
 )
 
