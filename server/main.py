@@ -577,7 +577,7 @@ def _generate_image_caption_for_file(
                 {
                     "type": "input_text",
                     "text": (
-                        f"File name: {file_row.get('name') or file_row.get('id') or 'image'}"
+                        f"File name: {file_row.get('name') or file_row.get('id') or 'image'}\n\n"
                         f"{hint_text}"
                         "Describe what is shown in this image in 2-4 concise sentences suitable for future LLM context."
                     ),
@@ -587,7 +587,7 @@ def _generate_image_caption_for_file(
         },
     ]
     result = provider.complete(target, model_input, request_options={"max_output_tokens": 220})
-    caption = re.sub(r"{3,}", "", (result.text or "").strip())
+    caption = re.sub(r"\n{3,}", "\n\n", (result.text or "").strip())
     if not caption:
         raise ValueError("The model returned an empty image description.")
     return caption, target.model
@@ -635,7 +635,7 @@ def _generate_image_ocr_for_file(
                 {
                     "type": "input_text",
                     "text": (
-                        f"File name: {file_row.get('name') or file_row.get('id') or 'image'}"
+                        f"File name: {file_row.get('name') or file_row.get('id') or 'image'}\n\n"
                         "Read and transcribe any visible text in this image. Preserve line breaks where practical."
                     ),
                 },
@@ -644,7 +644,7 @@ def _generate_image_ocr_for_file(
         },
     ]
     result = provider.complete(target, model_input, request_options={"max_output_tokens": 500})
-    text = re.sub(r"{3,}", "", (result.text or "").strip())
+    text = re.sub(r"\n{3,}", "\n\n", (result.text or "").strip())
     if not text:
         raise ValueError("The model returned an empty OCR response.")
     if text.strip().lower() == "[no legible text]":
