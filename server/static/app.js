@@ -5173,7 +5173,7 @@ function buildProjectDeleteConfirmationMessage(projectName, preview) {
   }
 
   lines.push("", "This cannot be undone.");
-  return lines.join("\\n");
+  return lines.join("\n");
 }
 
 async function deleteProjectWithConfirmation(projectId, projectName) {
