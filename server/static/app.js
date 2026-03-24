@@ -231,6 +231,7 @@ let filesModalConversationId = null;
 let filesModalProjectId = null;
 const FILES_COLLAPSE_THRESHOLD = 12;
 const filesGroupCollapseState = new Map();
+const selectedManageFileIds = new Set();
 let hasAnyFiles = false;
 let citationsModalMode = null; // "conversation" | "project"
 let citationsModalConversationId = null;
@@ -4041,6 +4042,7 @@ function openFilesModalForConversation(convId) {
   filesModalMode = "conversation";
   filesModalConversationId = convId;
   filesModalProjectId = null;
+  selectedManageFileIds.clear();
   loadFilesModal();
 }
 
@@ -4048,6 +4050,7 @@ function openFilesModalForProject(pid) {
   filesModalMode = "project";
   filesModalProjectId = pid;
   filesModalConversationId = null;
+  selectedManageFileIds.clear();
   loadFilesModal();
 }
 
@@ -4055,6 +4058,7 @@ function openFilesModalGlobal() {
   filesModalMode = "global";
   filesModalConversationId = null;
   filesModalProjectId = null;
+  selectedManageFileIds.clear();
   loadFilesModal();
 }
 
@@ -4062,6 +4066,7 @@ function openFilesModalAll() {
   filesModalMode = "all";
   filesModalConversationId = null;
   filesModalProjectId = null;
+  selectedManageFileIds.clear();
   loadFilesModal();
 }
 
@@ -4089,6 +4094,19 @@ function buildManageFilesScopeNote(data) {
     return "Globally scoped files.";
   }
   return "All files grouped by scope.";
+}
+
+function getMovableProjectsForFiles() {
+  return (projectsCache || []).filter((p) => {
+    const visibilityOk = !p?.is_hidden;
+    return visibilityOk && String(p?.visibility || "").toLowerCase() !== "global";
+  });
+}
+
+async function ensureProjectsCacheLoaded() {
+  if (Array.isArray(projectsCache) && projectsCache.length) return projectsCache;
+  projectsCache = await fetchProjects();
+  return projectsCache;
 }
 
 function makeManageFilesItemFromRawFile(file) {
@@ -4166,33 +4184,25 @@ function buildManageFilesDataFromAll(files) {
   };
 }
 
-async function moveFileToScope(item, target) {
-  const label = target?.label || "Move file";
-  const ok = confirm(`${label} “${item.title || item.id}”?`);
-  if (!ok) return false;
-
-  const res = await fetch(`/api/files/${encodeURIComponent(item.id)}/move_scope`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      scope_type: target.scope_type,
-      scope_id: target.scope_id ?? null,
-      scope_uuid: target.scope_uuid ?? null,
-    }),
+function pruneManageFilesSelection(groups) {
+  const visibleIds = new Set();
+  (groups || []).forEach((group) => {
+    (group.items || []).forEach((item) => {
+      if (item?.id) visibleIds.add(String(item.id));
+    });
   });
-
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    alert(`Move failed (HTTP ${res.status}). ${txt.slice(0, 200)}`);
-    return false;
+  for (const fid of Array.from(selectedManageFileIds)) {
+    if (!visibleIds.has(String(fid))) selectedManageFileIds.delete(String(fid));
   }
+}
 
+async function refreshManageFilesAndRelatedState() {
   await loadFilesModal();
 
   try {
     await refreshContext();
   } catch (e) {
-    console.warn("refreshContext after file move failed", e);
+    console.warn("refreshContext after file action failed", e);
   }
 
   try {
@@ -4216,7 +4226,53 @@ async function moveFileToScope(item, target) {
       console.warn("refreshConversationFilesState failed", e);
     }
   }
+}
 
+async function moveFileToScope(item, target) {
+  const label = target?.label || "Move file";
+  const ok = confirm(`${label} “${item.title || item.id}”?`);
+  if (!ok) return false;
+
+  const res = await fetch(`/api/files/${encodeURIComponent(item.id)}/move_scope`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      scope_type: target.scope_type,
+      scope_id: target.scope_id ?? null,
+      scope_uuid: target.scope_uuid ?? null,
+    }),
+  });
+
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    alert(`Move failed (HTTP ${res.status}). ${txt.slice(0, 200)}`);
+    return false;
+  }
+
+  selectedManageFileIds.delete(String(item.id));
+  await refreshManageFilesAndRelatedState();
+  return true;
+}
+
+async function renameManagedFile(item) {
+  const current = item.title || item.id || "";
+  const next = prompt("Rename file:", current);
+  if (next === null) return false;
+  const name = String(next || "").trim();
+  if (!name || name === current) return false;
+
+  const res = await fetch(`/api/files/${encodeURIComponent(item.id)}/rename`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    alert(`Rename failed (HTTP ${res.status}). ${txt.slice(0, 200)}`);
+    return false;
+  }
+
+  await refreshManageFilesAndRelatedState();
   return true;
 }
 
@@ -4235,42 +4291,191 @@ async function deleteManagedFile(item) {
       return false;
     }
 
-    await loadFilesModal();
-
-    try {
-      await refreshContext();
-    } catch (e) {
-      console.warn("refreshContext after file delete failed", e);
-    }
-
-    try {
-      await refreshTopLeftManageFilesState();
-    } catch (e) {
-      console.warn("refreshTopLeftManageFilesState failed", e);
-    }
-
-    if (filesModalProjectId != null) {
-      try {
-        await refreshProjectFilesState(filesModalProjectId);
-      } catch (e) {
-        console.warn("refreshProjectFilesState failed", e);
-      }
-    }
-
-    if (filesModalConversationId) {
-      try {
-        await refreshConversationFilesState(filesModalConversationId);
-      } catch (e) {
-        console.warn("refreshConversationFilesState failed", e);
-      }
-    }
-
+    selectedManageFileIds.delete(String(item.id));
+    await refreshManageFilesAndRelatedState();
     return true;
   } catch (err) {
     console.error("delete file failed", err);
     alert("Delete failed: " + (err?.message || err));
     return false;
   }
+}
+
+async function bulkMoveManagedFiles(target) {
+  const fileIds = Array.from(selectedManageFileIds);
+  if (!fileIds.length) {
+    alert("Select one or more files first.");
+    return false;
+  }
+
+  const ok = confirm(`${target.label || "Move files"} for ${fileIds.length} selected file${fileIds.length === 1 ? "" : "s"}?`);
+  if (!ok) return false;
+
+  const res = await fetch("/api/files/bulk_move_scope", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      file_ids: fileIds,
+      scope_type: target.scope_type,
+      scope_id: target.scope_id ?? null,
+      scope_uuid: target.scope_uuid ?? null,
+    }),
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    alert(`Bulk move failed (HTTP ${res.status}). ${txt.slice(0, 200)}`);
+    return false;
+  }
+
+  const data = await res.json().catch(() => ({}));
+  const failed = Number(data?.failed || 0);
+  if (failed > 0) {
+    alert(`Bulk move finished with ${failed} failure${failed === 1 ? "" : "s"}.`);
+  }
+  selectedManageFileIds.clear();
+  await refreshManageFilesAndRelatedState();
+  return true;
+}
+
+async function bulkDeleteManagedFiles() {
+  const fileIds = Array.from(selectedManageFileIds);
+  if (!fileIds.length) {
+    alert("Select one or more files first.");
+    return false;
+  }
+
+  const ok = confirm(`Delete ${fileIds.length} selected file${fileIds.length === 1 ? "" : "s"} and their artifacts/chunks?`);
+  if (!ok) return false;
+
+  const res = await fetch("/api/files/bulk_delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ file_ids: fileIds }),
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    alert(`Bulk delete failed (HTTP ${res.status}). ${txt.slice(0, 200)}`);
+    return false;
+  }
+
+  const data = await res.json().catch(() => ({}));
+  const failed = Number(data?.failed || 0);
+  if (failed > 0) {
+    alert(`Bulk delete finished with ${failed} failure${failed === 1 ? "" : "s"}.`);
+  }
+  selectedManageFileIds.clear();
+  await refreshManageFilesAndRelatedState();
+  return true;
+}
+
+function renderFileProjectPicker(defaultProjectId = "") {
+  const wrap = document.createElement("span");
+  wrap.className = "filesProjectPicker";
+
+  const select = document.createElement("select");
+  select.className = "filesProjectSelect";
+
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "Project…";
+  select.appendChild(placeholder);
+
+  getMovableProjectsForFiles().forEach((project) => {
+    const opt = document.createElement("option");
+    opt.value = String(project.id);
+    opt.textContent = project.name;
+    if (String(defaultProjectId || "") === String(project.id)) opt.selected = true;
+    select.appendChild(opt);
+  });
+
+  wrap.appendChild(select);
+  return { wrap, select };
+}
+
+function renderManageFilesBulkBar(groups) {
+  const allItems = [];
+  (groups || []).forEach((group) => {
+    (group.items || []).forEach((item) => allItems.push(item));
+  });
+
+  const bar = document.createElement("div");
+  bar.className = "filesBulkBar";
+
+  const summary = document.createElement("div");
+  summary.className = "filesBulkSummary";
+  bar.appendChild(summary);
+
+  const actions = document.createElement("div");
+  actions.className = "filesBulkActions";
+  bar.appendChild(actions);
+
+  const selectVisibleBtn = document.createElement("button");
+  selectVisibleBtn.textContent = "Select Visible";
+  selectVisibleBtn.addEventListener("click", async () => {
+    allItems.forEach((item) => selectedManageFileIds.add(String(item.id)));
+    renderManageFilesModal({
+      title: filesTitleEl?.textContent || "Files",
+      note: filesScopeNoteEl?.textContent || "",
+      groups,
+    });
+  });
+  actions.appendChild(selectVisibleBtn);
+
+  const clearBtn = document.createElement("button");
+  clearBtn.textContent = "Clear";
+  clearBtn.addEventListener("click", () => {
+    selectedManageFileIds.clear();
+    renderManageFilesModal({
+      title: filesTitleEl?.textContent || "Files",
+      note: filesScopeNoteEl?.textContent || "",
+      groups,
+    });
+  });
+  actions.appendChild(clearBtn);
+
+  const picker = renderFileProjectPicker();
+  actions.appendChild(picker.wrap);
+
+  const moveProjectBtn = document.createElement("button");
+  moveProjectBtn.textContent = "Move to Project";
+  moveProjectBtn.addEventListener("click", async () => {
+    const projectId = String(picker.select.value || "").trim();
+    if (!projectId) {
+      alert("Choose a target project first.");
+      return;
+    }
+    await bulkMoveManagedFiles({
+      label: "Move to Project",
+      scope_type: "project",
+      scope_id: Number(projectId),
+      scope_uuid: null,
+    });
+  });
+  actions.appendChild(moveProjectBtn);
+
+  const makeGlobalBtn = document.createElement("button");
+  makeGlobalBtn.textContent = "Make Global";
+  makeGlobalBtn.addEventListener("click", async () => {
+    await bulkMoveManagedFiles({
+      label: "Make Global",
+      scope_type: "global",
+      scope_id: null,
+      scope_uuid: null,
+    });
+  });
+  actions.appendChild(makeGlobalBtn);
+
+  const deleteBtn = document.createElement("button");
+  deleteBtn.className = "filesDeleteBtn";
+  deleteBtn.textContent = "Delete Selected";
+  deleteBtn.addEventListener("click", async () => {
+    await bulkDeleteManagedFiles();
+  });
+  actions.appendChild(deleteBtn);
+
+  const selectedCount = Array.from(selectedManageFileIds).length;
+  summary.textContent = `${selectedCount} selected • ${allItems.length} visible`;
+  return bar;
 }
 
 function renderManageFilesItemCard(item) {
@@ -4280,6 +4485,27 @@ function renderManageFilesItemCard(item) {
   const body = document.createElement("div");
   body.className = "libraryCardBody";
   card.appendChild(body);
+
+  const checkboxWrap = document.createElement("label");
+  checkboxWrap.className = "filesCheckboxWrap";
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  checkbox.className = "filesSelectCheckbox";
+  checkbox.checked = selectedManageFileIds.has(String(item.id));
+  checkbox.addEventListener("change", () => {
+    if (checkbox.checked) selectedManageFileIds.add(String(item.id));
+    else selectedManageFileIds.delete(String(item.id));
+    const bar = filesListEl?.querySelector('.filesBulkBar');
+    if (bar) {
+      const summary = bar.querySelector('.filesBulkSummary');
+      if (summary) {
+        const visible = filesListEl.querySelectorAll('.filesSelectCheckbox').length;
+        summary.textContent = `${selectedManageFileIds.size} selected • ${visible} visible`;
+      }
+    }
+  });
+  checkboxWrap.appendChild(checkbox);
+  body.appendChild(checkboxWrap);
 
   if (item.thumbnail_url) {
     const thumbWrap = document.createElement("div");
@@ -4352,7 +4578,14 @@ function renderManageFilesItemCard(item) {
   const actions = document.createElement("div");
   actions.className = "filesCardActions";
 
-  (item.promote_targets || []).forEach((target) => {
+  const renameBtn = document.createElement("button");
+  renameBtn.textContent = "Rename";
+  renameBtn.addEventListener("click", async () => {
+    await renameManagedFile(item);
+  });
+  actions.appendChild(renameBtn);
+
+  (item.promote_targets || []).filter((target) => String(target?.scope_type || "") !== "project").forEach((target) => {
     const btn = document.createElement("button");
     btn.textContent = target.label || "Move";
     btn.addEventListener("click", async () => {
@@ -4360,6 +4593,26 @@ function renderManageFilesItemCard(item) {
     });
     actions.appendChild(btn);
   });
+
+  const picker = renderFileProjectPicker(item.scope_type === "project" ? item.scope_id : "");
+  actions.appendChild(picker.wrap);
+
+  const moveProjectBtn = document.createElement("button");
+  moveProjectBtn.textContent = "Move to Project";
+  moveProjectBtn.addEventListener("click", async () => {
+    const projectId = String(picker.select.value || "").trim();
+    if (!projectId) {
+      alert("Choose a target project first.");
+      return;
+    }
+    await moveFileToScope(item, {
+      label: "Move to Project",
+      scope_type: "project",
+      scope_id: Number(projectId),
+      scope_uuid: null,
+    });
+  });
+  actions.appendChild(moveProjectBtn);
 
   const deleteBtn = document.createElement("button");
   deleteBtn.className = "filesDeleteBtn";
@@ -4441,6 +4694,7 @@ function renderManageFilesModal(data) {
   if (filesScopeNoteEl) filesScopeNoteEl.textContent = data?.note || "";
 
   const groups = Array.isArray(data?.groups) ? data.groups : [];
+  pruneManageFilesSelection(groups);
   if (!groups.length) {
     filesListEl.textContent = "No files yet.";
     return;
@@ -4448,6 +4702,7 @@ function renderManageFilesModal(data) {
 
   const container = document.createElement("div");
   container.className = "librarySection";
+  container.appendChild(renderManageFilesBulkBar(groups));
   const scopeKey = `files:${filesModalMode || "unknown"}:${filesModalConversationId || filesModalProjectId || "root"}`;
   groups.forEach((group) => {
     container.appendChild(renderManageFilesGroup(group, scopeKey));
@@ -4458,6 +4713,7 @@ function renderManageFilesModal(data) {
 async function loadFilesModal() {
   if (!filesModal || !filesListEl) return;
   hideAllTransientUI({ except: [projMenuEl] });
+  await ensureProjectsCacheLoaded();
 
   let url = null;
   let kind = "flat";
@@ -4500,7 +4756,6 @@ async function loadFilesModal() {
 function closeFilesModal(save = true) {
   if (!filesModal) return;
   if (save) {
-    // explicitly save all descriptions on close, in case user edited but didn’t blur the input (which triggers change event)
     for (const input of filesListEl.querySelectorAll("input.filesDescInput")) {
       const fileId = input.dataset.fileId;
       saveFileDescription(fileId, input.value);
@@ -4510,6 +4765,7 @@ function closeFilesModal(save = true) {
   filesModalMode = null;
   filesModalConversationId = null;
   filesModalProjectId = null;
+  selectedManageFileIds.clear();
 }
 
 async function moveFileToGlobal(file) {

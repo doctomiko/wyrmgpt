@@ -1097,6 +1097,51 @@ blockquote blockquote {
   flex-wrap: wrap;
 }
 
+.filesBulkBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.filesBulkSummary {
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.filesBulkActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.filesCheckboxWrap {
+  display: flex;
+  align-items: flex-start;
+  padding-top: 4px;
+}
+
+.filesSelectCheckbox {
+  width: 16px;
+  height: 16px;
+}
+
+.filesProjectPicker {
+  display: inline-flex;
+  align-items: center;
+}
+
+.filesProjectSelect {
+  max-width: 220px;
+}
+
 .librarySection {
   margin-bottom: 18px;
   border-top: 1px solid var(--border);

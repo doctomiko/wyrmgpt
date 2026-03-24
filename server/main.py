@@ -82,7 +82,7 @@ from .db import (
     replace_file_in_place,
     register_file as db_register_file,
     project_add_file as db_project_add_file,
-    register_scoped_file, update_file_description,
+    register_scoped_file, update_file_description, rename_file,
     conversation_link_file, list_files_for_conversation,
     list_files_for_project, list_all_files, get_file_by_id,
     get_files_summary, list_global_files,
@@ -188,10 +188,22 @@ class QuerySettingsUpdateRequest(BaseModel):
 class FileDescriptionUpdate(BaseModel):
     description: str | None = None
 
+class FileRenameRequest(BaseModel):
+    name: str
+
 class FileMoveScopeRequest(BaseModel):
     scope_type: str
     scope_id: int | None = None
     scope_uuid: str | None = None
+
+class BulkFileMoveScopeRequest(BaseModel):
+    file_ids: list[str]
+    scope_type: str
+    scope_id: int | None = None
+    scope_uuid: str | None = None
+
+class BulkFileDeleteRequest(BaseModel):
+    file_ids: list[str]
 
 
 class ArtifactMoveScopeRequest(BaseModel):
@@ -2838,6 +2850,14 @@ def api_update_file_description(file_id: str, body: FileDescriptionUpdate):
         }
     )
 
+@app.post("/api/files/{file_id}/rename")
+def api_rename_file(file_id: str, body: FileRenameRequest):
+    try:
+        out = rename_file(file_id, body.name)
+        return JSONResponse(out)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 @app.post("/api/files/{file_id}/move_scope")
 def api_move_file_scope(file_id: str, body: FileMoveScopeRequest):
     try:
@@ -2850,6 +2870,65 @@ def api_move_file_scope(file_id: str, body: FileMoveScopeRequest):
         return JSONResponse(out)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/files/bulk_move_scope")
+def api_bulk_move_file_scope(body: BulkFileMoveScopeRequest):
+    file_ids = []
+    seen = set()
+    for raw in body.file_ids or []:
+        fid = str(raw or "").strip()
+        if fid and fid not in seen:
+            seen.add(fid)
+            file_ids.append(fid)
+
+    if not file_ids:
+        raise HTTPException(status_code=400, detail="file_ids is required.")
+
+    results = []
+    moved = 0
+    failed = 0
+    for fid in file_ids:
+        try:
+            out = move_file_scope(
+                fid,
+                scope_type=body.scope_type,
+                scope_id=body.scope_id,
+                scope_uuid=body.scope_uuid,
+            )
+            results.append({"id": fid, "ok": True, "result": out})
+            moved += 1
+        except ValueError as e:
+            results.append({"id": fid, "ok": False, "error": str(e)})
+            failed += 1
+
+    return JSONResponse({"moved": moved, "failed": failed, "results": results})
+
+@app.post("/api/files/bulk_delete")
+def api_bulk_delete_files(body: BulkFileDeleteRequest):
+    file_ids = []
+    seen = set()
+    for raw in body.file_ids or []:
+        fid = str(raw or "").strip()
+        if fid and fid not in seen:
+            seen.add(fid)
+            file_ids.append(fid)
+
+    if not file_ids:
+        raise HTTPException(status_code=400, detail="file_ids is required.")
+
+    results = []
+    deleted = 0
+    failed = 0
+    for fid in file_ids:
+        try:
+            out = delete_file_cascade(fid, delete_disk_action=FileDeleteAction.MOVE)
+            results.append({"id": fid, "ok": True, "result": out})
+            deleted += 1
+        except ValueError as e:
+            results.append({"id": fid, "ok": False, "error": str(e)})
+            failed += 1
+
+    return JSONResponse({"deleted": deleted, "failed": failed, "results": results})
 
 
 @app.post("/api/artifacts/{artifact_id}/move_scope")

@@ -8129,6 +8129,99 @@ def replace_file_in_place(
             (path, mime_type, sha256, _utc_now_iso(), file_id),
         )
 
+def rename_file(file_id: str, new_name: str) -> dict:
+    file_id = (file_id or "").strip()
+    new_name = (new_name or "").strip()
+    if not file_id:
+        raise ValueError("file_id is required.")
+    if not new_name:
+        raise ValueError("New file name cannot be empty.")
+    if Path(new_name).name != new_name or new_name in (".", ".."):
+        raise ValueError("File name must not contain path separators.")
+
+    managed_root = (DATA_DIR / "sources").resolve()
+
+    with db_session() as conn:
+        _ensure_file_exists(conn, file_id)
+        row = conn.execute("SELECT * FROM files WHERE id = ?", (file_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"File not found: {file_id}")
+
+        file_row = dict(row)
+        old_name = (file_row.get("name") or "").strip()
+        if not old_name:
+            raise ValueError("Existing file name is missing.")
+
+        old_path_raw = (file_row.get("path") or "").strip()
+        old_path = Path(old_path_raw).expanduser() if old_path_raw else None
+        old_suffix = Path(old_name).suffix
+        if not Path(new_name).suffix and old_suffix:
+            new_name = f"{new_name}{old_suffix}"
+
+        scope_type = file_row.get("scope_type")
+        scope_id = file_row.get("scope_id")
+        scope_uuid = file_row.get("scope_uuid")
+        dup = conn.execute(
+            """
+            SELECT id FROM files
+            WHERE id <> ?
+              AND LOWER(COALESCE(name, '')) = LOWER(?)
+              AND COALESCE(scope_type, '') = COALESCE(?, '')
+              AND COALESCE(scope_id, -1) = COALESCE(?, -1)
+              AND COALESCE(scope_uuid, '') = COALESCE(?, '')
+              AND (is_deleted IS NULL OR is_deleted = 0)
+            LIMIT 1
+            """,
+            (file_id, new_name, scope_type, scope_id, scope_uuid),
+        ).fetchone()
+        if dup is not None:
+            raise ValueError("Another file with this name already exists in the same scope.")
+
+        new_path_raw = old_path_raw
+        if old_path is not None and old_path.exists():
+            try:
+                old_resolved = old_path.resolve(strict=False)
+                under_managed_root = old_resolved == managed_root or managed_root in old_resolved.parents
+            except Exception:
+                under_managed_root = False
+
+            if under_managed_root:
+                target_path = old_path.with_name(new_name)
+                if target_path.exists() and target_path.resolve(strict=False) != old_path.resolve(strict=False):
+                    raise ValueError("A file with that name already exists on disk.")
+                old_path.rename(target_path)
+                new_path_raw = str(target_path)
+
+        now = _utc_now_iso()
+        conn.execute(
+            "UPDATE files SET name = ?, path = ?, updated_at = ? WHERE id = ?",
+            (new_name, new_path_raw, now, file_id),
+        )
+        conn.execute(
+            """
+            UPDATE artifacts
+            SET title = ?,
+                summary_input_hash = NULL,
+                summary_updated_at = NULL,
+                updated_at = ?
+            WHERE is_deleted = 0
+              AND source_id = ?
+              AND source_kind LIKE 'file:%'
+            """,
+            (new_name, now, file_id),
+        )
+
+    updated_file = get_file_by_id(file_id)
+    artifact_file(updated_file)
+    invalidate_all_context_cache()
+    return {
+        "id": updated_file["id"],
+        "name": updated_file.get("name"),
+        "path": updated_file.get("path"),
+        "old_name": old_name,
+        "old_path": old_path_raw,
+    }
+
     return get_file_by_id(file_id)
 
 def list_files_by_sha256(sha256: str, include_deleted: bool = False) -> list[dict]:
