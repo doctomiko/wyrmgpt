@@ -14,8 +14,6 @@ const topLeftNewProjBtn = document.getElementById("newProjectBtn");
 // the underlying menu
 const topMenuBtn = document.getElementById("topMenuButton");
 const topMenu = document.getElementById("topMenu");
-// const topMenuRenameChatBtn = document.getElementById("renameChat");
-// const topMenuSuggestTitleBtn = document.getElementById("suggestChat");
 const topMenuManageFilesBtn = document.getElementById("manageFilesTop");
 const topMenuLibraryBtn = document.getElementById("openLibraryTop");
 const topMenuOpenMemoryBtn = document.getElementById("openMemory");
@@ -73,6 +71,8 @@ const projMenuRenameBtn = document.getElementById("projRename");
 const projMenuDescriptionBtn = document.getElementById("projDesc");
 const projMenuSettingsBtn = document.getElementById("projSettings");
 const projMenuToggleVisibility = document.getElementById("projToggleVisibility");
+const projMenuArchiveBtn = document.getElementById("projArchive");
+const projMenuDeleteBtn = document.getElementById("projDelete");
 const projMenuFileUploadBtn = document.getElementById("projUpload");
 const projMenuManageFilesBtn = document.getElementById("projFiles");
 const projMenuLibraryBtn = document.getElementById("projLibrary");
@@ -3638,36 +3638,19 @@ async function renameChat() {
   if (next === null) return;
 
   const title = next.trim();
-  await fetch(`/api/conversation/${conversationId}/title`, {
+  const res = await fetch(`/api/conversation/${conversationId}/title`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ title })
   });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    alert("Failed to rename chat: " + (err.detail || res.status));
+    return;
+  }
 
-  //const conversations = await fetchConversations();
-  //renderConversations(conversations);
   await refreshConversationLists();
   await refreshContext();
-}
-
-async function suggestChatTitle() {
-  if (!conversationId) return;
-
-  topMenuSuggestTitleBtn.disabled = true;
-  topMenuSuggestTitleBtn.textContent = "Thinking…";
-  try {
-    const res = await fetch(`/api/conversation/${conversationId}/suggest_title`, { method: "POST" });
-    const data = await res.json();
-    if (data?.title) {
-      //const conversations = await fetchConversations();
-      //renderConversations(conversations);
-      await refreshConversationLists();
-      await refreshContext();
-    }
-  } finally {
-    topMenuSuggestTitleBtn.disabled = false;
-    topMenuSuggestTitleBtn.textContent = "Suggest";
-  }
 }
 
 async function summarizeConversation(conversationId) {
@@ -4916,22 +4899,21 @@ if (convMenuRenameBtn) {
     const next = prompt("Rename chat:", current);
     if (next === null) return;
 
-    /*
-    await fetch(`/api/conversation/${cid}/title`, {
+    hideConvMenu();
+
+    const res = await fetch(`/api/conversation/${cid}/title`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ title: next.trim() })
     });
-    const conversations = await fetchConversations();
-    */
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert("Failed to rename chat: " + (err.detail || res.status));
+      return;
+    }
 
-    hideConvMenu();
+    await refreshConversationLists();
 
-    //renderConversations(conversations);
-    // do the project aware version - not optimized for a single conversation
-    refreshConversationLists();
-
-    // only refresh top title/context if we're renaming the active chat
     if (cid === conversationId) {
       await refreshContext();
     }
@@ -5148,13 +5130,85 @@ if (topBarModelSelectB) {
 
 // #region Project management menu event bindings
 
+async function archiveProject(projectId, archived = true) {
+  const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/archive`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ archived: !!archived }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `HTTP ${res.status}`);
+  }
+  return await res.json();
+}
+
+async function fetchProjectDeletePreview(projectId) {
+  const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/delete_preview`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `HTTP ${res.status}`);
+  }
+  return await res.json();
+}
+
+function buildProjectDeleteConfirmationMessage(projectName, preview) {
+  const title = (projectName || preview?.name || "this project").trim();
+  const convCount = Number(preview?.conversation_count || 0);
+  const fileCount = Number(preview?.file_count || 0);
+  const artifactCount = Number(preview?.artifact_count || 0);
+  const sessionCount = Number(preview?.reading_session_count || 0);
+
+  const lines = [
+    `Delete project “${title}”?`,
+    "",
+    "This will:",
+    `- move ${convCount} conversation${convCount === 1 ? "" : "s"} to Unassigned Chats`,
+    `- promote ${fileCount} file${fileCount === 1 ? "" : "s"} to global scope`,
+    `- update ${artifactCount} artifact${artifactCount === 1 ? "" : "s"} that belong to this project`,
+  ];
+
+  if (sessionCount > 0) {
+    lines.push(`- keep ${sessionCount} reading session${sessionCount === 1 ? "" : "s"} attached to their conversations`);
+  }
+
+  lines.push("", "This cannot be undone.");
+  return lines.join("\");
+}
+
+async function deleteProjectWithConfirmation(projectId, projectName) {
+  let preview = null;
+  try {
+    preview = await fetchProjectDeletePreview(projectId);
+  } catch (e) {
+    console.error("fetchProjectDeletePreview failed", e);
+  }
+
+  const message = preview
+    ? buildProjectDeleteConfirmationMessage(projectName, preview)
+    : `Delete project “${(projectName || "this project").trim()}”? This cannot be undone.`;
+
+  const ok = confirm(message);
+  if (!ok) return false;
+
+  const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    alert("Failed to delete project: " + (err.detail || res.status));
+    return false;
+  }
+  return true;
+}
+
 if (projMenuToggleVisibility) {
   projMenuToggleVisibility.addEventListener("click", async () => {
     const pid = menuTargetProjectId;
-    projMenuEl.classList.add("hidden");
+    hideProjMenu();
     if (!pid) return;
 
-    const proj = projectsCache.find(p => p.id === pid);
+    const proj = projectsCache.find(p => Number(p.id) === Number(pid));
     if (!proj) return;
 
     const nextVisibility = proj.visibility === "global" ? "private" : "global";
@@ -5162,7 +5216,6 @@ if (projMenuToggleVisibility) {
     if (await updateProject(pid, { visibility: nextVisibility })) {
       const [p2, c2] = await Promise.all([fetchProjects(), fetchConversations()]);
       renderProjects(p2, c2);
-      //renderConversations(c2);
 
       try {
         await refreshContext();
@@ -5188,15 +5241,48 @@ if (topLeftNewProjBtn) {
         alert("Failed to create project: " + (err.detail || res.status));
         return;
       }
-      // after success
-      // refresh conversations and project lists so grouping updates
       const [projects, conversations] = await Promise.all([fetchProjects(), fetchConversations()]);
       renderProjects(projects, conversations);
-      //renderConversations(conversations);
     } catch (e) {
       console.error("create project failed", e);
       alert("Error creating project.");
     }
+  });
+}
+
+if (projMenuArchiveBtn) {
+  projMenuArchiveBtn.addEventListener("click", async () => {
+    const pid = menuTargetProjectId;
+    const proj = projectsCache.find(p => Number(p.id) === Number(pid));
+    hideProjMenu();
+    if (!pid || !proj) return;
+
+    const ok = confirm(`Archive project “${proj.name}”? It will be hidden from the sidebar.`);
+    if (!ok) return;
+
+    try {
+      await archiveProject(pid, true);
+      await refreshConversationLists();
+      await refreshContext();
+    } catch (e) {
+      console.error("archiveProject failed", e);
+      alert("Failed to archive project.");
+    }
+  });
+}
+
+if (projMenuDeleteBtn) {
+  projMenuDeleteBtn.addEventListener("click", async () => {
+    const pid = menuTargetProjectId;
+    const proj = projectsCache.find(p => Number(p.id) === Number(pid));
+    hideProjMenu();
+    if (!pid || !proj) return;
+
+    const didDelete = await deleteProjectWithConfirmation(pid, proj.name);
+    if (!didDelete) return;
+
+    await refreshConversationLists();
+    await refreshContext();
   });
 }
 

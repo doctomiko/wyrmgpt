@@ -76,7 +76,7 @@ from .db import (
     project_add_conversation as db_project_add_conversation,
     project_import as db_project_import,
     set_conversation_project,  # assign_conversation_project,
-    update_project,
+    update_project, set_project_hidden, delete_project, get_project_delete_preview,
     # Files
     list_files_by_sha256, list_files_same_name_any_scope,
     replace_file_in_place,
@@ -2440,6 +2440,31 @@ def api_update_project(project_id: int, req: ProjectUpdateRequest):
 @app.get("/api/projects")
 def api_get_projects():
     return {"projects": list_projects()}
+
+
+@app.post("/api/projects/{project_id}/archive")
+def api_archive_project(project_id: int, req: ArchiveRequest):
+    try:
+        set_project_hidden(project_id, req.archived)
+        return {"project_id": project_id, "archived": bool(req.archived)}
+    except ValueError as e:
+        _http_from_value_error(e)
+
+
+@app.get("/api/projects/{project_id}/delete_preview")
+def api_project_delete_preview(project_id: int):
+    try:
+        return JSONResponse(get_project_delete_preview(project_id))
+    except ValueError as e:
+        _http_from_value_error(e)
+
+
+@app.delete("/api/projects/{project_id}")
+def api_delete_project(project_id: int):
+    try:
+        return JSONResponse(delete_project(project_id))
+    except ValueError as e:
+        _http_from_value_error(e)
 
 @app.post("/api/projects")
 def api_create_project(req: ProjectCreateRequest):

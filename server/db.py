@@ -2021,6 +2021,178 @@ def update_project(
         "updated_at": row["updated_at"],
     }
 
+def set_project_hidden(project_id: int, hidden: bool = True) -> None:
+    with db_session() as conn:
+        _ensure_project_exists(conn, int(project_id))
+        row = conn.execute(
+            "SELECT is_global FROM projects WHERE id = ?",
+            (int(project_id),),
+        ).fetchone()
+        if row and int(row["is_global"] or 0) == 1:
+            raise ValueError("The global project cannot be archived or hidden.")
+        conn.execute(
+            "UPDATE projects SET is_hidden = ?, updated_at = ? WHERE id = ?",
+            (1 if hidden else 0, _utc_now_iso(), int(project_id)),
+        )
+
+
+def get_project_delete_preview(project_id: int) -> dict:
+    project_id = int(project_id)
+    global_project_id = get_global_project_id()
+    if project_id == global_project_id:
+        raise ValueError("The global project cannot be deleted.")
+
+    with db_session() as conn:
+        _ensure_project_exists(conn, project_id)
+        row = conn.execute(
+            "SELECT id, name, is_global FROM projects WHERE id = ?",
+            (project_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Project not found: {project_id}")
+        if int(row["is_global"] or 0) == 1:
+            raise ValueError("The global project cannot be deleted.")
+
+        conv_row = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM conversations WHERE project_id = ?",
+            (project_id,),
+        ).fetchone()
+        conversation_count = int(conv_row["cnt"] if conv_row else 0)
+
+        file_row = conn.execute(
+            """
+            SELECT COUNT(DISTINCT file_id) AS cnt
+            FROM (
+                SELECT file_id
+                FROM project_files
+                WHERE project_id = ?
+                UNION
+                SELECT id AS file_id
+                FROM files
+                WHERE scope_type = 'project' AND scope_id = ?
+            ) q
+            """,
+            (project_id, project_id),
+        ).fetchone()
+        file_count = int(file_row["cnt"] if file_row else 0)
+
+        artifact_row = conn.execute(
+            """
+            SELECT COUNT(DISTINCT id) AS cnt
+            FROM artifacts
+            WHERE project_id = ? OR (scope_type = 'project' AND scope_id = ?)
+            """,
+            (project_id, project_id),
+        ).fetchone()
+        artifact_count = int(artifact_row["cnt"] if artifact_row else 0)
+
+        session_count = 0
+        if _table_exists(conn, "artifact_reading_sessions"):
+            session_row = conn.execute(
+                """
+                SELECT COUNT(DISTINCT ars.id) AS cnt
+                FROM artifact_reading_sessions ars
+                JOIN conversations c ON c.id = ars.conversation_id
+                WHERE c.project_id = ?
+                """,
+                (project_id,),
+            ).fetchone()
+            session_count = int(session_row["cnt"] if session_row else 0)
+
+    return {
+        "id": project_id,
+        "name": row["name"],
+        "conversation_count": conversation_count,
+        "file_count": file_count,
+        "artifact_count": artifact_count,
+        "reading_session_count": session_count,
+    }
+
+
+def delete_project(project_id: int) -> dict:
+    project_id = int(project_id)
+    global_project_id = get_global_project_id()
+    if project_id == global_project_id:
+        raise ValueError("The global project cannot be deleted.")
+
+    with db_session() as conn:
+        _ensure_project_exists(conn, project_id)
+        row = conn.execute(
+            "SELECT id, name, is_global FROM projects WHERE id = ?",
+            (project_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Project not found: {project_id}")
+        if int(row["is_global"] or 0) == 1:
+            raise ValueError("The global project cannot be deleted.")
+
+        now = _utc_now_iso()
+
+        conv_count = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM conversations WHERE project_id = ?",
+            (project_id,),
+        ).fetchone()
+        conversation_count = int(conv_count["cnt"] if conv_count else 0)
+
+        file_rows = conn.execute(
+            """
+            SELECT DISTINCT file_id
+            FROM project_files
+            WHERE project_id = ?
+            UNION
+            SELECT id AS file_id
+            FROM files
+            WHERE scope_type = 'project' AND scope_id = ?
+            """,
+            (project_id, project_id),
+        ).fetchall()
+        file_ids = [str(r["file_id"]) for r in file_rows if r and r["file_id"]]
+
+        conn.execute(
+            "UPDATE conversations SET project_id = ?, updated_at = ? WHERE project_id = ?",
+            (global_project_id, now, project_id),
+        )
+
+        conn.execute(
+            "UPDATE files SET scope_type = 'global', scope_id = NULL, scope_uuid = NULL, updated_at = ? WHERE scope_type = 'project' AND scope_id = ?",
+            (now, project_id),
+        )
+        conn.execute("DELETE FROM project_files WHERE project_id = ?", (project_id,))
+        for file_id in file_ids:
+            conn.execute(
+                "INSERT OR IGNORE INTO project_files (project_id, file_id) VALUES (?, ?)",
+                (global_project_id, file_id),
+            )
+
+        conn.execute(
+            """
+            UPDATE artifacts
+            SET project_id = ?,
+                scope_type = CASE WHEN scope_type = 'project' AND scope_id = ? THEN 'global' ELSE scope_type END,
+                scope_id = CASE WHEN scope_type = 'project' AND scope_id = ? THEN NULL ELSE scope_id END,
+                scope_uuid = CASE WHEN scope_type = 'project' AND scope_id = ? THEN NULL ELSE scope_uuid END,
+                updated_at = ?
+            WHERE project_id = ? OR (scope_type = 'project' AND scope_id = ?)
+            """,
+            (global_project_id, project_id, project_id, project_id, now, project_id, project_id),
+        )
+
+        conn.execute("DELETE FROM project_conversations WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM project_imports WHERE project_id = ? OR source_project_id = ?", (project_id, project_id))
+        conn.execute("DELETE FROM memory_projects WHERE project_id = ?", (project_id,))
+        if _table_exists(conn, "memory_pins"):
+            conn.execute("DELETE FROM memory_pins WHERE scope_type = 'project' AND scope_id = ?", (project_id,))
+        conn.execute("DELETE FROM app_settings WHERE scope_type = 'project' AND scope_id = ?", (str(project_id),))
+        conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+
+    invalidate_all_context_cache()
+    return {
+        "id": project_id,
+        "name": row["name"],
+        "moved_conversations": conversation_count,
+        "promoted_files": len(file_ids),
+    }
+
 def project_import(
     project_id: int,
     source_project_id: int,
