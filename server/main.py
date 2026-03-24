@@ -25,7 +25,7 @@ from .summary_helper import summarize_conversation_text, suggest_conversation_ti
 from .artifact_reading_planner import get_artifact_readiness
 from .reading_session_notes import build_reading_notes_prompts, coerce_reading_strategy, load_reading_questions, parse_reading_notes_output
 from .web_ingest import ingest_urls_from_user_message
-from .image_helpers import is_image_file
+from .image_helpers import is_image_file, load_image_bytes, image_bytes_to_base64
 
 # Big Include Blocks for config and db
 from .providers.registry import ProviderRegistry
@@ -82,7 +82,7 @@ from .db import (
     replace_file_in_place,
     register_file as db_register_file,
     project_add_file as db_project_add_file,
-    register_scoped_file, update_file_description, rename_file,
+    register_scoped_file, update_file_description, rename_file, set_file_image_caption, set_file_image_ocr_text,
     conversation_link_file, list_files_for_conversation,
     list_files_for_project, list_all_files, get_file_by_id,
     get_files_summary, list_global_files,
@@ -190,6 +190,15 @@ class FileDescriptionUpdate(BaseModel):
 
 class FileRenameRequest(BaseModel):
     name: str
+
+class FileImageDescribeRequest(BaseModel):
+    deployment_id: str | None = None
+    overwrite: bool = True
+
+
+class FileImageOcrRequest(BaseModel):
+    deployment_id: str | None = None
+    overwrite: bool = True
 
 class FileMoveScopeRequest(BaseModel):
     scope_type: str
@@ -498,6 +507,126 @@ def _make_utility_completion(
         return (result.text or "").strip()
 
     return complete_fn, target
+
+
+def _generate_image_caption_for_file(
+    file_row: dict,
+    *,
+    deployment_id: str | None = None,
+) -> tuple[str, str]:
+    mime_type = (file_row.get("mime_type") or "").strip() or None
+    path = Path(str(file_row.get("path") or "")).expanduser()
+    if not path.exists() or not path.is_file():
+        raise ValueError("Image file content was not found on disk.")
+    if not is_image_file(path, mime_type):
+        raise ValueError("Only image files can be described.")
+
+    data = load_image_bytes(path)
+    if not data:
+        raise ValueError("Image bytes could not be loaded.")
+
+    mime_for_data_url = mime_type or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    data_url = f"data:{mime_for_data_url};base64,{image_bytes_to_base64(data)}"
+
+    target = _resolve_utility_target(
+        deployment_id or "summary_default",
+        "chat_default",
+        required_capability="chat",
+    )
+    if PROVIDER_REGISTRY is None:
+        raise RuntimeError("Provider registry is not initialized.")
+    provider = PROVIDER_REGISTRY.get_chat_provider(target)
+
+    hint_description = (file_row.get("description") or "").strip()
+    hint_text = (
+        f"Existing file description (treat as a hint, not ground truth): {hint_description}"
+        if hint_description else ""
+    )
+
+    model_input: ModelInput = [
+        {
+            "role": "system",
+            "content": "You describe user-supplied images for retrieval and context assembly. Return only a compact factual description of what is visibly present. Mention notable text if it is clear and legible. Avoid speculation, named-entity guesses, or story-like flourishes.",
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": (
+                        f"File name: {file_row.get('name') or file_row.get('id') or 'image'}"
+                        f"{hint_text}"
+                        "Describe what is shown in this image in 2-4 concise sentences suitable for future LLM context."
+                    ),
+                },
+                {"type": "input_image", "image_url": data_url},
+            ],
+        },
+    ]
+    result = provider.complete(target, model_input, request_options={"max_output_tokens": 220})
+    caption = re.sub(r"{3,}", "", (result.text or "").strip())
+    if not caption:
+        raise ValueError("The model returned an empty image description.")
+    return caption, target.model
+
+
+def _generate_image_ocr_for_file(
+    file_row: dict,
+    *,
+    deployment_id: str | None = None,
+) -> tuple[str | None, str]:
+    mime_type = (file_row.get("mime_type") or "").strip() or None
+    path = Path(str(file_row.get("path") or "")).expanduser()
+    if not path.exists() or not path.is_file():
+        raise ValueError("Image file content was not found on disk.")
+    if not is_image_file(path, mime_type):
+        raise ValueError("Only image files can be OCR'd.")
+
+    data = load_image_bytes(path)
+    if not data:
+        raise ValueError("Image bytes could not be loaded.")
+
+    mime_for_data_url = mime_type or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    data_url = f"data:{mime_for_data_url};base64,{image_bytes_to_base64(data)}"
+
+    target = _resolve_utility_target(
+        deployment_id or "summary_default",
+        "chat_default",
+        required_capability="chat",
+    )
+    if PROVIDER_REGISTRY is None:
+        raise RuntimeError("Provider registry is not initialized.")
+    provider = PROVIDER_REGISTRY.get_chat_provider(target)
+
+    model_input: ModelInput = [
+        {
+            "role": "system",
+            "content": (
+                "You perform OCR on user-supplied images. Return only the visible text, with sensible line breaks. "
+                "Do not summarize, explain, or guess. If there is no clearly legible text, return exactly: [no legible text]"
+            ),
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": (
+                        f"File name: {file_row.get('name') or file_row.get('id') or 'image'}"
+                        "Read and transcribe any visible text in this image. Preserve line breaks where practical."
+                    ),
+                },
+                {"type": "input_image", "image_url": data_url},
+            ],
+        },
+    ]
+    result = provider.complete(target, model_input, request_options={"max_output_tokens": 500})
+    text = re.sub(r"{3,}", "", (result.text or "").strip())
+    if not text:
+        raise ValueError("The model returned an empty OCR response.")
+    if text.strip().lower() == "[no legible text]":
+        return None, target.model
+    return text, target.model
 
 
 def _preview_content(c):
@@ -2026,29 +2155,84 @@ def _promote_targets_for_scope(scope_type: str, *, project_id: int | None = None
     return targets
 
 
-def _make_file_library_item(file_row: dict, *, inherited_from: str, project_id: int | None = None, conversation_title: str | None = None) -> dict:
+def _make_file_library_item(
+    file_row: dict,
+    *,
+    inherited_from: str,
+    project_id: int | None = None,
+    project_title: str | None = None,
+    conversation_title: str | None = None,
+) -> dict:
     scope_type = _normalize_scope_type(file_row.get("scope_type"))
     mime_type = (file_row.get("mime_type") or "").strip() or None
     file_path = Path(str(file_row.get("path") or "")).expanduser()
     is_image = bool(file_path and is_image_file(file_path, mime_type))
+    meta_json = file_row.get("meta_json")
+    if isinstance(meta_json, str):
+        try:
+            file_meta = json.loads(meta_json) if meta_json.strip() else {}
+        except Exception:
+            file_meta = {}
+    elif isinstance(meta_json, dict):
+        file_meta = dict(meta_json)
+    else:
+        file_meta = {}
+
+    import_note = (file_meta.get("import_note") or "").strip()
+    image_caption = (file_meta.get("image_caption") or "").strip()
+    image_ocr_text = (file_meta.get("image_ocr_text") or "").strip()
+
+    effective_project_title = project_title
+    if not effective_project_title and scope_type == "project" and file_row.get("scope_id") is not None:
+        proj = next((p for p in list_projects(include_global=True) if int(p["id"]) == int(file_row.get("scope_id"))), None)
+        effective_project_title = proj.get("name") if proj else None
+
+    effective_conversation_title = conversation_title
+    if not effective_conversation_title and scope_type == "conversation" and file_row.get("scope_uuid"):
+        effective_conversation_title = get_conversation_title(str(file_row.get("scope_uuid")))
 
     meta: list[str] = [f"MIME: {mime_type or 'unknown'}", f"Scope: {scope_type}"]
-    if conversation_title:
-        meta.append(f"Conversation: {conversation_title}")
+    if effective_project_title:
+        meta.append(f"Project: {effective_project_title}")
+    if effective_conversation_title:
+        meta.append(f"Conversation: {effective_conversation_title}")
     if file_row.get("description"):
         meta.append(f"Description: {file_row.get('description')}")
+    if image_caption:
+        meta.append(f"Image summary: {image_caption}")
+    if image_ocr_text:
+        meta.append(f"OCR text: {image_ocr_text}")
+    if import_note:
+        meta.append(f"Import note: {import_note}")
+    if file_row.get("provenance"):
+        meta.append(f"Provenance: {file_row.get('provenance')}")
+
+    badges: list[str] = []
+    if is_image:
+        badges.append("image")
+    if image_caption:
+        badges.append("captioned")
+    if image_ocr_text:
+        badges.append("ocr")
+
     return {
         "item_kind": "file",
         "id": file_row["id"],
         "title": file_row.get("name") or file_row["id"],
         "subtitle": file_row.get("description") or "",
+        "description": file_row.get("description") or "",
         "meta": meta,
         "scope_type": scope_type,
+        "scope_id": file_row.get("scope_id"),
+        "scope_uuid": file_row.get("scope_uuid"),
+        "scope_label": effective_conversation_title or effective_project_title,
         "updated_at": file_row.get("updated_at") or file_row.get("created_at"),
         "inherited_from": inherited_from,
-        "badges": ["image"] if is_image else [],
+        "badges": badges,
         "thumbnail_url": f"/api/files/{file_row['id']}/thumbnail" if is_image else None,
         "promote_targets": _promote_targets_for_scope(scope_type, project_id=project_id),
+        "meta_json": file_meta,
+        "provenance": file_row.get("provenance"),
     }
 
 
@@ -2128,9 +2312,14 @@ def api_conversation_library(conversation_id: str):
     with db_session() as conn:
         project_id = get_conversation_project_id(conn=conn, conversation_id=conversation_id)
 
+    project_label = None
+    if project_id is not None:
+        proj = next((p for p in list_projects(include_global=True) if int(p["id"]) == int(project_id)), None)
+        project_label = proj.get("name") if proj else None
+
     files_groups = [
-        {"key": "conversation", "title": "Conversation scope", "items": [_make_file_library_item(f, inherited_from="conversation", project_id=project_id) for f in list_files_for_conversation(conversation_id)]},
-        {"key": "project", "title": "Inherited from project", "items": [_make_file_library_item(f, inherited_from="project", project_id=project_id) for f in (list_files_for_project(project_id) if project_id is not None else [])]},
+        {"key": "conversation", "title": "Conversation scope", "items": [_make_file_library_item(f, inherited_from="conversation", project_id=project_id, conversation_title=conversation_title) for f in list_files_for_conversation(conversation_id)]},
+        {"key": "project", "title": "Inherited from project", "items": [_make_file_library_item(f, inherited_from="project", project_id=project_id, project_title=project_label) for f in (list_files_for_project(project_id) if project_id is not None else [])]},
         {"key": "global", "title": "Inherited from global", "items": [_make_file_library_item(f, inherited_from="global", project_id=project_id) for f in list_global_files()]},
     ]
     artifact_groups = [
@@ -2186,7 +2375,7 @@ def api_project_library(project_id: int):
             descendant_artifacts.append(_make_artifact_library_item(a, inherited_from="conversation", project_id=project_id, conversation_title=conv_title_by_id.get(conv["id"])))
 
     files_groups = [
-        {"key": "project", "title": "Project scope", "items": [_make_file_library_item(f, inherited_from="project", project_id=project_id) for f in list_files_for_project(project_id)]},
+        {"key": "project", "title": "Project scope", "items": [_make_file_library_item(f, inherited_from="project", project_id=project_id, project_title=(project.get("name") or f"Project {project_id}")) for f in list_files_for_project(project_id)]},
         {"key": "conversations", "title": "Conversation-scoped items in this project", "items": descendant_files},
         {"key": "global", "title": "Inherited from global", "items": [_make_file_library_item(f, inherited_from="global", project_id=project_id) for f in list_global_files()]},
     ]
@@ -2857,6 +3046,90 @@ def api_rename_file(file_id: str, body: FileRenameRequest):
         return JSONResponse(out)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/files/{file_id}/describe_image")
+def api_describe_image_file(file_id: str, body: FileImageDescribeRequest | None = None):
+    try:
+        file_row = get_file_by_id(file_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    path = Path(str(file_row.get("path") or "")).expanduser()
+    mime_type = (file_row.get("mime_type") or "").strip() or None
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="File content not found on disk.")
+    if not is_image_file(path, mime_type):
+        raise HTTPException(status_code=400, detail="Only image files can be described.")
+
+    try:
+        meta = json.loads(file_row.get("meta_json") or "{}") if str(file_row.get("meta_json") or "").strip() else {}
+        existing_caption = (meta.get("image_caption") or "").strip()
+        if existing_caption and not (body.overwrite if body is not None else True):
+            return JSONResponse({
+                "file_id": file_id,
+                "caption": existing_caption,
+                "model": meta.get("image_caption_model"),
+                "reused": True,
+            })
+
+        caption, model_name = _generate_image_caption_for_file(
+            file_row,
+            deployment_id=(body.deployment_id if body is not None else None),
+        )
+        updated = set_file_image_caption(
+            file_id,
+            caption,
+            caption_model=model_name,
+            generator_kind="llm_image_caption",
+        )
+        return JSONResponse({"file_id": file_id, "caption": caption, "model": model_name, "file": updated})
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ProviderExecutionError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/api/files/{file_id}/ocr_image")
+def api_ocr_image_file(file_id: str, body: FileImageOcrRequest | None = None):
+    try:
+        file_row = get_file_by_id(file_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    path = Path(str(file_row.get("path") or "")).expanduser()
+    mime_type = (file_row.get("mime_type") or "").strip() or None
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="File content not found on disk.")
+    if not is_image_file(path, mime_type):
+        raise HTTPException(status_code=400, detail="Only image files can be OCR'd.")
+
+    try:
+        meta = json.loads(file_row.get("meta_json") or "{}") if str(file_row.get("meta_json") or "").strip() else {}
+        existing_ocr_text = (meta.get("image_ocr_text") or "").strip()
+        if existing_ocr_text and not (body.overwrite if body is not None else True):
+            return JSONResponse({
+                "file_id": file_id,
+                "ocr_text": existing_ocr_text,
+                "model": meta.get("image_ocr_model"),
+                "reused": True,
+            })
+
+        ocr_text, model_name = _generate_image_ocr_for_file(
+            file_row,
+            deployment_id=(body.deployment_id if body is not None else None),
+        )
+        updated = set_file_image_ocr_text(
+            file_id,
+            ocr_text,
+            ocr_model=model_name,
+            generator_kind="llm_image_ocr",
+        )
+        return JSONResponse({"file_id": file_id, "ocr_text": ocr_text, "model": model_name, "file": updated})
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ProviderExecutionError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
 
 @app.post("/api/files/{file_id}/move_scope")
 def api_move_file_scope(file_id: str, body: FileMoveScopeRequest):

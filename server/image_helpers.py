@@ -55,11 +55,34 @@ def build_image_reference_json(file_row: dict) -> str:
     if not mime_type:
         mime_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
 
+    meta_json = file_row.get("meta_json")
+    if isinstance(meta_json, str):
+        try:
+            meta = json.loads(meta_json) if meta_json.strip() else {}
+        except Exception:
+            meta = {}
+    elif isinstance(meta_json, dict):
+        meta = dict(meta_json)
+    else:
+        meta = {}
+
+    description = (file_row.get("description") or "").strip() or None
+    provenance = (file_row.get("provenance") or "").strip() or None
+    import_note = (meta.get("import_note") or "").strip() or None
+    image_caption = (meta.get("image_caption") or "").strip() or None
+    image_ocr_text = (meta.get("image_ocr_text") or "").strip() or None
+
     payload = {
         "type": "image_reference",
         "file_id": file_id,
+        "name": (file_row.get("name") or "").strip() or None,
         "path": path,
         "mime_type": mime_type,
+        "description": description,
+        "provenance": provenance,
+        "import_note": import_note,
+        "image_caption": image_caption,
+        "image_ocr_text": image_ocr_text,
     }
     return json.dumps(payload, ensure_ascii=False)
 

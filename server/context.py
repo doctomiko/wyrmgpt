@@ -2225,11 +2225,29 @@ def _build_file_messages_for_conversation(
                     b64 = image_bytes_to_base64(data)
                     mime_type = payload.get("mime_type") or "application/octet-stream"
                     data_url = f"data:{mime_type};base64,{b64}"
+
+                    image_note_lines = [
+                        "[FILE ARTIFACT]",
+                        f"Title: {orig_name}",
+                        f"Artifact ID: {artifact_id}",
+                        f"Source kind: {source_kind}",
+                    ]
+                    if payload.get("description"):
+                        image_note_lines.append(f"Description: {payload.get('description')}")
+                    if payload.get("image_caption"):
+                        image_note_lines.append(f"Image summary: {payload.get('image_caption')}")
+                    if payload.get("image_ocr_text"):
+                        image_note_lines.append(f"OCR text: {payload.get('image_ocr_text')}")
+                    if payload.get("import_note"):
+                        image_note_lines.append(f"Import note: {payload.get('import_note')}")
+                    if payload.get("provenance"):
+                        image_note_lines.append(f"Provenance: {payload.get('provenance')}")
+
                     file_messages.append(
                         {
                             "role": "user",
                             "content": [
-                                {"type": "input_text", "text": f"[FILE ARTIFACT]\nTitle: {orig_name}\nArtifact ID: {artifact_id}\nSource kind: {source_kind}"},
+                                {"type": "input_text", "text": "".join(image_note_lines)},
                                 {"type": "input_image", "image_url": data_url},
                             ],
                         }

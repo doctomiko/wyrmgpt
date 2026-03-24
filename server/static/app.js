@@ -655,6 +655,19 @@ async function loadMessages(cid) {
 
 // #endregion
 
+function parseManageFileMeta(raw) {
+  if (!raw) return {};
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  return (typeof raw === "object") ? raw : {};
+}
+
 async function newChat() {
   const res = await fetch("/api/new", { method: "POST" });
   const data = await res.json();
@@ -4109,10 +4122,42 @@ async function ensureProjectsCacheLoaded() {
   return projectsCache;
 }
 
+function lookupManageFileScopeLabel(file, scopeType) {
+  if (scopeType === "project" && file?.scope_id != null) {
+    const project = (projectsCache || []).find((p) => Number(p.id) === Number(file.scope_id));
+    return project?.name || null;
+  }
+  if (scopeType === "conversation" && file?.scope_uuid) {
+    return conversationMap.get(String(file.scope_uuid))?.title || null;
+  }
+  return null;
+}
+
 function makeManageFilesItemFromRawFile(file) {
   const scopeType = normalizeManageFilesScopeType(file?.scope_type);
   const isImage = looksLikeImageFile(file);
   const promoteTargets = [];
+  const fileMeta = parseManageFileMeta(file?.meta_json);
+  const scopeLabel = lookupManageFileScopeLabel(file, scopeType);
+  const imageCaption = String(fileMeta?.image_caption || "").trim();
+  const imageOcrText = String(fileMeta?.image_ocr_text || "").trim();
+  const importNote = String(fileMeta?.import_note || "").trim();
+
+  const meta = [
+    `MIME: ${file.mime_type || "unknown"}`,
+    `Scope: ${scopeType}`,
+  ];
+  if (scopeType === "project" && scopeLabel) meta.push(`Project: ${scopeLabel}`);
+  if (scopeType === "conversation" && scopeLabel) meta.push(`Conversation: ${scopeLabel}`);
+  if (imageCaption) meta.push(`Image summary: ${imageCaption}`);
+  if (imageOcrText) meta.push(`OCR text: ${imageOcrText}`);
+  if (importNote) meta.push(`Import note: ${importNote}`);
+  if (file.provenance) meta.push(`Provenance: ${file.provenance}`);
+
+  const badges = [];
+  if (isImage) badges.push("image");
+  if (imageCaption) badges.push("captioned");
+  if (imageOcrText) badges.push("ocr");
 
   if (scopeType === "conversation" && filesModalProjectId != null) {
     promoteTargets.push({
@@ -4273,7 +4318,70 @@ async function renameManagedFile(item) {
   }
 
   await refreshManageFilesAndRelatedState();
-  return true;
+}
+
+async function describeManagedImage(item, buttonEl = null) {
+  if (buttonEl) {
+    buttonEl.disabled = true;
+    buttonEl.dataset.originalText = buttonEl.textContent;
+    buttonEl.textContent = "Thinking…";
+  }
+  try {
+    const res = await fetch(`/api/files/${encodeURIComponent(item.id)}/describe_image`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ overwrite: true }),
+    });
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      alert(`Image description failed (HTTP ${res.status}). ${txt.slice(0, 300)}`);
+      return false;
+    }
+    await refreshManageFilesAndRelatedState();
+    return true;
+  } catch (err) {
+    console.error("describe image failed", err);
+    alert("Image description failed: " + (err?.message || err));
+    return false;
+  } finally {
+    if (buttonEl) {
+      buttonEl.disabled = false;
+      buttonEl.textContent = buttonEl.dataset.originalText || "Describe Image";
+      delete buttonEl.dataset.originalText;
+    }
+  }
+}
+
+async function ocrManagedImage(item, buttonEl = null) {
+  if (buttonEl) {
+    buttonEl.disabled = true;
+    buttonEl.dataset.originalText = buttonEl.textContent;
+    buttonEl.textContent = "Reading…";
+  }
+  try {
+    const res = await fetch(`/api/files/${encodeURIComponent(item.id)}/ocr_image`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ overwrite: true }),
+    });
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      alert(`Image OCR failed (HTTP ${res.status}). ${txt.slice(0, 300)}`);
+      return false;
+    }
+    await refreshManageFilesAndRelatedState();
+    return true;
+  } catch (err) {
+    console.error("image OCR failed", err);
+    alert("Image OCR failed: " + (err?.message || err));
+    return false;
+  } finally {
+    if (buttonEl) {
+      buttonEl.disabled = false;
+      buttonEl.textContent = buttonEl.dataset.originalText || "Read Text";
+      delete buttonEl.dataset.originalText;
+    }
+  }
 }
 
 async function deleteManagedFile(item) {
@@ -4584,6 +4692,22 @@ function renderManageFilesItemCard(item) {
     await renameManagedFile(item);
   });
   actions.appendChild(renameBtn);
+
+  if ((item.badges || []).includes("image")) {
+    const describeBtn = document.createElement("button");
+    describeBtn.textContent = (item.meta_json && item.meta_json.image_caption) ? "Refresh Summary" : "Describe Image";
+    describeBtn.addEventListener("click", async () => {
+      await describeManagedImage(item, describeBtn);
+    });
+    actions.appendChild(describeBtn);
+
+    const ocrBtn = document.createElement("button");
+    ocrBtn.textContent = (item.meta_json && item.meta_json.image_ocr_text) ? "Refresh OCR" : "Read Text";
+    ocrBtn.addEventListener("click", async () => {
+      await ocrManagedImage(item, ocrBtn);
+    });
+    actions.appendChild(ocrBtn);
+  }
 
   (item.promote_targets || []).filter((target) => String(target?.scope_type || "") !== "project").forEach((target) => {
     const btn = document.createElement("button");
