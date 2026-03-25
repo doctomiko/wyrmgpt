@@ -4126,6 +4126,10 @@ function resolveCardScopeLabel(item, explicitFallback = "") {
   const direct = String(item?.scope_label || "").trim();
   if (direct) return direct;
 
+  if (item?.scope_type === "project" && Array.isArray(item?.meta)) {
+    const line = item.meta.find((x) => typeof x === "string" && x.startsWith("Project: "));
+    if (line) return line.replace(/^Project:\s*/, "").trim();
+  }
   const fallback = String(explicitFallback || "").trim();
   if (fallback) return fallback;
 
@@ -4168,6 +4172,9 @@ function makeManageFilesItemFromRawFile(file) {
   const imageCaption = String(fileMeta?.image_caption || "").trim();
   const imageOcrText = String(fileMeta?.image_ocr_text || "").trim();
   const importNote = String(fileMeta?.import_note || "").trim();
+  const artifactTitle = String(file?.artifact_title || "").trim();
+  const artifactId = String(file?.artifact_id || "").trim();
+  const artifactSourceKind = String(file?.artifact_source_kind || "").trim();
 
   const meta = [
     `MIME: ${file.mime_type || "unknown"}`,
@@ -4175,8 +4182,18 @@ function makeManageFilesItemFromRawFile(file) {
   ];
   if (scopeType === "project" && scopeLabel) meta.push(`Project: ${scopeLabel}`);
   if (scopeType === "conversation" && scopeLabel) meta.push(`Conversation: ${scopeLabel}`);
+  if (artifactTitle) meta.push(`Artifact: ${artifactTitle}`);
+  else if (artifactId) meta.push(`Artifact ID: ${artifactId}`);
+  if (artifactSourceKind) meta.push(`Artifact source: ${artifactSourceKind}`);
   if (imageCaption) meta.push(`Image summary: ${imageCaption}`);
   if (imageOcrText) meta.push(`OCR text: ${imageOcrText}`);
+  if (file?.artifact_summary_present || file?.artifact_index_present) {
+    const helpers = [
+      file?.artifact_summary_present ? "summary" : "",
+      file?.artifact_index_present ? "index" : "",
+    ].filter(Boolean).join(", ");
+    if (helpers) meta.push(`Artifact helpers: ${helpers}`);
+  }
   if (importNote) meta.push(`Import note: ${importNote}`);
   if (file.provenance) meta.push(`Provenance: ${file.provenance}`);
 
@@ -4199,13 +4216,18 @@ function makeManageFilesItemFromRawFile(file) {
       scope_type: "global",
       scope_id: null,
       scope_uuid: null,
+    scope_id: file.scope_id ?? null,
+    scope_uuid: file.scope_uuid ?? null,
+    scope_label: scopeLabel || "",
     });
-  }
+    badges,
 
-  return {
-    item_kind: "file",
-    id: file.id,
-    title: file.name || file.path || file.id,
+    meta,
+    meta_json: fileMeta,
+    provenance: file.provenance || "",
+    artifact_id: artifactId || "",
+    artifact_title: artifactTitle || "",
+    artifact_source_kind: artifactSourceKind || "",
     description: file.description || "",
     scope_type: scopeType,
     updated_at: file.updated_at || file.created_at || null,
@@ -4820,7 +4842,10 @@ function renderManageFilesGroup(group, scopeKey) {
 
   const count = document.createElement("div");
   count.className = "libraryGroupCount";
-  count.textContent = `${itemCount} item${itemCount === 1 ? "" : "s"}`;
+  const fallbackScopeLabel = String(
+    (projectsCache || []).find((p) => Number(p.id) === Number(filesModalProjectId))?.name || ""
+  ).trim();
+  items.forEach((item) => cards.appendChild(renderManageFilesItemCard(item, fallbackScopeLabel)));
 
   header.appendChild(titleRow);
   header.appendChild(count);
@@ -5206,6 +5231,7 @@ function renderLibraryModal(data) {
     const empty = document.createElement("div");
     empty.className = "libraryEmpty";
     empty.textContent = "Nothing here yet.";
+  await ensureProjectsCacheLoaded();
     librarySectionsEl.appendChild(empty);
   }
 }

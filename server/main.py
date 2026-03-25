@@ -596,8 +596,13 @@ def _generate_image_caption_for_file(
         },
     ]
     result = provider.complete(target, model_input, request_options={"max_output_tokens": 220})
-    caption = re.sub(r"\n{3,}", "\n\n", (result.text or "").strip())
+    raw_text = (result.text or "")
+    caption = re.sub(r"\n{3,}", "\n\n", raw_text.strip())
     if not caption:
+        log_warn(
+            "Image description came back empty; using fallback. file_id=%s file_name=%s model=%s raw_len=%s",
+            file_row.get("id"), file_row.get("name"), target.model, len(raw_text),
+        )
         caption = _fallback_caption()
     return caption, target.model
 
@@ -657,8 +662,13 @@ def _generate_image_ocr_for_file(
         },
     ]
     result = provider.complete(target, model_input, request_options={"max_output_tokens": 500})
-    text = re.sub(r"\n{3,}", "\n\n", (result.text or "").strip())
+    raw_text = (result.text or "")
+    text = re.sub(r"\n{3,}", "\n\n", raw_text.strip())
     if not text:
+        log_warn(
+            "Image OCR came back empty. file_id=%s file_name=%s model=%s raw_len=%s",
+            file_row.get("id"), file_row.get("name"), target.model, len(raw_text),
+        )
         return _fallback_ocr()
     if text.strip().lower() == "[no legible text]":
         return None, target.model
@@ -2191,6 +2201,47 @@ def _promote_targets_for_scope(scope_type: str, *, project_id: int | None = None
     return targets
 
 
+def _get_project_title_any(project_id: Any) -> str | None:
+    pid = _coerce_optional_int(project_id)
+    if pid is None:
+        return None
+    with db_session() as conn:
+        row = conn.execute("SELECT name FROM projects WHERE id = ? LIMIT 1", (pid,)).fetchone()
+    return (row["name"] or "").strip() if row and row["name"] else None
+
+
+def _augment_file_row_for_ui(file_row: RowDict) -> RowDict:
+    out = dict(file_row)
+    scope_type = _normalize_scope_type(out.get("scope_type"))
+    scope_id = _coerce_optional_int(out.get("scope_id"))
+    scope_uuid = (out.get("scope_uuid") or "").strip() or None
+
+    scope_label = None
+    if scope_type == "project":
+        scope_label = _get_project_title_any(scope_id)
+    elif scope_type == "conversation" and scope_uuid:
+        scope_label = get_conversation_title(scope_uuid)
+
+    if scope_label:
+        out["scope_label"] = scope_label
+
+    try:
+        arts = list_artifacts_for_file(out["id"], include_deleted=False)
+    except Exception:
+        arts = []
+
+    if arts:
+        art = arts[0]
+        out["artifact_id"] = art.get("id")
+        out["artifact_title"] = art.get("title")
+        out["artifact_source_kind"] = art.get("source_kind")
+        out["artifact_updated_at"] = art.get("updated_at")
+        out["artifact_summary_present"] = bool(art.get("summary_text"))
+        out["artifact_index_present"] = bool(art.get("index_text"))
+
+    return out
+
+
 def _make_file_library_item(
     file_row: RowDict,
     *,
@@ -2274,13 +2325,21 @@ def _make_artifact_library_item(
 ) -> RowDict:
     scope_type = _normalize_scope_type(artifact_row.get("scope_type"))
     source_kind = (artifact_row.get("source_kind") or "").strip()
+    artifact_scope_id = _coerce_optional_int(artifact_row.get("scope_id"))
+    artifact_scope_uuid = (artifact_row.get("scope_uuid") or "").strip() or None
     effective_scope_label = conversation_title or project_title
+    if not effective_scope_label and scope_type == "project":
+        effective_scope_label = _get_project_title_any(artifact_scope_id)
+    if not effective_scope_label and scope_type == "conversation" and artifact_scope_uuid:
+        effective_scope_label = get_conversation_title(artifact_scope_uuid)
+
     readiness = get_artifact_readiness(artifact_row["id"])
     badges: list[str] = []
     if readiness and readiness.has_summary:
         badges.append("summary")
     if readiness and readiness.has_index:
         badges.append("index")
+
     if source_kind in ("conversation:transcript", "conversation_transcript"):
         badges.append("reference-first transcript")
 
@@ -2288,6 +2347,10 @@ def _make_artifact_library_item(
         f"Source: {source_kind or 'artifact'}",
         f"Scope: {scope_type}",
     ]
+    if scope_type == "project" and effective_scope_label:
+        meta.append(f"Project: {effective_scope_label}")
+    if scope_type == "conversation" and effective_scope_label:
+        meta.append(f"Conversation: {effective_scope_label}")
     if conversation_title:
         meta.append(f"Conversation: {conversation_title}")
     if artifact_row.get("provenance"):
@@ -2308,6 +2371,8 @@ def _make_artifact_library_item(
         "meta": meta,
         "scope_type": scope_type,
         "scope_label": effective_scope_label,
+        "scope_id": artifact_row.get("scope_id"),
+        "scope_uuid": artifact_row.get("scope_uuid"),
         "updated_at": artifact_row.get("updated_at"),
         "inherited_from": inherited_from,
         "badges": badges,
@@ -3025,12 +3090,12 @@ def api_list_files():
     Used by the top-level Manage Files button for the 'all' view.
     """
     files = list_all_files()
-    return JSONResponse({"files": files})
+    files = [_augment_file_row_for_ui(f) for f in list_all_files()]
 
 @app.get("/api/files/global")
 def api_list_global_files():
     return JSONResponse({"files": list_global_files()})
-
+    return JSONResponse({"files": [_augment_file_row_for_ui(f) for f in list_global_files()]})
 
 @app.get("/api/files/{file_id}/thumbnail")
 def api_file_thumbnail(file_id: str):
