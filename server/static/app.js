@@ -4122,6 +4122,29 @@ async function ensureProjectsCacheLoaded() {
   return projectsCache;
 }
 
+function resolveCardScopeLabel(item, explicitFallback = "") {
+  const direct = String(item?.scope_label || "").trim();
+  if (direct) return direct;
+
+  const fallback = String(explicitFallback || "").trim();
+  if (fallback) return fallback;
+
+  const scopeType = String(item?.scope_type || "").trim().toLowerCase();
+  if (scopeType === "project") {
+    const projectId = item?.scope_id ?? filesModalProjectId ?? libraryModalProjectId ?? null;
+    if (projectId != null) {
+      const project = (projectsCache || []).find((p) => Number(p.id) === Number(projectId));
+      return String(project?.name || "").trim();
+    }
+  }
+
+  if (scopeType === "conversation" && item?.scope_uuid) {
+    return String(conversationMap.get(String(item.scope_uuid))?.title || "").trim();
+  }
+
+  return "";
+}
+
 function lookupManageFileScopeLabel(file, scopeType) {
   const direct = String(file?.scope_label || "").trim();
   if (direct) return direct;
@@ -4589,7 +4612,7 @@ function renderManageFilesBulkBar(groups) {
   return bar;
 }
 
-function renderManageFilesItemCard(item) {
+function renderManageFilesItemCard(item, fallbackScopeLabel = "") {
   const card = document.createElement("div");
   card.className = "libraryCard";
 
@@ -4643,11 +4666,12 @@ function renderManageFilesItemCard(item) {
   title.className = "libraryCardTitle";
   title.textContent = item.title || item.id || "Untitled";
   left.appendChild(title);
+  const resolvedScopeLabel = resolveCardScopeLabel(item, fallbackScopeLabel);
 
-  if (item.scope_type && item.scope_type !== "global" && item.scope_label) {
+  if (item.scope_type && item.scope_type !== "global" && resolvedScopeLabel) {
     const scopeSubtitle = document.createElement("div");
     scopeSubtitle.className = "libraryCardSubtitle";
-    scopeSubtitle.textContent = `${item.scope_type === "project" ? "Project" : "Conversation"}: ${item.scope_label}`;
+    scopeSubtitle.textContent = `${item.scope_type === "project" ? "Project" : "Conversation"}: ${resolvedScopeLabel}`;
     left.appendChild(scopeSubtitle);
   }
 
@@ -4804,7 +4828,7 @@ function renderManageFilesGroup(group, scopeKey) {
 
   const cards = document.createElement("div");
   cards.className = "libraryCards";
-  items.forEach((item) => cards.appendChild(renderManageFilesItemCard(item)));
+  items.forEach((item) => cards.appendChild(renderManageFilesItemCard(item, String((projectsCache || []).find((p) => Number(p.id) === Number(filesModalProjectId))?.name || "").trim())));
   wrap.appendChild(cards);
 
   if (canCollapse) {
@@ -4962,7 +4986,7 @@ function closeLibraryModal() {
   libraryModalProjectId = null;
 }
 
-function renderLibraryItemCard(item) {
+function renderLibraryItemCard(item, fallbackScopeLabel = "") {
   const card = document.createElement("div");
   card.className = "libraryCard";
 
@@ -5001,10 +5025,11 @@ function renderLibraryItemCard(item) {
     subtitle.textContent = item.subtitle;
     left.appendChild(subtitle);
   }
-  if (item.scope_type && item.scope_type !== "global" && item.scope_label) {
+  const resolvedScopeLabel = resolveCardScopeLabel(item, fallbackScopeLabel);
+  if (item.scope_type && item.scope_type !== "global" && resolvedScopeLabel) {
     const scopeSubtitle = document.createElement("div");
     scopeSubtitle.className = "libraryCardSubtitle";
-    scopeSubtitle.textContent = `${item.scope_type === "project" ? "Project" : "Conversation"}: ${item.scope_label}`;
+    scopeSubtitle.textContent = `${item.scope_type === "project" ? "Project" : "Conversation"}: ${resolvedScopeLabel}`;
     left.appendChild(scopeSubtitle);
   }
 
@@ -5086,7 +5111,7 @@ function renderLibraryItemCard(item) {
    return card;
 }
 
-function renderLibraryGroup(section, group, scopeKey) {
+function renderLibraryGroup(section, group, scopeKey, fallbackScopeLabel = "") {
   const wrap = document.createElement("div");
   wrap.className = "libraryGroup";
   const items = Array.isArray(group?.items) ? group.items : [];
@@ -5126,7 +5151,7 @@ function renderLibraryGroup(section, group, scopeKey) {
 
   const cards = document.createElement("div");
   cards.className = "libraryCards";
-  items.forEach((item) => cards.appendChild(renderLibraryItemCard(item)));
+  items.forEach((item) => cards.appendChild(renderLibraryItemCard(item, fallbackScopeLabel)));
   wrap.appendChild(cards);
   if (canCollapse) {
     header.addEventListener("click", () => {
@@ -5155,6 +5180,8 @@ function renderLibraryModal(data) {
 
   let renderedAny = false;
   const scopeKey = `${data?.scope_type || "library"}:${data?.scope_id || "root"}`;
+  const projectFallbackLabel =
+    data?.scope_type === "project" ? String(data?.scope_label || "").trim() : "";
   sections.forEach((section) => {
     const groups = Array.isArray(section?.groups) ? section.groups : [];
     if (!groups.length) return;
@@ -5169,7 +5196,7 @@ function renderLibraryModal(data) {
     sec.appendChild(title);
 
     groups.forEach((group) => {
-      sec.appendChild(renderLibraryGroup(section, group, scopeKey));
+      sec.appendChild(renderLibraryGroup(section, group, scopeKey, projectFallbackLabel));
     });
 
     librarySectionsEl.appendChild(sec);

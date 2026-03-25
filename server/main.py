@@ -2264,9 +2264,17 @@ def _make_file_library_item(
     }
 
 
-def _make_artifact_library_item(artifact_row: RowDict, *, inherited_from: str, project_id: int | None = None, conversation_title: str | None = None) -> RowDict:
+def _make_artifact_library_item(
+    artifact_row: RowDict,
+    *,
+    inherited_from: str,
+    project_id: int | None = None,
+    project_title: str | None = None,
+    conversation_title: str | None = None,
+) -> RowDict:
     scope_type = _normalize_scope_type(artifact_row.get("scope_type"))
     source_kind = (artifact_row.get("source_kind") or "").strip()
+    effective_scope_label = conversation_title or project_title
     readiness = get_artifact_readiness(artifact_row["id"])
     badges: list[str] = []
     if readiness and readiness.has_summary:
@@ -2299,6 +2307,7 @@ def _make_artifact_library_item(artifact_row: RowDict, *, inherited_from: str, p
         "subtitle": "",
         "meta": meta,
         "scope_type": scope_type,
+        "scope_label": effective_scope_label,
         "updated_at": artifact_row.get("updated_at"),
         "inherited_from": inherited_from,
         "badges": badges,
@@ -2351,8 +2360,8 @@ def api_conversation_library(conversation_id: str):
         {"key": "global", "title": "Inherited from global", "items": [_make_file_library_item(f, inherited_from="global", project_id=project_id) for f in list_global_files()]},
     ]
     artifact_groups = [
-        {"key": "conversation", "title": "Conversation scope", "items": [_make_artifact_library_item(a, inherited_from="conversation", project_id=project_id) for a in list_artifacts_for_conversation(conversation_id)]},
-        {"key": "project", "title": "Inherited from project", "items": [_make_artifact_library_item(a, inherited_from="project", project_id=project_id) for a in (list_artifacts_for_project(project_id) if project_id is not None else [])]},
+        {"key": "conversation", "title": "Conversation scope", "items": [_make_artifact_library_item(a, inherited_from="conversation", project_id=project_id, conversation_title=conversation_title) for a in list_artifacts_for_conversation(conversation_id)]},
+        {"key": "project", "title": "Inherited from project", "items": [_make_artifact_library_item(a, inherited_from="project", project_id=project_id, project_title=project_label) for a in (list_artifacts_for_project(project_id) if project_id is not None else [])]},
         {"key": "global", "title": "Inherited from global", "items": [_make_artifact_library_item(a, inherited_from="global", project_id=project_id) for a in list_global_artifacts()]},
     ]
     session_groups = [
@@ -2408,7 +2417,7 @@ def api_project_library(project_id: int):
         {"key": "global", "title": "Inherited from global", "items": [_make_file_library_item(f, inherited_from="global", project_id=project_id) for f in list_global_files()]},
     ]
     artifact_groups = [
-        {"key": "project", "title": "Project scope", "items": [_make_artifact_library_item(a, inherited_from="project", project_id=project_id) for a in list_artifacts_for_project(project_id)]},
+        {"key": "project", "title": "Project scope", "items": [_make_artifact_library_item(a, inherited_from="project", project_id=project_id, project_title=(project.get("name") or f"Project {project_id}")) for a in list_artifacts_for_project(project_id)]},
         {"key": "conversations", "title": "Conversation-scoped items in this project", "items": descendant_artifacts},
         {"key": "global", "title": "Inherited from global", "items": [_make_artifact_library_item(a, inherited_from="global", project_id=project_id) for a in list_global_artifacts()]},
     ]
