@@ -3089,15 +3089,13 @@ def api_list_files():
     List all non-deleted files in the system.
     Used by the top-level Manage Files button for the 'all' view.
     """
+    files = list_all_files()
     files = [_augment_file_row_for_ui(f) for f in list_all_files()]
-    return JSONResponse({"files": files})
-
 
 @app.get("/api/files/global")
 def api_list_global_files():
-    files = [_augment_file_row_for_ui(f) for f in list_global_files()]
-    return JSONResponse({"files": files})
-
+    return JSONResponse({"files": list_global_files()})
+    return JSONResponse({"files": [_augment_file_row_for_ui(f) for f in list_global_files()]})
 
 @app.get("/api/files/{file_id}/thumbnail")
 def api_file_thumbnail(file_id: str):

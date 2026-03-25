@@ -4210,34 +4210,33 @@ function makeManageFilesItemFromRawFile(file) {
       scope_uuid: null,
     });
   }
-
   if (scopeType === "conversation" || scopeType === "project") {
     promoteTargets.push({
       label: "Move to Global",
       scope_type: "global",
       scope_id: null,
       scope_uuid: null,
-    });
-  }
-
-  return {
-    item_kind: "file",
-    id: file.id,
-    title: file.name || file.path || file.id,
-    description: file.description || "",
-    scope_type: scopeType,
     scope_id: file.scope_id ?? null,
     scope_uuid: file.scope_uuid ?? null,
     scope_label: scopeLabel || "",
-    updated_at: file.updated_at || file.created_at || null,
+    });
     badges,
-    thumbnail_url: isImage ? `/api/files/${encodeURIComponent(file.id)}/thumbnail` : null,
+
     meta,
     meta_json: fileMeta,
     provenance: file.provenance || "",
     artifact_id: artifactId || "",
     artifact_title: artifactTitle || "",
     artifact_source_kind: artifactSourceKind || "",
+    description: file.description || "",
+    scope_type: scopeType,
+    updated_at: file.updated_at || file.created_at || null,
+    badges: isImage ? ["image"] : [],
+    thumbnail_url: isImage ? `/api/files/${encodeURIComponent(file.id)}/thumbnail` : null,
+    meta: [
+      `MIME: ${file.mime_type || "unknown"}`,
+      `Scope: ${scopeType}`,
+    ],
     promote_targets: promoteTargets,
   };
 }
@@ -4843,7 +4842,10 @@ function renderManageFilesGroup(group, scopeKey) {
 
   const count = document.createElement("div");
   count.className = "libraryGroupCount";
-  count.textContent = `${itemCount} item${itemCount === 1 ? "" : "s"}`;
+  const fallbackScopeLabel = String(
+    (projectsCache || []).find((p) => Number(p.id) === Number(filesModalProjectId))?.name || ""
+  ).trim();
+  items.forEach((item) => cards.appendChild(renderManageFilesItemCard(item, fallbackScopeLabel)));
 
   header.appendChild(titleRow);
   header.appendChild(count);
@@ -4851,10 +4853,7 @@ function renderManageFilesGroup(group, scopeKey) {
 
   const cards = document.createElement("div");
   cards.className = "libraryCards";
-  const fallbackScopeLabel = String(
-    (projectsCache || []).find((p) => Number(p.id) === Number(filesModalProjectId))?.name || ""
-  ).trim();
-  items.forEach((item) => cards.appendChild(renderManageFilesItemCard(item, fallbackScopeLabel)));
+  items.forEach((item) => cards.appendChild(renderManageFilesItemCard(item, String((projectsCache || []).find((p) => Number(p.id) === Number(filesModalProjectId))?.name || "").trim())));
   wrap.appendChild(cards);
 
   if (canCollapse) {
@@ -5208,7 +5207,6 @@ function renderLibraryModal(data) {
   const scopeKey = `${data?.scope_type || "library"}:${data?.scope_id || "root"}`;
   const projectFallbackLabel =
     data?.scope_type === "project" ? String(data?.scope_label || "").trim() : "";
-
   sections.forEach((section) => {
     const groups = Array.isArray(section?.groups) ? section.groups : [];
     if (!groups.length) return;
@@ -5233,6 +5231,7 @@ function renderLibraryModal(data) {
     const empty = document.createElement("div");
     empty.className = "libraryEmpty";
     empty.textContent = "Nothing here yet.";
+  await ensureProjectsCacheLoaded();
     librarySectionsEl.appendChild(empty);
   }
 }
@@ -5240,7 +5239,6 @@ function renderLibraryModal(data) {
 async function loadLibraryModal() {
   if (!libraryModal || !librarySectionsEl) return;
   hideAllTransientUI({ except: [libraryModal] });
-  await ensureProjectsCacheLoaded();
 
   let url = "/api/library/global";
   if (libraryModalMode === "conversation" && libraryModalConversationId) {
