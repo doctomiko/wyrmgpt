@@ -2,6 +2,8 @@ import re
 from typing import Any, Iterator, cast
 
 from openai import OpenAI, APIStatusError
+
+from server.logging_helper import log_debug, log_info, log_warn
 from openai.types.responses import ResponseInputParam
 
 from .types import (
@@ -154,6 +156,68 @@ def _maybe_retryable_options_from_error(options: dict[str, Any], payload: dict[s
     return stripped, (name if changed else None)
 
 
+def _iter_reasoning_texts_from_item(item) -> Iterator[str]:
+    if item is None:
+        return
+    summary = getattr(item, "summary", None)
+    if summary is None and isinstance(item, dict):
+        summary = item.get("summary")
+    if isinstance(summary, list):
+        for part in summary:
+            part_text = getattr(part, "text", None)
+            if part_text is None and isinstance(part, dict):
+                part_text = part.get("text")
+            if part_text:
+                yield str(part_text)
+    content = getattr(item, "content", None)
+    if content is None and isinstance(item, dict):
+        content = item.get("content")
+    if isinstance(content, list):
+        for part in content:
+            part_type = getattr(part, "type", None)
+            if part_type is None and isinstance(part, dict):
+                part_type = part.get("type")
+            if str(part_type or "") != "reasoning_text":
+                continue
+            part_text = getattr(part, "text", None)
+            if part_text is None and isinstance(part, dict):
+                part_text = part.get("text")
+            if part_text:
+                yield str(part_text)
+
+
+def _iter_reasoning_texts_from_response(resp) -> Iterator[str]:
+    if resp is None:
+        return
+    output = getattr(resp, "output", None)
+    if output is None and isinstance(resp, dict):
+        output = resp.get("output")
+    if not isinstance(output, list):
+        return
+    seen: set[str] = set()
+    for item in output:
+        for text in _iter_reasoning_texts_from_item(item):
+            cleaned = str(text or "").strip()
+            if not cleaned or cleaned in seen:
+                continue
+            seen.add(cleaned)
+            yield cleaned
+
+
+def _get_stream_final_response(stream) -> Any | None:
+    getter = getattr(stream, "get_final_response", None)
+    if callable(getter):
+        try:
+            return getter()
+        except Exception:
+            return None
+    for attr in ("final_response", "response", "current_response_snapshot"):
+        value = getattr(stream, attr, None)
+        if value is not None:
+            return value
+    return None
+
+
 class OpenAIProvider:
     def __init__(self, provider_def: ProviderDef, model_catalog: ModelCatalog | None = None):
         kwargs: dict[str, Any] = {}
@@ -176,14 +240,18 @@ class OpenAIProvider:
     ) -> ChatResult:
         kwargs: dict[str, Any] = dict(request_options or {})
         retried_without: list[str] = []
-        for _attempt in range(2):
+        for attempt in range(2):
             try:
+                log_info('Provider request start provider=%s deployment=%s model=%s mode=complete attempt=%s options=%s', deployment.provider_id, deployment.id, deployment.model, attempt + 1, sorted(kwargs.keys()))
+                print(f"[provider.start] provider={deployment.provider_id} deployment={deployment.id} model={deployment.model} mode=complete attempt={attempt + 1} options={sorted(kwargs.keys())}", flush=True)
                 resp = self.client.responses.create(
                     model=deployment.model,
                     input=cast(ResponseInputParam, model_input),
                     **kwargs,
                 )
                 text = extract_output_text(resp)
+                log_info('Provider response done provider=%s deployment=%s model=%s mode=complete chars=%s warnings=%s', deployment.provider_id, deployment.id, deployment.model, len(text or ''), retried_without)
+                print(f"[provider.done] provider={deployment.provider_id} deployment={deployment.id} model={deployment.model} mode=complete chars={len(text or '')} warnings={retried_without}", flush=True)
                 return ChatResult(
                     text=text,
                     provider_id=deployment.provider_id,
@@ -198,7 +266,11 @@ class OpenAIProvider:
                 if stripped_name and stripped_kwargs != kwargs:
                     kwargs = stripped_kwargs
                     retried_without.append(stripped_name)
+                    log_warn('Provider request retry provider=%s deployment=%s model=%s dropped=%s', deployment.provider_id, deployment.id, deployment.model, stripped_name)
+                    print(f"[provider.retry] provider={deployment.provider_id} deployment={deployment.id} model={deployment.model} dropped={stripped_name}", flush=True)
                     continue
+                log_warn('Provider request failed provider=%s deployment=%s model=%s mode=complete status=%s message=%s', deployment.provider_id, deployment.id, deployment.model, payload.get('status_code'), extract_error_message(payload))
+                print(f"[provider.error] provider={deployment.provider_id} deployment={deployment.id} model={deployment.model} mode=complete status={payload.get('status_code')} message={extract_error_message(payload)}", flush=True)
                 raise ProviderExecutionError(extract_error_message(payload), payload=payload) from e
 
     def stream_text(
@@ -209,42 +281,100 @@ class OpenAIProvider:
     ) -> Iterator[Any]:
         kwargs: dict[str, Any] = dict(request_options or {})
         saw_stream_item = False
-        for _attempt in range(2):
+        for attempt in range(2):
+            reasoning_event_count = 0
+            text_delta_count = 0
+            first_reasoning_logged = False
             try:
+                log_info('Provider request start provider=%s deployment=%s model=%s mode=stream attempt=%s options=%s', deployment.provider_id, deployment.id, deployment.model, attempt + 1, sorted(kwargs.keys()))
+                print(f"[provider.start] provider={deployment.provider_id} deployment={deployment.id} model={deployment.model} mode=stream attempt={attempt + 1} options={sorted(kwargs.keys())}", flush=True)
                 with self.client.responses.stream(
                     model=deployment.model,
                     input=cast(ResponseInputParam, model_input),
                     **kwargs,
                 ) as stream:
+                    final_response = None
                     for event in stream:
                         saw_stream_item = True
-                        if event.type == "response.output_text.delta":
-                            yield event.delta
-                        elif event.type == "response.refusal.delta":
-                            yield event.delta
-                        elif event.type == "response.reasoning_summary_text.delta":
+                        event_type = getattr(event, 'type', '') or ''
+                        if event_type == "response.output_text.delta":
+                            delta = getattr(event, 'delta', '') or ''
+                            if delta:
+                                text_delta_count += 1
+                                yield delta
+                        elif event_type == "response.refusal.delta":
+                            delta = getattr(event, 'delta', '') or ''
+                            if delta:
+                                yield delta
+                        elif event_type == "response.completed":
+                            final_response = getattr(event, 'response', None) or final_response
+                        elif event_type in {
+                            'response.reasoning_summary_text.delta',
+                            'response.reasoning_summary_text.done',
+                            'response.reasoning_summary_part.added',
+                            'response.reasoning_summary_part.done',
+                            'response.reasoning_text.delta',
+                            'response.reasoning_text.done',
+                        } or str(event_type).startswith('response.reasoning'):
+                            reasoning_event_count += 1
+                            part = getattr(event, 'part', None)
+                            part_text = ''
+                            part_type = ''
+                            if part is not None:
+                                part_text = getattr(part, 'text', None) or (part.get('text') if isinstance(part, dict) else '') or ''
+                                part_type = getattr(part, 'type', None) or (part.get('type') if isinstance(part, dict) else '') or ''
+                            delta_text = getattr(event, 'delta', None) or ''
+                            done_text = getattr(event, 'text', None) or ''
+                            if not first_reasoning_logged:
+                                first_reasoning_logged = True
+                                log_info('Provider reasoning stream detected provider=%s deployment=%s model=%s event=%s', deployment.provider_id, deployment.id, deployment.model, event_type)
+                                print(f"[provider.reasoning] provider={deployment.provider_id} deployment={deployment.id} model={deployment.model} event={event_type}", flush=True)
+                            log_debug('Provider stream event provider=%s deployment=%s model=%s event=%s', deployment.provider_id, deployment.id, deployment.model, event_type)
                             yield {
-                                "type": "reasoning_delta",
-                                "delta": getattr(event, "delta", "") or "",
-                                "summary_index": getattr(event, "summary_index", None),
-                                "item_id": getattr(event, "item_id", None),
+                                'type': 'reasoning_done' if event_type.endswith('.done') else 'reasoning_delta',
+                                'delta': delta_text,
+                                'text': done_text,
+                                'part_text': part_text,
+                                'part_type': part_type,
+                                'summary_index': getattr(event, 'summary_index', None),
+                                'item_id': getattr(event, 'item_id', None),
+                                'event_type': event_type,
                             }
-                        elif event.type == "response.reasoning_summary_text.done":
-                            yield {
-                                "type": "reasoning_done",
-                                "text": getattr(event, "text", "") or "",
-                                "summary_index": getattr(event, "summary_index", None),
-                                "item_id": getattr(event, "item_id", None),
-                            }
-                        elif event.type == "response.error":
+                        elif event_type == "response.error":
                             yield "\n[error]\n"
+                    if reasoning_event_count == 0:
+                        final_response = final_response or _get_stream_final_response(stream)
+                        fallback_texts = list(_iter_reasoning_texts_from_response(final_response))
+                        if fallback_texts:
+                            for text_value in fallback_texts:
+                                reasoning_event_count += 1
+                                if not first_reasoning_logged:
+                                    first_reasoning_logged = True
+                                    log_info('Provider reasoning fallback detected provider=%s deployment=%s model=%s', deployment.provider_id, deployment.id, deployment.model)
+                                    print(f"[provider.reasoning] provider={deployment.provider_id} deployment={deployment.id} model={deployment.model} event=fallback.final_response", flush=True)
+                                yield {
+                                    'type': 'reasoning_done',
+                                    'delta': '',
+                                    'text': text_value,
+                                    'part_text': '',
+                                    'part_type': 'summary_text',
+                                    'summary_index': None,
+                                    'item_id': None,
+                                    'event_type': 'response.reasoning.fallback',
+                                }
+                log_info('Provider response done provider=%s deployment=%s model=%s mode=stream text_deltas=%s reasoning_events=%s', deployment.provider_id, deployment.id, deployment.model, text_delta_count, reasoning_event_count)
+                print(f"[provider.done] provider={deployment.provider_id} deployment={deployment.id} model={deployment.model} mode=stream text_deltas={text_delta_count} reasoning_events={reasoning_event_count}", flush=True)
                 return
             except APIStatusError as e:
                 payload = openai_error_payload(e)
                 stripped_kwargs, stripped_name = _maybe_retryable_options_from_error(kwargs, payload)
                 if (not saw_stream_item) and stripped_name and stripped_kwargs != kwargs:
                     kwargs = stripped_kwargs
+                    log_warn('Provider stream retry provider=%s deployment=%s model=%s dropped=%s', deployment.provider_id, deployment.id, deployment.model, stripped_name)
+                    print(f"[provider.retry] provider={deployment.provider_id} deployment={deployment.id} model={deployment.model} dropped={stripped_name}", flush=True)
                     continue
+                log_warn('Provider request failed provider=%s deployment=%s model=%s mode=stream status=%s message=%s', deployment.provider_id, deployment.id, deployment.model, payload.get('status_code'), extract_error_message(payload))
+                print(f"[provider.error] provider={deployment.provider_id} deployment={deployment.id} model={deployment.model} mode=stream status={payload.get('status_code')} message={extract_error_message(payload)}", flush=True)
                 raise ProviderExecutionError(extract_error_message(payload), payload=payload) from e
 
     def list_models(self, provider: ProviderDef) -> list[ModelInfo]:

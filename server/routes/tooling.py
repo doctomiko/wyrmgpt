@@ -1,5 +1,7 @@
 import asyncio
+from dataclasses import replace
 from functools import partial
+import hashlib
 import json
 import re
 from datetime import datetime, timezone
@@ -12,6 +14,9 @@ from server.db import (
     db_get_conversation_project_id,
     db_list_conversation_scaffold_events_since,
     db_update_conversation_scaffold_event,
+    reindex_artifact_by_id,
+    retain_conversation_artifact_conn,
+    upsert_artifact_text,
 )
 from server.db_helpers import db_session
 from server.logging_helper import log_debug, log_info, log_warn
@@ -137,6 +142,95 @@ def _tool_event_result_body(request: ToolInvocationRequest, result: ToolResult) 
     if detail:
         return f"{lead}\n\n{detail}"
     return lead
+
+
+def _default_retained_summary_text(request: ToolInvocationRequest, result: ToolResult) -> str:
+    detail = (result.display_text or result.error or '').strip()
+    if detail:
+        return detail[:400]
+    return f"Retained result from {request.tool}."
+
+
+def _tool_result_retention_source_id(
+    *,
+    conversation_id: str,
+    request: ToolInvocationRequest,
+    result: ToolResult,
+) -> str:
+    payload = {
+        'conversation_id': conversation_id,
+        'tool': request.tool,
+        'arguments': dict(request.arguments or {}),
+        'retained_title': result.retained_title,
+        'retained_text': result.retained_text,
+        'retained_summary_text': result.retained_summary_text,
+        'retained_origin_kind': result.retained_origin_kind,
+        'retained_state': result.retained_state,
+    }
+    digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()
+    return f"{conversation_id}:{request.tool}:{digest[:24]}"
+
+
+def _retain_tool_result_artifact(
+    *,
+    conversation_id: str,
+    project_id: int | None,
+    request: ToolInvocationRequest,
+    result: ToolResult,
+) -> str | None:
+    retain_flag = bool(result.retain_in_conversation) or bool((result.retained_text or '').strip())
+    retained_text = (result.retained_text or '').strip()
+    if not conversation_id or not retain_flag or not retained_text:
+        return None
+
+    retained_title = (result.retained_title or f"Retained Knowledge · {request.tool}").strip()
+    retained_summary = (result.retained_summary_text or _default_retained_summary_text(request, result)).strip() or None
+    origin_kind = (result.retained_origin_kind or 'tool_result').strip() or 'tool_result'
+    retention_state = (result.retained_state or 'active').strip() or 'active'
+    source_id = _tool_result_retention_source_id(
+        conversation_id=conversation_id,
+        request=request,
+        result=result,
+    )
+
+    artifact_id: str | None = None
+    with db_session() as conn:
+        artifact_id = upsert_artifact_text(
+            conn,
+            source_kind='assistant_generated',
+            source_id=source_id,
+            title=retained_title,
+            scope_type='conversation',
+            scope_id=conversation_id,
+            text=retained_text,
+        )
+        retain_conversation_artifact_conn(
+            conn,
+            conversation_id=conversation_id,
+            artifact_id=artifact_id,
+            origin_kind=origin_kind,
+            retention_state=retention_state,
+            carry_summary_text=retained_summary,
+            inclusion_kind='whole',
+            retrieval_channel='retained',
+            message_id=None,
+            note_text=f"Retained tool result from {request.tool} for conversation continuity",
+            meta_json={
+                'tool': request.tool,
+                'arguments': dict(request.arguments or {}),
+                'project_id': project_id,
+                'retained_title': retained_title,
+                'retained_summary_text': retained_summary,
+                'tool_result_meta': result.retained_meta or {},
+            },
+            increment_include_count=False,
+        )
+    if artifact_id:
+        try:
+            reindex_artifact_by_id(artifact_id)
+        except Exception as exc:
+            log_warn('Retained tool artifact reindex failed aid=%s tool=%s: %s', artifact_id, request.tool, exc)
+    return artifact_id
 
 
 def _build_live_scaffold_row(
@@ -332,6 +426,16 @@ def iter_expand_input_with_tool_requests(
 
     while remaining_calls > 0:
         if pending_text is None:
+            log_info(
+                "Tool planner requesting assistant text cid=%s deployment=%s model=%s mode=complete",
+                conversation_id,
+                getattr(target, "id", ""),
+                getattr(target, "model", ""),
+            )
+            print(
+                f"[tool.planner] cid={conversation_id} deployment={getattr(target, 'id', '')} model={getattr(target, 'model', '')} mode=complete",
+                flush=True,
+            )
             result = provider.complete(target, working_input, request_options=request_options)
             pending_text = strip_zeitgeber_prefix(result.text or "")
 
@@ -381,6 +485,21 @@ def iter_expand_input_with_tool_requests(
                 )
 
             if conversation_id:
+                retained_artifact_id: str | None = None
+                try:
+                    retained_artifact_id = _retain_tool_result_artifact(
+                        conversation_id=conversation_id,
+                        project_id=project_id,
+                        request=request,
+                        result=tool_result,
+                    )
+                except Exception as exc:
+                    log_warn('Tool result retention failed cid=%s tool=%s: %s', conversation_id, request.tool, exc)
+                if retained_artifact_id:
+                    result_payload = dict(tool_result.result or {})
+                    result_payload['retained_artifact_id'] = retained_artifact_id
+                    tool_result = replace(tool_result, result=result_payload)
+                    log_info('Tool result retained cid=%s tool=%s artifact_id=%s', conversation_id, request.tool, retained_artifact_id)
                 done_row = _update_tool_event_result(
                     conversation_id=conversation_id,
                     live_event_id=live_event_id,

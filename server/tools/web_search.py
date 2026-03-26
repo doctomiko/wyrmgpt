@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from ..config import load_provider_defs
@@ -121,6 +122,51 @@ def _render_search_results_markdown(query: str, results: list[dict[str, Any]]) -
     return header + "\n\n" + "\n\n".join(blocks)
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _render_retained_search_text(query: str, results: list[dict[str, Any]], *, provider: str, search_id: int | None) -> str:
+    lines: list[str] = [
+        'RETAINED KNOWLEDGE',
+        'Kind: web.search',
+        f'Provider: {provider}',
+        f'Query: {query}',
+        f'Generated at: {_utc_now_iso()}',
+    ]
+    if search_id is not None:
+        lines.append(f'Search ID: {search_id}')
+    lines.append(f'Result count: {len(results)}')
+    lines.append('')
+
+    if not results:
+        lines.append('No results were returned.')
+        return '\n'.join(lines).strip() + '\n'
+
+    for idx, item in enumerate(results, start=1):
+        url = str(item.get('url') or item.get('canonical_url') or '').strip()
+        title = str(item.get('title') or url or f'result {idx}').strip()
+        domain = str(item.get('domain') or '').strip()
+        age = str(item.get('age') or item.get('page_age') or item.get('date') or '').strip()
+        snippet = str(item.get('snippet') or '').strip()
+        extra = [str(x).strip() for x in (item.get('extra_snippets') or []) if str(x or '').strip()]
+
+        lines.append(f'{idx}. {title}')
+        if url:
+            lines.append(f'URL: {url}')
+        if domain:
+            lines.append(f'Domain: {domain}')
+        if age:
+            lines.append(f'Date: {age}')
+        if snippet:
+            lines.append(f'Summary: {snippet}')
+        for extra_idx, extra_snip in enumerate(extra[:3], start=1):
+            lines.append(f'Extra snippet {extra_idx}: {extra_snip}')
+        lines.append('')
+
+    return '\n'.join(lines).strip() + '\n'
+
+
 def _load_brave_provider() -> tuple[str, str]:
     providers = load_provider_defs()
     provider = providers.get("brave")
@@ -222,4 +268,16 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         },
         display_text=display_text,
         event_kind="tool_result",
+        retain_in_conversation=True,
+        retained_title=f"Web search · {query}",
+        retained_summary_text=f"Web search results retained for '{query}' ({len(results)} results).",
+        retained_text=_render_retained_search_text(query, results, provider='brave', search_id=search_id),
+        retained_origin_kind='tool_result:web.search',
+        retained_state='active',
+        retained_meta={
+            'provider': 'brave',
+            'search_id': search_id,
+            'query': query,
+            'result_count': len(results),
+        },
     )

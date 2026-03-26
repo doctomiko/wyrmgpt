@@ -352,6 +352,16 @@ def _map_openai_reasoning_effort(level: int) -> str:
     return "high"
 
 
+def _prefers_streaming_preflight(target, model_settings: dict[str, object] | None, request_options: dict[str, object] | None) -> bool:
+    if not isinstance(request_options, dict) or not request_options.get("reasoning"):
+        return False
+    settings = dict(model_settings or {})
+    if not bool(settings.get("show_thinking", True)):
+        return False
+    provider_type = str(getattr(target, "provider_type", "") or "").strip().lower()
+    return provider_type == "openai" and _openai_supports_thinking(target)
+
+
 def _build_request_options(target, model_settings: dict[str, object] | None) -> dict[str, object]:
     settings = dict(model_settings or {})
     options: dict[str, object] = {}
@@ -521,7 +531,9 @@ def chat(
         scaffold_state = {"value": scaffold_cursor}
         thinking_event_id: int | None = None
         thinking_row: dict[str, object] | None = None
-        thinking_text_parts: list[str] = []
+        thinking_sections: dict[str, str] = {}
+        thinking_section_order: list[str] = []
+        thinking_section_fallback_counter = 0
         live_text_parts: list[str] = []
 
         def _emit_assistant_delta(delta_text: str):
@@ -531,13 +543,66 @@ def chat(
             return _sse("assistant.delta", {"slot": None, "text": delta_text})
 
         def _emit_stream_item(item, parts: list[str]):
-            nonlocal thinking_event_id, thinking_row
+            nonlocal thinking_event_id, thinking_row, thinking_section_fallback_counter
             if isinstance(item, dict) and str(item.get("type") or "").startswith("reasoning_"):
-                delta_text = str(item.get("delta") or item.get("text") or "")
-                if not delta_text:
+                event_type = str(item.get("event_type") or "")
+                delta_text = str(item.get("delta") or "")
+                part_text = str(item.get("part_text") or "")
+                done_text = str(item.get("text") or "")
+                done_flag = bool(item.get("done")) or str(item.get("type") or "") == "reasoning_done"
+
+                section_key = item.get("summary_index")
+                if section_key is None:
+                    section_key = item.get("item_id")
+                if section_key is None:
+                    section_key = "fallback"
+                section_key = str(section_key)
+                if section_key not in thinking_sections:
+                    thinking_sections[section_key] = ""
+                    thinking_section_order.append(section_key)
+
+                current_section = thinking_sections.get(section_key, "")
+                updated_section = current_section
+
+                if event_type.endswith(".delta"):
+                    if delta_text:
+                        if not current_section:
+                            updated_section = delta_text
+                        elif current_section.endswith(delta_text) or delta_text in current_section:
+                            updated_section = current_section
+                        else:
+                            updated_section = current_section + delta_text
+                else:
+                    candidate = (part_text or done_text or delta_text).strip()
+                    if candidate:
+                        if not current_section:
+                            updated_section = candidate
+                        elif candidate == current_section or candidate in current_section:
+                            updated_section = current_section
+                        elif candidate.startswith(current_section):
+                            updated_section = candidate
+                        elif current_section.startswith(candidate):
+                            updated_section = current_section
+                        else:
+                            if section_key == "fallback" and len(thinking_section_order) == 1:
+                                updated_section = candidate
+                            else:
+                                thinking_section_fallback_counter += 1
+                                section_key = f"fallback_{thinking_section_fallback_counter}"
+                                thinking_sections.setdefault(section_key, "")
+                                if section_key not in thinking_section_order:
+                                    thinking_section_order.append(section_key)
+                                updated_section = candidate
+
+                updated_section = str(updated_section or "").strip()
+                thinking_sections[section_key] = updated_section
+                current_text = "\n\n".join(
+                    section
+                    for section in (thinking_sections.get(key, "").strip() for key in thinking_section_order)
+                    if section
+                ).strip()
+                if not current_text and not done_flag:
                     return
-                thinking_text_parts.append(delta_text)
-                current_text = "".join(thinking_text_parts)
                 if thinking_row is None:
                     thinking_event_id, thinking_row = _create_thinking_event_start(
                         conversation_id=cid,
@@ -552,7 +617,7 @@ def chat(
                         event_id=thinking_event_id,
                         row=thinking_row,
                         text_value=current_text,
-                        done=(item.get("type") == "reasoning_done"),
+                        done=done_flag,
                     )
                     yield _sse("scaffold", row)
                 return
@@ -572,7 +637,30 @@ def chat(
             scaffold_state["value"] = scaffold_cursor
             for frame in frames:
                 yield frame
-            if should_attempt_tool_preflight(user_text=full, ctx=ctx, tool_cfg=tool_cfg, tool_registry=tools):
+            attempted_tool_preflight = should_attempt_tool_preflight(user_text=full, ctx=ctx, tool_cfg=tool_cfg, tool_registry=tools)
+            streaming_preflight = attempted_tool_preflight and _prefers_streaming_preflight(target, model_settings, request_options)
+            if attempted_tool_preflight and streaming_preflight:
+                log_info(
+                    "Tool preflight switched to streaming accumulator cid=%s deployment=%s model=%s",
+                    cid,
+                    target.id,
+                    target.model,
+                )
+                print(
+                    f"[tool.preflight] cid={cid} deployment={target.id} model={target.model} mode=stream-accumulator",
+                    flush=True,
+                )
+            elif attempted_tool_preflight:
+                log_info(
+                    "Tool preflight using complete planner cid=%s deployment=%s model=%s",
+                    cid,
+                    target.id,
+                    target.model,
+                )
+                print(
+                    f"[tool.preflight] cid={cid} deployment={target.id} model={target.model} mode=complete-planner",
+                    flush=True,
+                )
                 try:
                     planning_iter = iter_expand_input_with_tool_requests(
                         target=target,
@@ -609,6 +697,8 @@ def chat(
                 parts: list[str] = []
                 for item in provider.stream_text(target, follow_input, request_options=request_options):
                     yield from _emit_stream_item(item, parts)
+                if request_options.get("reasoning") and not any((thinking_sections.get(key, "") or "").strip() for key in thinking_section_order):
+                    log_info("No thinking summaries observed cid=%s deployment=%s model=%s", cid, target.id, target.model)
                 final_text = postprocess_text((wrapper_text if wrapper_text else "") + "".join(parts))
             elif preflight_terminal_text is not None:
                 final_text = postprocess_text(preflight_terminal_text)
@@ -622,10 +712,19 @@ def chat(
                         "deployment_id": target.id,
                     })
             else:
+                if attempted_tool_preflight and streaming_preflight:
+                    log_info(
+                        "Tool preflight resolved via main stream cid=%s deployment=%s model=%s",
+                        cid,
+                        target.id,
+                        target.model,
+                    )
                 parts: list[str] = []
                 for item in provider.stream_text(target, raw_input, request_options=request_options):
                     yield from _emit_stream_item(item, parts)
 
+                if request_options.get("reasoning") and not any((thinking_sections.get(key, "") or "").strip() for key in thinking_section_order):
+                    log_info("No thinking summaries observed cid=%s deployment=%s model=%s", cid, target.id, target.model)
                 streamed_text = strip_zeitgeber_prefix("".join(parts))
                 if response_requests_tool_execution(streamed_text, tools):
                     planning_iter = iter_expand_input_with_tool_requests(
@@ -665,6 +764,8 @@ def chat(
                             follow_parts: list[str] = []
                             for item in provider.stream_text(target, follow_input, request_options=request_options):
                                 yield from _emit_stream_item(item, follow_parts)
+                            if request_options.get("reasoning") and not any((thinking_sections.get(key, "") or "").strip() for key in thinking_section_order):
+                                log_info("No thinking summaries observed cid=%s deployment=%s model=%s", cid, target.id, target.model)
                             final_text = postprocess_text("".join(follow_parts))
                         else:
                             final_text = postprocess_text(terminal_text)

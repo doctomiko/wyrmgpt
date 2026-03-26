@@ -4,6 +4,7 @@ from typing import Any, Iterator
 
 from anthropic import APIStatusError, Anthropic
 
+from server.logging_helper import log_info, log_warn
 from .message_transforms import to_anthropic_messages
 from .openai_provider import ProviderExecutionError, extract_error_message
 from .types import ChatResult, ModelCatalog, ModelInfo, ModelInput, ProviderDef, ResolvedDeployment
@@ -98,11 +99,17 @@ class AnthropicProvider:
         request_options: dict[str, Any] | None = None,
     ) -> ChatResult:
         try:
+            kwargs = self._request_kwargs(deployment, model_input, request_options)
+            log_info('Provider request start provider=%s deployment=%s model=%s mode=complete options=%s', deployment.provider_id, deployment.id, deployment.model, sorted(kwargs.keys()))
+            print(f"[provider.start] provider={deployment.provider_id} deployment={deployment.id} model={deployment.model} mode=complete options={sorted(kwargs.keys())}", flush=True)
             resp = self.client.messages.create(
-                **self._request_kwargs(deployment, model_input, request_options)
+                **kwargs
             )
+            text = self._extract_text(resp)
+            log_info('Provider response done provider=%s deployment=%s model=%s mode=complete chars=%s', deployment.provider_id, deployment.id, deployment.model, len(text or ''))
+            print(f"[provider.done] provider={deployment.provider_id} deployment={deployment.id} model={deployment.model} mode=complete chars={len(text or '')}", flush=True)
             return ChatResult(
-                text=self._extract_text(resp),
+                text=text,
                 provider_id=deployment.provider_id,
                 deployment_id=deployment.id,
                 model=deployment.model,
@@ -110,24 +117,39 @@ class AnthropicProvider:
             )
         except APIStatusError as e:
             payload = anthropic_error_payload(e)
+            log_warn('Provider request failed provider=%s deployment=%s model=%s mode=complete status=%s message=%s', deployment.provider_id, deployment.id, deployment.model, payload.get('status_code'), extract_error_message(payload))
+            print(f"[provider.error] provider={deployment.provider_id} deployment={deployment.id} model={deployment.model} mode=complete status={payload.get('status_code')} message={extract_error_message(payload)}", flush=True)
             raise ProviderExecutionError(extract_error_message(payload), payload=payload) from e
         except Exception as e:
             payload = anthropic_generic_error_payload(e)
+            log_warn('Provider request failed provider=%s deployment=%s model=%s mode=complete status=%s message=%s', deployment.provider_id, deployment.id, deployment.model, payload.get('status_code'), extract_error_message(payload))
+            print(f"[provider.error] provider={deployment.provider_id} deployment={deployment.id} model={deployment.model} mode=complete status={payload.get('status_code')} message={extract_error_message(payload)}", flush=True)
             raise ProviderExecutionError(extract_error_message(payload), payload=payload) from e
 
     def stream_text(self, deployment: ResolvedDeployment, model_input: ModelInput, request_options: dict[str, Any] | None = None) -> Iterator[str]:
         try:
+            kwargs = self._request_kwargs(deployment, model_input, request_options)
+            log_info('Provider request start provider=%s deployment=%s model=%s mode=stream options=%s', deployment.provider_id, deployment.id, deployment.model, sorted(kwargs.keys()))
+            print(f"[provider.start] provider={deployment.provider_id} deployment={deployment.id} model={deployment.model} mode=stream options={sorted(kwargs.keys())}", flush=True)
+            text_chunks = 0
             with self.client.messages.stream(
-                **self._request_kwargs(deployment, model_input, request_options)
+                **kwargs
             ) as stream:
                 for text in stream.text_stream:
                     if text:
+                        text_chunks += 1
                         yield text
+            log_info('Provider response done provider=%s deployment=%s model=%s mode=stream text_chunks=%s', deployment.provider_id, deployment.id, deployment.model, text_chunks)
+            print(f"[provider.done] provider={deployment.provider_id} deployment={deployment.id} model={deployment.model} mode=stream text_chunks={text_chunks}", flush=True)
         except APIStatusError as e:
             payload = anthropic_error_payload(e)
+            log_warn('Provider request failed provider=%s deployment=%s model=%s mode=complete status=%s message=%s', deployment.provider_id, deployment.id, deployment.model, payload.get('status_code'), extract_error_message(payload))
+            print(f"[provider.error] provider={deployment.provider_id} deployment={deployment.id} model={deployment.model} mode=complete status={payload.get('status_code')} message={extract_error_message(payload)}", flush=True)
             raise ProviderExecutionError(extract_error_message(payload), payload=payload) from e
         except Exception as e:
             payload = anthropic_generic_error_payload(e)
+            log_warn('Provider request failed provider=%s deployment=%s model=%s mode=complete status=%s message=%s', deployment.provider_id, deployment.id, deployment.model, payload.get('status_code'), extract_error_message(payload))
+            print(f"[provider.error] provider={deployment.provider_id} deployment={deployment.id} model={deployment.model} mode=complete status={payload.get('status_code')} message={extract_error_message(payload)}", flush=True)
             raise ProviderExecutionError(extract_error_message(payload), payload=payload) from e
 
     def list_models(self, provider: ProviderDef) -> list[ModelInfo]:
