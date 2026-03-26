@@ -115,10 +115,10 @@ class AnthropicProvider:
             payload = anthropic_generic_error_payload(e)
             raise ProviderExecutionError(extract_error_message(payload), payload=payload) from e
 
-    def stream_text(self, deployment: ResolvedDeployment, model_input: ModelInput) -> Iterator[str]:
+    def stream_text(self, deployment: ResolvedDeployment, model_input: ModelInput, request_options: dict[str, Any] | None = None) -> Iterator[str]:
         try:
             with self.client.messages.stream(
-                **self._request_kwargs(deployment, model_input)
+                **self._request_kwargs(deployment, model_input, request_options)
             ) as stream:
                 for text in stream.text_stream:
                     if text:

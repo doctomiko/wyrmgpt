@@ -60,6 +60,7 @@ const convMenuLibraryBtn = document.getElementById("menuConvLibrary");
 const convMenuCitationsBtn = document.getElementById("menuConvCitations");
 const convMenuExportTranscriptBtn = document.getElementById("menuExportTranscript");
 const convMenuSummarizeBtn = document.getElementById("menuSummarize");
+const convMenuSettingsBtn = document.getElementById("menuConvSettings");
 const convMenuArchiveBtn = document.getElementById("menuArchive");
 const convMenuDeleteBtn = document.getElementById("menuDelete");
 // #endregion
@@ -125,8 +126,28 @@ const memoryImportanceEl = document.getElementById("memoryImportance");
 const memorySaveBtn = document.getElementById("saveMemory");
 const memoryCancelEditBtn = document.getElementById("cancelMemoryEdit");
 // Query settings (per-project)
+const querySettingsSectionEl = document.getElementById("querySettingsSection");
 const querySettingsTitleEl = document.getElementById("querySettingsTitle");
 const saveQuerySettingsBtn = document.getElementById("saveQuerySettings");
+// Model settings
+const modelSettingsSectionEl = document.getElementById("modelSettingsSection");
+const modelSettingsTitleEl = document.getElementById("modelSettingsTitle");
+const modelTemperatureEl = document.getElementById("modelTemperature");
+const modelTemperatureValueEl = document.getElementById("modelTemperatureValue");
+const modelThinkingLevelEl = document.getElementById("modelThinkingLevel");
+const modelThinkingLevelValueEl = document.getElementById("modelThinkingLevelValue");
+const modelShowThinkingEl = document.getElementById("modelShowThinking");
+const modelVerbosityEl = document.getElementById("modelVerbosity");
+const modelVerbosityValueEl = document.getElementById("modelVerbosityValue");
+const modelToolAggressivenessEl = document.getElementById("modelToolAggressiveness");
+const modelToolAggressivenessValueEl = document.getElementById("modelToolAggressivenessValue");
+const modelMaxOutputTokensEl = document.getElementById("modelMaxOutputTokens");
+const modelTopPEl = document.getElementById("modelTopP");
+const modelTopKEl = document.getElementById("modelTopK");
+const saveModelSettingsBtn = document.getElementById("saveModelSettings");
+const resetModelSettingsBtn = document.getElementById("resetModelSettings");
+const customInstructionsSectionEl = document.getElementById("customInstructionsSection");
+const memoriesSectionEl = document.getElementById("memoriesSection");
 
 const qiFILE = document.getElementById("qiFILE");
 const qiMEMORY = document.getElementById("qiMEMORY");
@@ -243,8 +264,9 @@ let lastContextDraftSent = "";
 // chat transcript re-generation/append state:
 let transcriptRefreshTimer = null;
 // Personalization modal state:
-let personalizationMode = "global"; // "global" | "project"
+let personalizationMode = "global"; // "global" | "project" | "conversation"
 let personalizationProjectId = null;
+let personalizationConversationId = null;
 let editingMemoryId = null;
 let memoriesCache = [];
 let editingPinId = null;

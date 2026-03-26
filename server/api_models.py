@@ -22,6 +22,18 @@ class QuerySettingsUpdateRequest(BaseModel):
     query_expand_chat_window_before: int | None = None
     query_expand_chat_window_after: int | None = None
 
+class ModelSettingsUpdateRequest(BaseModel):
+    scope_type: str = "global"
+    scope_id: str = ""
+    temperature: float | None = None
+    thinking_level: int | None = None
+    show_thinking: bool | None = None
+    verbosity: int | None = None
+    tool_aggressiveness: int | None = None
+    max_output_tokens: int | None = None
+    top_p: float | None = None
+    top_k: int | None = None
+
 class FileDescriptionUpdate(BaseModel):
     description: str | None = None
 

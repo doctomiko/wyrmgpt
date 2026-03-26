@@ -83,12 +83,13 @@ class GoogleProvider:
             payload = openai_error_payload(e)
             raise ProviderExecutionError(extract_error_message(payload), payload=payload) from e
 
-    def stream_text(self, deployment: ResolvedDeployment, model_input: ModelInput) -> Iterator[str]:
+    def stream_text(self, deployment: ResolvedDeployment, model_input: ModelInput, request_options: dict[str, Any] | None = None) -> Iterator[Any]:
         try:
             stream = self.client.chat.completions.create(
                 model=deployment.model,
                 messages=to_openai_chat_messages(model_input),
                 stream=True,
+                **self._translate_request_options(request_options),
             )
             for chunk in stream:
                 choices = getattr(chunk, 'choices', None) or []

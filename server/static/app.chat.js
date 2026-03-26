@@ -333,6 +333,7 @@ function populateScaffoldCard(wrap, evRow) {
   const els = wrap._scaffoldEls || {};
   const status = String(evRow.status || "").toLowerCase() || "running";
   wrap.dataset.status = status;
+  wrap.dataset.kind = String(evRow.event_kind || "").toLowerCase();
   wrap.dataset.eventId = scaffoldEventId(evRow);
 
   if (els.badge) {
@@ -357,12 +358,14 @@ function populateScaffoldCard(wrap, evRow) {
   const inputJson = normalizeScaffoldJson(evRow.input_json);
   const outputJson = normalizeScaffoldJson(evRow.output_json);
   const toolName = scaffoldToolName(evRow);
-  const isTool = !!toolName || String(evRow.event_kind || "").toLowerCase().startsWith("tool");
+  const eventKind = String(evRow.event_kind || "").toLowerCase();
+  const isTool = !!toolName || eventKind.startsWith("tool");
+  const isThinking = eventKind === "thinking";
 
   if (els.inputDetails && els.inputSummary && els.inputPre) {
     const inputText = scaffoldPrettyJsonText(inputJson);
     if (inputText) {
-      els.inputSummary.textContent = isTool ? "Tool parameters" : "Scaffold input";
+      els.inputSummary.textContent = isThinking ? "Thinking settings" : (isTool ? "Tool parameters" : "Scaffold input");
       els.inputPre.textContent = inputText;
       els.inputDetails.style.display = "";
     } else {
@@ -373,7 +376,7 @@ function populateScaffoldCard(wrap, evRow) {
   if (els.outputDetails && els.outputSummary && els.outputPre) {
     const outputText = scaffoldPrettyJsonText(outputJson);
     if (outputText) {
-      els.outputSummary.textContent = isTool ? "Tool results" : "Scaffold output";
+      els.outputSummary.textContent = isThinking ? "Thinking data" : (isTool ? "Tool results" : "Scaffold output");
       els.outputPre.textContent = outputText;
       els.outputDetails.style.display = "";
     } else {
@@ -1134,6 +1137,11 @@ async function sendSingle(text, model) {
         return;
       }
       if (event === "assistant.final") {
+        if (data && data.ok === false && (data.append_error || (accumulatedText && accumulatedText.trim()))) {
+          const errModel = data?.model || choice.model || model;
+          addAssistantMsgWithModel(errModel, data?.text || "**Model error**", nowIso(), data || null);
+          return;
+        }
         accumulatedText = data?.text || accumulatedText;
         renderSingleAssistantState(assistantBody, assistantBubble, accumulatedText);
         if (data && data.ok === false) assistantBubble?.classList.add("error");

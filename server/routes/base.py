@@ -11,9 +11,9 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from server.api_models import AppConfigUpdateRequest, QuerySettingsUpdateRequest
+from server.api_models import AppConfigUpdateRequest, ModelSettingsUpdateRequest, QuerySettingsUpdateRequest
 from server.config import APP_KEYS, QUERY_EXPAND_ALLOWED, QUERY_INCLUDE_ALLOWED, _normalize_csv_set, load_app_config, load_retrieval_config, load_ui_config
-from server.db import invalidate_all_context_cache, set_app_setting
+from server.db import delete_app_settings_by_prefix, get_app_setting, invalidate_all_context_cache, set_app_setting
 from server.db_helpers import db_debug_info
 from server.runtime import DEBUG_ERRORS, STATIC_DIR, init_runtime
 
@@ -74,7 +74,6 @@ def _query_setting_key(key: str) -> str:
     return f"query.{key}"
 
 def _get_effective_query_setting(project_id: int | None, key: str, env_default: str) -> str:
-    from server.db import get_app_setting
     if project_id is not None:
         v = get_app_setting(_query_setting_key(key), None, "project", str(project_id))
         if v is not None and str(v).strip() != "":
@@ -83,6 +82,128 @@ def _get_effective_query_setting(project_id: int | None, key: str, env_default: 
     if v is not None and str(v).strip() != "":
         return str(v)
     return env_default
+
+
+def _model_setting_key(key: str) -> str:
+    return f"model.{key}"
+
+
+_MODEL_SETTINGS_DEFAULTS: dict[str, Any] = {
+    "temperature": 0.7,
+    "thinking_level": 0,
+    "show_thinking": True,
+    "verbosity": 5,
+    "tool_aggressiveness": 5,
+    "max_output_tokens": None,
+    "top_p": None,
+    "top_k": None,
+}
+
+
+_MODEL_SETTING_TYPES: dict[str, str] = {
+    "temperature": "float",
+    "thinking_level": "int",
+    "show_thinking": "bool",
+    "verbosity": "int",
+    "tool_aggressiveness": "int",
+    "max_output_tokens": "int",
+    "top_p": "float",
+    "top_k": "int",
+}
+
+
+def _parse_model_setting_value(key: str, raw: str | None) -> Any:
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if s == "":
+        return None
+    kind = _MODEL_SETTING_TYPES.get(key, "string")
+    try:
+        if kind == "bool":
+            return s.lower() in {"1", "true", "yes", "on"}
+        if kind == "int":
+            return int(s)
+        if kind == "float":
+            return float(s)
+    except Exception:
+        return None
+    return s
+
+
+def _serialize_model_setting_value(key: str, value: Any) -> str:
+    kind = _MODEL_SETTING_TYPES.get(key, "string")
+    if kind == "bool":
+        return "1" if bool(value) else "0"
+    return str(value)
+
+
+def _coerce_model_setting_value(key: str, value: Any) -> Any:
+    if value is None:
+        return None
+    if key == "temperature":
+        return max(0.0, min(2.0, float(value)))
+    if key == "thinking_level":
+        return max(0, min(10, int(value)))
+    if key in {"verbosity", "tool_aggressiveness"}:
+        return max(0, min(10, int(value)))
+    if key == "max_output_tokens":
+        return max(1, int(value))
+    if key == "top_p":
+        return max(0.0, min(1.0, float(value)))
+    if key == "top_k":
+        return max(1, int(value))
+    if key == "show_thinking":
+        return bool(value)
+    return value
+
+
+def _normalize_scope(scope_type: str, scope_id: str) -> tuple[str, str]:
+    st = (scope_type or "global").strip().lower()
+    sid = (scope_id or "").strip()
+    if st not in {"global", "project", "conversation"}:
+        st, sid = "global", ""
+    if st == "global":
+        sid = ""
+    return st, sid
+
+
+def _scope_chain_for_model_settings(scope_type: str, scope_id: str) -> list[tuple[str, str]]:
+    from server.db import db_get_conversation_project_id
+    from server.db_helpers import db_session
+    st, sid = _normalize_scope(scope_type, scope_id)
+    if st == "global":
+        return [("global", "")]
+    if st == "project":
+        return [("project", sid), ("global", "")]
+    project_id = None
+    if sid:
+        try:
+            with db_session() as conn:
+                project_id = db_get_conversation_project_id(conn, sid)
+        except Exception:
+            project_id = None
+    chain = [("conversation", sid)]
+    if project_id is not None:
+        chain.append(("project", str(project_id)))
+    chain.append(("global", ""))
+    return chain
+
+
+def get_effective_model_settings(scope_type: str = "global", scope_id: str = "") -> dict[str, Any]:
+    effective = dict(_MODEL_SETTINGS_DEFAULTS)
+    for key in _MODEL_SETTINGS_DEFAULTS:
+        for st, sid in _scope_chain_for_model_settings(scope_type, scope_id):
+            parsed = _parse_model_setting_value(key, get_app_setting(_model_setting_key(key), None, st, sid))
+            if parsed is not None:
+                effective[key] = parsed
+                break
+    return effective
+
+
+def _get_local_model_settings(scope_type: str = "global", scope_id: str = "") -> dict[str, Any]:
+    st, sid = _normalize_scope(scope_type, scope_id)
+    return {key: _parse_model_setting_value(key, get_app_setting(_model_setting_key(key), None, st, sid)) for key in _MODEL_SETTINGS_DEFAULTS}
 
 #endregion
 
@@ -280,5 +401,54 @@ def api_update_query_settings(req: QuerySettingsUpdateRequest):
                 
     invalidate_all_context_cache()
     return api_get_query_settings(scope_type=scope_type, scope_id=scope_id)
+
+
+@app.get("/api/model_settings")
+def api_get_model_settings(scope_type: str = "global", scope_id: str = ""):
+    st, sid = _normalize_scope(scope_type, scope_id)
+    return JSONResponse({
+        "scope_type": st,
+        "scope_id": sid,
+        "local": _get_local_model_settings(st, sid),
+        "effective": get_effective_model_settings(st, sid),
+        "defaults": dict(_MODEL_SETTINGS_DEFAULTS),
+    })
+
+
+@app.post("/api/model_settings")
+def api_update_model_settings(req: ModelSettingsUpdateRequest):
+    st, sid = _normalize_scope(req.scope_type, req.scope_id)
+    if st == "project" and not sid:
+        raise HTTPException(status_code=400, detail="project scope_id is required")
+    if st == "conversation" and not sid:
+        raise HTTPException(status_code=400, detail="conversation scope_id is required")
+
+    updates = {
+        "temperature": req.temperature,
+        "thinking_level": req.thinking_level,
+        "show_thinking": req.show_thinking,
+        "verbosity": req.verbosity,
+        "tool_aggressiveness": req.tool_aggressiveness,
+        "max_output_tokens": req.max_output_tokens,
+        "top_p": req.top_p,
+        "top_k": req.top_k,
+    }
+    for key, value in updates.items():
+        if value is None:
+            continue
+        set_app_setting(_model_setting_key(key), _serialize_model_setting_value(key, _coerce_model_setting_value(key, value)), st, sid)
+
+    invalidate_all_context_cache()
+    return api_get_model_settings(scope_type=st, scope_id=sid)
+
+
+@app.delete("/api/model_settings")
+def api_reset_model_settings(scope_type: str = "global", scope_id: str = ""):
+    st, sid = _normalize_scope(scope_type, scope_id)
+    if st == "global":
+        raise HTTPException(status_code=400, detail="Global model settings cannot be reset as a group from this endpoint.")
+    delete_app_settings_by_prefix(_model_setting_key(""), st, sid)
+    invalidate_all_context_cache()
+    return api_get_model_settings(scope_type=st, scope_id=sid)
 
 # endregion

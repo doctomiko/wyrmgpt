@@ -233,6 +233,25 @@ if (topMenuOpenMemoryBtn) {
     }    
   });
 }
+if (convMenuSettingsBtn) {
+  convMenuSettingsBtn.addEventListener("click", async () => {
+    convMenuEl.classList.add("hidden");
+    const cid = menuTargetConversationId || conversationId;
+    if (!cid) {
+      alert("No conversation selected.");
+      return;
+    }
+    const conv = conversationMap.get(cid) || { id: cid, title: topBarChatTitleEl?.textContent || "Conversation" };
+    setPersonalizationModeConversation(conv);
+    openMemoryModal();
+    try {
+      await loadPersonalization();
+    } catch (e) {
+      console.error("load conversation personalization failed", e);
+    }
+  });
+}
+
 if (persCloseBtn) {
   persCloseBtn.addEventListener("click", closeMemoryModal);
 }
@@ -260,6 +279,32 @@ if (pinAddOrSaveBtn) {
 if (pinCancelEditBtn) {
   pinCancelEditBtn.addEventListener("click", resetPinEditor);
 }
+
+if (saveModelSettingsBtn) {
+  saveModelSettingsBtn.addEventListener("click", async () => {
+    try {
+      await saveModelSettingsForCurrentMode();
+      await refreshContext();
+    } catch (e) {
+      console.error("saveModelSettingsForCurrentMode failed", e);
+      alert("Failed to save model settings.");
+    }
+  });
+}
+if (resetModelSettingsBtn) {
+  resetModelSettingsBtn.addEventListener("click", async () => {
+    try {
+      await resetModelSettingsForCurrentMode();
+      await refreshContext();
+    } catch (e) {
+      console.error("resetModelSettingsForCurrentMode failed", e);
+      alert("Failed to reset scoped model settings.");
+    }
+  });
+}
+[modelTemperatureEl, modelThinkingLevelEl, modelVerbosityEl, modelToolAggressivenessEl].forEach((el) => {
+  if (el) el.addEventListener("input", syncModelSettingsLabels);
+});
 
 if (saveQuerySettingsBtn) {
   saveQuerySettingsBtn.addEventListener("click", () => {

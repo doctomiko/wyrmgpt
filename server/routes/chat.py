@@ -21,16 +21,18 @@ from server.context import build_context, build_model_input
 from server.db import (
     db_add_message,
     db_create_conversation,
+    db_create_conversation_scaffold_event,
     db_ensure_files_artifacted_for_conversation,
     db_get_latest_conversation_scaffold_event_id,
     db_list_conversation_scaffold_events_since,
     db_update_ab_canonical,
+    db_update_conversation_scaffold_event,
 )
 from server.logging_helper import log_debug, log_error, log_info, log_warn
 from server.providers.openai_provider import ProviderExecutionError, extract_error_message
 from server.providers.registry import ProviderRegistry
 from server.providers.types import ModelInput
-from server.routes.base import app
+from server.routes.base import app, get_effective_model_settings
 from server.routes.files import strip_file_messages, strip_images
 from server.routes.library import persist_citations_for_assistant_message
 from server.routes.tooling import (
@@ -51,6 +53,7 @@ async def _call_model(
     target,
     model_input,
     providers: ProviderRegistry | None = None,
+    request_options: dict | None = None,
 ):
     providers = providers or runtime.PROVIDER_REGISTRY
     if providers is None:
@@ -58,11 +61,11 @@ async def _call_model(
 
     provider = providers.get_chat_provider(target)
     loop = asyncio.get_running_loop()
-    fn = partial(provider.complete, target, model_input)
+    fn = partial(provider.complete, target, model_input, request_options=request_options)
     return await loop.run_in_executor(None, fn)
 
 
-async def call_model_with_recovery(target, model_input: ModelInput) -> RowDict:
+async def call_model_with_recovery(target, model_input: ModelInput, request_options: dict | None = None) -> RowDict:
     """
     Returns either {"ok": True, "text": "..."} or {"ok": False, "error": {...}}.
     """
@@ -88,7 +91,7 @@ async def call_model_with_recovery(target, model_input: ModelInput) -> RowDict:
             await sleep_ms(backoff_ms)
 
         try:
-            result = await _call_model(target, mi)
+            result = await _call_model(target, mi, request_options=request_options)
             text = strip_zeitgeber_prefix(result.text or "")
             return {"ok": True, "text": text, "recovery": label}
         except ProviderExecutionError as e:
@@ -140,6 +143,38 @@ def _store_single_error_message(
         },
     )
     attach_scaffold_events_to_message(pending_tool_event_ids, assistant_message_id)
+
+
+def _store_partial_single_message(
+    *,
+    conversation_id: str,
+    target,
+    text: str,
+    model_settings: dict[str, object] | None,
+    pending_tool_event_ids: list[int],
+    ctx: RowDict | None = None,
+) -> int | None:
+    full = postprocess_text(text)
+    if not full:
+        return None
+    assistant_message_id = db_add_message(
+        conversation_id,
+        "assistant",
+        full,
+        meta={
+            "model": target.model,
+            "provider": target.provider_id,
+            "deployment_id": target.id,
+            "model_settings": model_settings or {},
+            "kind": "partial",
+            "completed": False,
+            "terminated_by_error": True,
+        },
+    )
+    attach_scaffold_events_to_message(pending_tool_event_ids, assistant_message_id)
+    if ctx is not None:
+        persist_citations_for_assistant_message(assistant_message_id, ctx)
+    return assistant_message_id
 
 
 def _store_ab_message(
@@ -301,6 +336,117 @@ def _planning_stream_results(
         yield _sse("scaffold", row)
 
 
+def _openai_supports_thinking(target) -> bool:
+    model = str(getattr(target, "model", "") or "").strip().lower()
+    return model.startswith("gpt-5") or model.startswith("o")
+
+
+def _map_openai_reasoning_effort(level: int) -> str:
+    lvl = max(0, min(10, int(level or 0)))
+    if lvl <= 0:
+        return "none"
+    if lvl <= 2:
+        return "low"
+    if lvl <= 6:
+        return "medium"
+    return "high"
+
+
+def _build_request_options(target, model_settings: dict[str, object] | None) -> dict[str, object]:
+    settings = dict(model_settings or {})
+    options: dict[str, object] = {}
+    if settings.get("max_output_tokens") is not None:
+        options["max_output_tokens"] = int(settings["max_output_tokens"])
+    provider_type = str(getattr(target, "provider_type", "") or "").strip().lower()
+    if settings.get("temperature") is not None:
+        temp_value = float(settings["temperature"])
+        if provider_type == "openai" and _openai_supports_thinking(target):
+            log_info("Skipping temperature for OpenAI reasoning model %s; API may reject it as unsupported.", getattr(target, "model", ""))
+        else:
+            options["temperature"] = temp_value
+    if settings.get("top_p") is not None:
+        options["top_p"] = float(settings["top_p"])
+    if settings.get("top_k") is not None:
+        options["top_k"] = int(settings["top_k"])
+
+    thinking_level = int(settings.get("thinking_level") or 0)
+    show_thinking = bool(settings.get("show_thinking", True))
+
+    if provider_type == "openai":
+        if _openai_supports_thinking(target):
+            if thinking_level > 0:
+                reasoning = {"effort": _map_openai_reasoning_effort(thinking_level)}
+                if show_thinking:
+                    reasoning["summary"] = "auto"
+                options["reasoning"] = reasoning
+            elif show_thinking:
+                log_info("Thinking disabled for deployment %s because thinking level is 0.", getattr(target, "id", ""))
+        elif thinking_level > 0 or show_thinking:
+            log_info("Thinking requested for unsupported OpenAI model %s; ignoring.", getattr(target, "model", ""))
+    return options
+
+
+def _thinking_event_input_payload(target, model_settings: dict[str, object], request_options: dict[str, object]) -> dict[str, object]:
+    return {
+        "provider": getattr(target, "provider_id", None),
+        "deployment_id": getattr(target, "id", None),
+        "model": getattr(target, "model", None),
+        "thinking_level": model_settings.get("thinking_level"),
+        "show_thinking": model_settings.get("show_thinking"),
+        "request_options": request_options,
+    }
+
+
+def _create_thinking_event_start(*, conversation_id: str, target, model_settings: dict[str, object], request_options: dict[str, object]) -> tuple[int | None, dict[str, object]]:
+    title = f"Thinking · {getattr(target, 'display_name', None) or getattr(target, 'model', 'model')}"
+    row = {
+        "id": None,
+        "row_type": "scaffold_event",
+        "conversation_id": conversation_id,
+        "message_id": None,
+        "event_kind": "thinking",
+        "status": "running",
+        "title": title,
+        "body_text": "",
+        "input_json": _thinking_event_input_payload(target, model_settings, request_options),
+        "output_json": {"text": ""},
+        "created_at": None,
+        "updated_at": None,
+    }
+    try:
+        event_id = db_create_conversation_scaffold_event(
+            conversation_id=conversation_id,
+            event_kind="thinking",
+            status="running",
+            title=title,
+            body_text="",
+            input_json=row["input_json"],
+            output_json=row["output_json"],
+        )
+        row["id"] = event_id
+    except Exception as exc:
+        log_warn("Thinking scaffold start persistence failed for %s: %s", conversation_id, exc)
+    return row.get("id"), row
+
+
+def _update_thinking_event(*, event_id: int | None, row: dict[str, object], text_value: str, done: bool = False) -> dict[str, object]:
+    row["status"] = "ok" if done else "running"
+    row["body_text"] = text_value.strip()
+    row["output_json"] = {"text": text_value}
+    if event_id is not None:
+        try:
+            db_update_conversation_scaffold_event(
+                event_id=event_id,
+                status=str(row["status"]),
+                body_text=str(row["body_text"]),
+                output_json=row["output_json"],
+            )
+        except Exception as exc:
+            log_warn("Thinking scaffold update failed for event %s: %s", event_id, exc)
+    row["row_type"] = "scaffold_event"
+    return dict(row)
+
+
 # endregion
 
 # region Chat Endpoints
@@ -361,6 +507,8 @@ def chat(
 
     target = providers.resolve_chat_target(requested_model or None)
     provider = providers.get_chat_provider(target)
+    model_settings = get_effective_model_settings("conversation", cid)
+    request_options = _build_request_options(target, model_settings)
 
     def gen():
         final_text = ""
@@ -371,6 +519,49 @@ def chat(
         seen_scaffold_ids: set[int] = set()
         scaffold_cursor = max(0, int(scaffold_baseline_id or 0))
         scaffold_state = {"value": scaffold_cursor}
+        thinking_event_id: int | None = None
+        thinking_row: dict[str, object] | None = None
+        thinking_text_parts: list[str] = []
+        live_text_parts: list[str] = []
+
+        def _emit_assistant_delta(delta_text: str):
+            if not delta_text:
+                return
+            live_text_parts.append(delta_text)
+            return _sse("assistant.delta", {"slot": None, "text": delta_text})
+
+        def _emit_stream_item(item, parts: list[str]):
+            nonlocal thinking_event_id, thinking_row
+            if isinstance(item, dict) and str(item.get("type") or "").startswith("reasoning_"):
+                delta_text = str(item.get("delta") or item.get("text") or "")
+                if not delta_text:
+                    return
+                thinking_text_parts.append(delta_text)
+                current_text = "".join(thinking_text_parts)
+                if thinking_row is None:
+                    thinking_event_id, thinking_row = _create_thinking_event_start(
+                        conversation_id=cid,
+                        target=target,
+                        model_settings=model_settings,
+                        request_options=request_options,
+                    )
+                    if thinking_event_id is not None:
+                        pending_tool_event_ids.append(int(thinking_event_id))
+                if thinking_row is not None:
+                    row = _update_thinking_event(
+                        event_id=thinking_event_id,
+                        row=thinking_row,
+                        text_value=current_text,
+                        done=(item.get("type") == "reasoning_done"),
+                    )
+                    yield _sse("scaffold", row)
+                return
+            delta = str(item or "")
+            if delta:
+                parts.append(delta)
+                frame = _emit_assistant_delta(delta)
+                if frame:
+                    yield frame
 
         try:
             frames, scaffold_cursor = _collect_new_scaffold_frames(
@@ -391,6 +582,7 @@ def chat(
                         tool_cfg=tool_cfg,
                         tools=tools,
                         user_message_id=user_message_id,
+                        request_options=request_options,
                     )
                     preflight_result = yield from _planning_stream_results(
                         planning_iter,
@@ -410,12 +602,13 @@ def chat(
             if used_preflight_tools:
                 wrapper_text = tool_wrapper_text(preflight_terminal_text or "")
                 if wrapper_text:
-                    yield _sse("assistant.delta", {"slot": None, "text": wrapper_text})
+                    frame = _emit_assistant_delta(wrapper_text)
+                    if frame:
+                        yield frame
                 follow_input = remove_tool_prompt_messages(preflight_input)
                 parts: list[str] = []
-                for delta in provider.stream_text(target, follow_input):
-                    parts.append(delta)
-                    yield _sse("assistant.delta", {"slot": None, "text": delta})
+                for item in provider.stream_text(target, follow_input, request_options=request_options):
+                    yield from _emit_stream_item(item, parts)
                 final_text = postprocess_text((wrapper_text if wrapper_text else "") + "".join(parts))
             elif preflight_terminal_text is not None:
                 final_text = postprocess_text(preflight_terminal_text)
@@ -430,9 +623,8 @@ def chat(
                     })
             else:
                 parts: list[str] = []
-                for delta in provider.stream_text(target, raw_input):
-                    parts.append(delta)
-                    yield _sse("assistant.delta", {"slot": None, "text": delta})
+                for item in provider.stream_text(target, raw_input, request_options=request_options):
+                    yield from _emit_stream_item(item, parts)
 
                 streamed_text = strip_zeitgeber_prefix("".join(parts))
                 if response_requests_tool_execution(streamed_text, tools):
@@ -445,6 +637,7 @@ def chat(
                         tools=tools,
                         user_message_id=user_message_id,
                         initial_assistant_text=streamed_text,
+                        request_options=request_options,
                     )
                     while True:
                         try:
@@ -470,9 +663,8 @@ def chat(
                         if terminal_text is None:
                             follow_input = remove_tool_prompt_messages(expanded_input)
                             follow_parts: list[str] = []
-                            for delta in provider.stream_text(target, follow_input):
-                                follow_parts.append(delta)
-                                yield _sse("assistant.delta", {"slot": None, "text": delta})
+                            for item in provider.stream_text(target, follow_input, request_options=request_options):
+                                yield from _emit_stream_item(item, follow_parts)
                             final_text = postprocess_text("".join(follow_parts))
                         else:
                             final_text = postprocess_text(terminal_text)
@@ -499,6 +691,7 @@ def chat(
                         "model": target.model,
                         "provider": target.provider_id,
                         "deployment_id": target.id,
+                        "model_settings": model_settings,
                     },
                 )
                 attach_scaffold_events_to_message(pending_tool_event_ids, assistant_message_id)
@@ -508,11 +701,22 @@ def chat(
             payload = dict(e.payload or {})
             if "provider_error_type" not in payload:
                 payload["provider_error_type"] = type(e).__name__
+            partial_text = postprocess_text("".join(live_text_parts)) if live_text_parts else ""
+            had_partial = bool((partial_text or "").strip())
+            if had_partial:
+                _store_partial_single_message(
+                    conversation_id=cid,
+                    target=target,
+                    text=partial_text,
+                    model_settings=model_settings,
+                    pending_tool_event_ids=pending_tool_event_ids,
+                    ctx=ctx,
+                )
             _store_single_error_message(
                 conversation_id=cid,
                 target=target,
                 payload=payload,
-                pending_tool_event_ids=pending_tool_event_ids,
+                pending_tool_event_ids=[] if had_partial else pending_tool_event_ids,
             )
             yield _sse("assistant.final", {
                 "slot": None,
@@ -522,15 +726,27 @@ def chat(
                 "model": target.model,
                 "provider": target.provider_id,
                 "deployment_id": target.id,
+                "append_error": had_partial,
             })
         except Exception as e:
             log_error("Chat stream failed for conversation %s: %s%s", cid, e, traceback.format_exc())
             payload = _generic_error_payload(e)
+            partial_text = postprocess_text("".join(live_text_parts)) if live_text_parts else ""
+            had_partial = bool((partial_text or "").strip())
+            if had_partial:
+                _store_partial_single_message(
+                    conversation_id=cid,
+                    target=target,
+                    text=partial_text,
+                    model_settings=model_settings,
+                    pending_tool_event_ids=pending_tool_event_ids,
+                    ctx=ctx,
+                )
             _store_single_error_message(
                 conversation_id=cid,
                 target=target,
                 payload=payload,
-                pending_tool_event_ids=pending_tool_event_ids,
+                pending_tool_event_ids=[] if had_partial else pending_tool_event_ids,
             )
             yield _sse("assistant.final", {
                 "slot": None,
@@ -540,6 +756,7 @@ def chat(
                 "model": target.model,
                 "provider": target.provider_id,
                 "deployment_id": target.id,
+                "append_error": had_partial,
             })
 
     resp = StreamingResponse(gen(), media_type="text/event-stream; charset=utf-8")
@@ -630,6 +847,7 @@ async def chat_ab(
                     tool_cfg=tool_cfg,
                     tools=tools,
                     user_message_id=user_message_id,
+                    request_options=_build_request_options(target_a, get_effective_model_settings("conversation", cid)),
                 )
                 while True:
                     try:
@@ -682,7 +900,7 @@ async def chat_ab(
         queue: asyncio.Queue[tuple[str, object, str, RowDict]] = asyncio.Queue()
 
         async def run_slot(slot: str, target, requested_model_name: str, forced_result: RowDict | None = None):
-            res = forced_result if forced_result is not None else await call_model_with_recovery(target, final_input)
+            res = forced_result if forced_result is not None else await call_model_with_recovery(target, final_input, request_options=_build_request_options(target, get_effective_model_settings("conversation", cid)))
             await queue.put((slot, target, requested_model_name, res))
 
         task_a = None

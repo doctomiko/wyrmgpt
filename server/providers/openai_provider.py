@@ -1,3 +1,4 @@
+import re
 from typing import Any, Iterator, cast
 
 from openai import OpenAI, APIStatusError
@@ -91,6 +92,68 @@ def extract_error_message(payload: dict[str, Any]) -> str:
     return "API error"
 
 
+def _unsupported_parameter_name(payload: dict[str, Any]) -> str | None:
+    msg = extract_error_message(payload)
+    if not msg:
+        return None
+    m = re.search(r"Unsupported parameter:\s*[\"']([^\"']+)[\"']", msg)
+    if m:
+        return (m.group(1) or "").strip() or None
+    return None
+
+
+def _drop_nested_option(options: dict[str, Any], dotted_name: str) -> tuple[dict[str, Any], bool]:
+    if not dotted_name:
+        return dict(options), False
+
+    out = dict(options)
+    parts = [p for p in str(dotted_name).split('.') if p]
+    if not parts:
+        return out, False
+
+    if len(parts) == 1:
+        key = parts[0]
+        if key in out:
+            out.pop(key, None)
+            return out, True
+        return out, False
+
+    head = parts[0]
+    cur = out.get(head)
+    if not isinstance(cur, dict):
+        return out, False
+
+    cur_copy = dict(cur)
+    node = cur_copy
+    changed = False
+    for part in parts[1:-1]:
+        child = node.get(part)
+        if not isinstance(child, dict):
+            return out, False
+        child_copy = dict(child)
+        node[part] = child_copy
+        node = child_copy
+    leaf = parts[-1]
+    if leaf in node:
+        node.pop(leaf, None)
+        changed = True
+
+    if changed:
+        if cur_copy:
+            out[head] = cur_copy
+        else:
+            out.pop(head, None)
+    return out, changed
+
+
+def _maybe_retryable_options_from_error(options: dict[str, Any], payload: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    name = _unsupported_parameter_name(payload)
+    if not name:
+        return dict(options), None
+    stripped, changed = _drop_nested_option(options, name)
+    return stripped, (name if changed else None)
+
+
 class OpenAIProvider:
     def __init__(self, provider_def: ProviderDef, model_catalog: ModelCatalog | None = None):
         kwargs: dict[str, Any] = {}
@@ -111,41 +174,78 @@ class OpenAIProvider:
         model_input: ModelInput,
         request_options: dict[str, Any] | None = None,
     ) -> ChatResult:
-        try:
-            kwargs: dict[str, Any] = dict(request_options or {})
-            resp = self.client.responses.create(
-                model=deployment.model,
-                input=cast(ResponseInputParam, model_input),
-                **kwargs,
-            )
-            text = extract_output_text(resp)
-            return ChatResult(
-                text=text,
-                provider_id=deployment.provider_id,
-                deployment_id=deployment.id,
-                model=deployment.model,
-                raw=resp,
-            )
-        except APIStatusError as e:
-            payload = openai_error_payload(e)
-            raise ProviderExecutionError(extract_error_message(payload), payload=payload) from e
+        kwargs: dict[str, Any] = dict(request_options or {})
+        retried_without: list[str] = []
+        for _attempt in range(2):
+            try:
+                resp = self.client.responses.create(
+                    model=deployment.model,
+                    input=cast(ResponseInputParam, model_input),
+                    **kwargs,
+                )
+                text = extract_output_text(resp)
+                return ChatResult(
+                    text=text,
+                    provider_id=deployment.provider_id,
+                    deployment_id=deployment.id,
+                    model=deployment.model,
+                    raw=resp,
+                    warnings=[f"Dropped unsupported parameter: {name}" for name in retried_without],
+                )
+            except APIStatusError as e:
+                payload = openai_error_payload(e)
+                stripped_kwargs, stripped_name = _maybe_retryable_options_from_error(kwargs, payload)
+                if stripped_name and stripped_kwargs != kwargs:
+                    kwargs = stripped_kwargs
+                    retried_without.append(stripped_name)
+                    continue
+                raise ProviderExecutionError(extract_error_message(payload), payload=payload) from e
 
-    def stream_text(self, deployment: ResolvedDeployment, model_input: ModelInput) -> Iterator[str]:
-        try:
-            with self.client.responses.stream(
-                model=deployment.model,
-                input=cast(ResponseInputParam, model_input),
-            ) as stream:
-                for event in stream:
-                    if event.type == "response.output_text.delta":
-                        yield event.delta
-                    elif event.type == "response.refusal.delta":
-                        yield event.delta
-                    elif event.type == "response.error":
-                        yield "\n[error]\n"
-        except APIStatusError as e:
-            payload = openai_error_payload(e)
-            raise ProviderExecutionError(extract_error_message(payload), payload=payload) from e
+    def stream_text(
+        self,
+        deployment: ResolvedDeployment,
+        model_input: ModelInput,
+        request_options: dict[str, Any] | None = None,
+    ) -> Iterator[Any]:
+        kwargs: dict[str, Any] = dict(request_options or {})
+        saw_stream_item = False
+        for _attempt in range(2):
+            try:
+                with self.client.responses.stream(
+                    model=deployment.model,
+                    input=cast(ResponseInputParam, model_input),
+                    **kwargs,
+                ) as stream:
+                    for event in stream:
+                        saw_stream_item = True
+                        if event.type == "response.output_text.delta":
+                            yield event.delta
+                        elif event.type == "response.refusal.delta":
+                            yield event.delta
+                        elif event.type == "response.reasoning_summary_text.delta":
+                            yield {
+                                "type": "reasoning_delta",
+                                "delta": getattr(event, "delta", "") or "",
+                                "summary_index": getattr(event, "summary_index", None),
+                                "item_id": getattr(event, "item_id", None),
+                            }
+                        elif event.type == "response.reasoning_summary_text.done":
+                            yield {
+                                "type": "reasoning_done",
+                                "text": getattr(event, "text", "") or "",
+                                "summary_index": getattr(event, "summary_index", None),
+                                "item_id": getattr(event, "item_id", None),
+                            }
+                        elif event.type == "response.error":
+                            yield "\n[error]\n"
+                return
+            except APIStatusError as e:
+                payload = openai_error_payload(e)
+                stripped_kwargs, stripped_name = _maybe_retryable_options_from_error(kwargs, payload)
+                if (not saw_stream_item) and stripped_name and stripped_kwargs != kwargs:
+                    kwargs = stripped_kwargs
+                    continue
+                raise ProviderExecutionError(extract_error_message(payload), payload=payload) from e
 
     def list_models(self, provider: ProviderDef) -> list[ModelInfo]:
         out: list[ModelInfo] = []

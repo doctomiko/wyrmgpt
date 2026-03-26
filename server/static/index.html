@@ -115,6 +115,65 @@
           </div>
         </div>
 
+        <div id="modelSettingsSection" class="memSection">
+          <div id="modelSettingsTitle" class="memTitle">Model Behavior Settings</div>
+          <div class="memHint">
+            These controls affect model behavior at the current scope. Project and conversation values override global defaults.
+          </div>
+          <div class="memGrid2">
+            <label>
+              Heat
+              <input id="modelTemperature" type="range" min="0" max="2" step="0.1" />
+              <div class="memHint" id="modelTemperatureValue"></div>
+            </label>
+            <label>
+              Thinking Level
+              <input id="modelThinkingLevel" type="range" min="0" max="10" step="1" />
+              <div class="memHint" id="modelThinkingLevelValue"></div>
+            </label>
+            <label class="checkboxRow span2">
+              <input id="modelShowThinking" type="checkbox" />
+              Show Thinking
+            </label>
+            <label>
+              Verbosity
+              <input id="modelVerbosity" type="range" min="0" max="10" step="1" />
+              <div class="memHint" id="modelVerbosityValue"></div>
+            </label>
+            <label>
+              Tool Aggressiveness
+              <input id="modelToolAggressiveness" type="range" min="0" max="10" step="1" />
+              <div class="memHint" id="modelToolAggressivenessValue"></div>
+            </label>
+            <label class="span2">
+              Hard token limit
+              <input id="modelMaxOutputTokens" type="number" min="1" placeholder="Leave blank to inherit/default" />
+            </label>
+            <label class="span2">
+              <details class="scaffoldDetails settingsAdvanced">
+                <summary class="scaffoldDetailsSummary">Advanced: Use at Your Own Risk</summary>
+                <div class="memGrid2" style="margin-top: 10px;">
+                  <label>
+                    Top P
+                    <input id="modelTopP" type="number" min="0" max="1" step="0.01" placeholder="inherit" />
+                  </label>
+                  <label>
+                    Top K
+                    <input id="modelTopK" type="number" min="1" step="1" placeholder="inherit" />
+                  </label>
+                </div>
+              </details>
+            </label>
+          </div>
+          <div class="memHint">
+            For Anthropic models, thinking is incompatible with temperature and forced tool use. If you select thinking above zero, those invalid options will be ignored when necessary.
+          </div>
+          <div class="memAdd">
+            <button id="saveModelSettings">Save Model Settings</button>
+            <button id="resetModelSettings">Reset Scoped Overrides</button>
+          </div>
+        </div>
+
         <div id="querySettingsSection" class="memSection">
           <div id="querySettingsTitle" class="memTitle">Query / Retrieval Settings</div>
           <div class="memHint">
@@ -201,7 +260,7 @@
             </div>
           </div>
         </div>
-        <div class="memSection">
+        <div id="customInstructionsSection" class="memSection">
           <div class="memTitle">Custom Instructions</div>
           <div class="span2">
             <textarea id="pinText" rows="3" placeholder="Add an instruction…"></textarea>
@@ -210,7 +269,7 @@
           </div>
           <div id="pinList" class="pinList"></div>
         </div>
-        <div class="memSection">
+        <div id="memoriesSection" class="memSection">
           <div class="memTitle">Add/Edit Memory</div>
           <div class="memAdd span2-important">
             <textarea id="memoryText" rows="3" placeholder="Store a longer-term memory…"></textarea>
@@ -351,6 +410,7 @@
     <button id="menuRename">Rename</button>
     <button id="menuSuggest">Suggest Title</button>
     <button id="menuSummarize">Summarize</button>
+    <button id="menuConvSettings">Conversation Settings…</button>
     <hr />
     <button id="menuMoveTo">Move To…</button>
     <button id="menuExportTranscript">Export Transcript</button>

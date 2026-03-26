@@ -303,6 +303,7 @@ def iter_expand_input_with_tool_requests(
     providers: ProviderRegistry | None = None,
     user_message_id: int | None = None,
     initial_assistant_text: str | None = None,
+    request_options: dict[str, Any] | None = None,
 ) -> Iterator[dict[str, Any]]:
     del user_message_id  # reserved for future tool metadata, intentionally unused for now
     tools = tools or runtime.TOOL_REGISTRY
@@ -331,7 +332,7 @@ def iter_expand_input_with_tool_requests(
 
     while remaining_calls > 0:
         if pending_text is None:
-            result = provider.complete(target, working_input)
+            result = provider.complete(target, working_input, request_options=request_options)
             pending_text = strip_zeitgeber_prefix(result.text or "")
 
         requests = tools.extract_requests_from_text(pending_text or "")

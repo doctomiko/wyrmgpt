@@ -1,30 +1,42 @@
 
 // #region Personalization Modal Helpers
 
+function syncModelSettingsLabels() {
+  if (modelTemperatureValueEl && modelTemperatureEl) modelTemperatureValueEl.textContent = `Current: ${Number(modelTemperatureEl.value || 0).toFixed(1)}`;
+  if (modelThinkingLevelValueEl && modelThinkingLevelEl) modelThinkingLevelValueEl.textContent = `Current: ${modelThinkingLevelEl.value || "0"}`;
+  if (modelVerbosityValueEl && modelVerbosityEl) modelVerbosityValueEl.textContent = `Current: ${modelVerbosityEl.value || "0"}`;
+  if (modelToolAggressivenessValueEl && modelToolAggressivenessEl) modelToolAggressivenessValueEl.textContent = `Current: ${modelToolAggressivenessEl.value || "0"}`;
+}
+
+function applyPersonalizationSectionVisibility() {
+  const isGlobal = personalizationMode === "global";
+  const isProject = personalizationMode === "project";
+  const isConversation = personalizationMode === "conversation";
+  if (projectSettingsSectionEl) projectSettingsSectionEl.classList.toggle("hidden", !isProject);
+  if (aboutYouSectionEl) aboutYouSectionEl.classList.toggle("hidden", !isGlobal);
+  if (querySettingsSectionEl) querySettingsSectionEl.classList.toggle("hidden", isConversation);
+  if (customInstructionsSectionEl) customInstructionsSectionEl.classList.toggle("hidden", isConversation);
+  if (memoriesSectionEl) memoriesSectionEl.classList.toggle("hidden", isConversation);
+  if (modelSettingsSectionEl) modelSettingsSectionEl.classList.remove("hidden");
+}
+
 function setPersonalizationModeGlobal() {
   personalizationMode = "global";
   personalizationProjectId = null;
-
-  if (projectSettingsSectionEl) projectSettingsSectionEl.classList.add("hidden");
-  if (aboutYouSectionEl) aboutYouSectionEl.classList.remove("hidden");
-
+  personalizationConversationId = null;
+  applyPersonalizationSectionVisibility();
   const title = persModal?.querySelector(".modalTitle");
   if (title) title.textContent = "Personalization";
-
-  if (projectSettingsTitle) {
-    projectSettingsTitle.textContent = "Project Settings";
-  }
-  if (querySettingsTitleEl) {
-    querySettingsTitleEl.textContent = "Global Query / Retrieval Settings";
-  }
+  if (projectSettingsTitle) projectSettingsTitle.textContent = "Project Settings";
+  if (querySettingsTitleEl) querySettingsTitleEl.textContent = "Global Query / Retrieval Settings";
+  if (modelSettingsTitleEl) modelSettingsTitleEl.textContent = "Global Model Behavior Settings";
 }
 
 function setPersonalizationModeProject(projectObj) {
   personalizationMode = "project";
   personalizationProjectId = projectObj?.id ?? null;
-
-  if (projectSettingsSectionEl) projectSettingsSectionEl.classList.remove("hidden");
-  if (aboutYouSectionEl) aboutYouSectionEl.classList.add("hidden");
+  personalizationConversationId = null;
+  applyPersonalizationSectionVisibility();
 
   if (projectSystemPromptEl) projectSystemPromptEl.value = projectObj?.system_prompt || "";
   if (projectVisibilityEl) projectVisibilityEl.value = projectObj?.visibility || "private";
@@ -41,6 +53,20 @@ function setPersonalizationModeProject(projectObj) {
   if (querySettingsTitleEl) {
     querySettingsTitleEl.textContent = `Project Query / Retrieval Settings — ${projectObj?.name || "Project"}`;
   }
+  if (modelSettingsTitleEl) {
+    modelSettingsTitleEl.textContent = `Project Model Behavior Settings — ${projectObj?.name || "Project"}`;
+  }
+}
+
+function setPersonalizationModeConversation(conversationObj) {
+  personalizationMode = "conversation";
+  personalizationConversationId = conversationObj?.id ?? conversationId ?? null;
+  personalizationProjectId = conversationObj?.project_id ?? null;
+  applyPersonalizationSectionVisibility();
+  const label = conversationObj?.title || "Conversation";
+  const title = persModal?.querySelector(".modalTitle");
+  if (title) title.textContent = `Conversation Settings — ${label}`;
+  if (modelSettingsTitleEl) modelSettingsTitleEl.textContent = `Conversation Model Behavior Settings — ${label}`;
 }
 
 function openMemoryModal() {
@@ -59,7 +85,8 @@ async function loadPersonalization() {
     fetchPins(),
     fetchAboutYou(),
     loadMemories(),
-    loadQuerySettingsForCurrentMode()
+    loadQuerySettingsForCurrentMode(),
+    loadModelSettingsForCurrentMode()
   ]);
   let filteredPins = pins || [];
   if (personalizationMode === "project" && personalizationProjectId != null) {
@@ -169,6 +196,70 @@ async function saveQuerySettingsForCurrentMode() {
 
   populateQuerySettingsForm(data);
   await refreshContext();
+  return data;
+}
+
+async function fetchModelSettings(scopeType, scopeId = "") {
+  const qs = new URLSearchParams({ scope_type: scopeType || "global", scope_id: String(scopeId || "") });
+  return await fetchJsonDebug(`/api/model_settings?${qs.toString()}`);
+}
+
+function _modelSettingsScopeParts() {
+  if (personalizationMode === "project") return { scopeType: "project", scopeId: String(personalizationProjectId || "") };
+  if (personalizationMode === "conversation") return { scopeType: "conversation", scopeId: String(personalizationConversationId || conversationId || "") };
+  return { scopeType: "global", scopeId: "" };
+}
+
+function populateModelSettingsForm(data) {
+  const eff = data?.effective || {};
+  if (modelTemperatureEl) modelTemperatureEl.value = String(eff.temperature ?? 0.7);
+  if (modelThinkingLevelEl) modelThinkingLevelEl.value = String(eff.thinking_level ?? 0);
+  if (modelShowThinkingEl) modelShowThinkingEl.checked = !!eff.show_thinking;
+  if (modelVerbosityEl) modelVerbosityEl.value = String(eff.verbosity ?? 5);
+  if (modelToolAggressivenessEl) modelToolAggressivenessEl.value = String(eff.tool_aggressiveness ?? 5);
+  if (modelMaxOutputTokensEl) modelMaxOutputTokensEl.value = eff.max_output_tokens == null ? "" : String(eff.max_output_tokens);
+  if (modelTopPEl) modelTopPEl.value = eff.top_p == null ? "" : String(eff.top_p);
+  if (modelTopKEl) modelTopKEl.value = eff.top_k == null ? "" : String(eff.top_k);
+  syncModelSettingsLabels();
+}
+
+async function loadModelSettingsForCurrentMode() {
+  const { scopeType, scopeId } = _modelSettingsScopeParts();
+  const data = await fetchModelSettings(scopeType, scopeId);
+  populateModelSettingsForm(data);
+  if (resetModelSettingsBtn) resetModelSettingsBtn.disabled = scopeType === "global";
+  return data;
+}
+
+async function saveModelSettingsForCurrentMode() {
+  const { scopeType, scopeId } = _modelSettingsScopeParts();
+  const payload = {
+    scope_type: scopeType,
+    scope_id: scopeId,
+    temperature: parseFloat(modelTemperatureEl?.value || "0.7"),
+    thinking_level: parseInt(modelThinkingLevelEl?.value || "0", 10) || 0,
+    show_thinking: !!modelShowThinkingEl?.checked,
+    verbosity: parseInt(modelVerbosityEl?.value || "5", 10) || 0,
+    tool_aggressiveness: parseInt(modelToolAggressivenessEl?.value || "5", 10) || 0,
+    max_output_tokens: modelMaxOutputTokensEl?.value ? parseInt(modelMaxOutputTokensEl.value, 10) : null,
+    top_p: modelTopPEl?.value ? parseFloat(modelTopPEl.value) : null,
+    top_k: modelTopKEl?.value ? parseInt(modelTopKEl.value, 10) : null,
+  };
+  const data = await fetchJsonDebug('/api/model_settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  populateModelSettingsForm(data);
+  return data;
+}
+
+async function resetModelSettingsForCurrentMode() {
+  const { scopeType, scopeId } = _modelSettingsScopeParts();
+  if (scopeType === 'global') return;
+  const qs = new URLSearchParams({ scope_type: scopeType, scope_id: scopeId });
+  const data = await fetchJsonDebug(`/api/model_settings?${qs.toString()}`, { method: 'DELETE' });
+  populateModelSettingsForm(data);
   return data;
 }
 

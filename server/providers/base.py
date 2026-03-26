@@ -11,7 +11,12 @@ class ChatProvider(Protocol):
     ) -> ChatResult:
         ...
 
-    def stream_text(self, deployment: ResolvedDeployment, model_input: ModelInput) -> Iterator[str]:
+    def stream_text(
+        self,
+        deployment: ResolvedDeployment,
+        model_input: ModelInput,
+        request_options: dict[str, Any] | None = None,
+    ) -> Iterator[Any]:
         ...
 
 

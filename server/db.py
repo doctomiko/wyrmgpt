@@ -302,6 +302,41 @@ def ensure_default_app_setting(
             ),
         )
 
+
+def delete_app_setting(
+    key: str,
+    scope_type: str = "global",
+    scope_id: str = "",
+) -> None:
+    with db_session() as conn:
+        conn.execute(
+            "DELETE FROM app_settings WHERE scope_type = ? AND scope_id = ? AND key = ?",
+            (
+                (scope_type or "global").strip(),
+                (scope_id or "").strip(),
+                key.strip(),
+            ),
+        )
+
+
+def delete_app_settings_by_prefix(
+    prefix: str,
+    scope_type: str = "global",
+    scope_id: str = "",
+) -> None:
+    pref = (prefix or "").strip()
+    if not pref:
+        return
+    with db_session() as conn:
+        conn.execute(
+            "DELETE FROM app_settings WHERE scope_type = ? AND scope_id = ? AND key LIKE ?",
+            (
+                (scope_type or "global").strip(),
+                (scope_id or "").strip(),
+                f"{pref}%",
+            ),
+        )
+
 # endregion
 
 # ----------------------------
@@ -5727,8 +5762,8 @@ def create_or_update_conversation_scaffold_event_by_input_conn(
         conn.execute(
             """
             UPDATE conversation_scaffold_events
-                input_json = ?,
             SET
+                input_json = ?,
                 message_id = ?,
                 status = ?,
                 title = ?,
@@ -5939,7 +5974,7 @@ def db_list_conversation_scaffold_events_since(
 
 def _scaffold_event_anchor_before_message(event_kind: str) -> bool:
     ek = (event_kind or "").strip().lower()
-    return ek.startswith("tool") or ek in {"artifact_reading_notes"}
+    return ek.startswith("tool") or ek in {"artifact_reading_notes", "thinking"}
 
 
 def db_list_conversation_history_with_scaffold_events(

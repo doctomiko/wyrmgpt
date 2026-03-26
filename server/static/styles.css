@@ -470,6 +470,22 @@ main#chat {
   background: linear-gradient(180deg, rgba(9, 58, 37, 0.9), rgba(6, 38, 25, 0.9));
 }
 
+
+.scaffoldCard[data-kind="thinking"] {
+  border-color: rgba(255, 215, 120, 0.32);
+  border-left-color: rgba(255, 212, 98, 0.92);
+  background: linear-gradient(180deg, rgba(86, 58, 10, 0.92), rgba(59, 38, 8, 0.92));
+}
+
+.scaffoldCard[data-kind="thinking"][data-status="running"] {
+  background: linear-gradient(180deg, rgba(108, 73, 10, 0.94), rgba(67, 43, 8, 0.94));
+}
+
+.scaffoldCard[data-kind="thinking"] .scaffoldBadge {
+  background: rgba(255, 219, 127, 0.14);
+  border-color: rgba(255, 219, 127, 0.28);
+}
+
 .scaffoldCard[data-status="error"] {
   background: linear-gradient(180deg, rgba(68, 20, 20, 0.92), rgba(46, 12, 12, 0.92));
   border-color: rgba(255, 170, 170, 0.32);
