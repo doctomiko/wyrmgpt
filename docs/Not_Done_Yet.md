@@ -29,6 +29,8 @@ Now for the unfinished bits.
 
 ## 1. Live web retrieval is not actually part of the active RAG pipeline
 
+**UPDATED 3/26**: Tooling supports "web.ingest" and "web.search" both of which can be fed into context. RAG framework does not automatically burn Brave Search API tokens.
+
 The design docs talk about web as a first-class retrieval source.
 
 The live code does not currently wire web search into normal context retrieval.
@@ -50,6 +52,8 @@ So right now this is more like a debug hint than a finished feature.
 ---
 
 ## 3. Image understanding is minimal
+
+**UPDATED 3/23**: There is now Describe Image and OCR buttons in the Manage Files modal. You can attach an AI generated image summary to any image. These may not surface in RAG yet, but it is in the plan to confirm that they should do so in the future. There is no bulk summary script yet.
 
 Uploaded images are artifacted as image references.
 
@@ -116,6 +120,8 @@ If you care about strict separation, keep an eye on this and test it like you me
 
 ## 8. Provider abstraction is not finished
 
+**UPDATE 3/25**: Providers are fully abstracted and we now support OpenAI, OpenAI-like APIs, LM Studio, Ollama, Anthropic (Claude), and Google AI (Gemini).
+
 The app structure hints at a future where more providers could exist.
 
 The live implementation is still very OpenAI-centered.
@@ -158,6 +164,8 @@ That is not a minor footnote. It means:
 
 ## 11. Chunk-level curation UI is not finished
 
+**UPDATED 3/25**: There is now a Library modal at the global, project, and conversation level. This will show all the artifacts for a given scope, and allows for some management functions. It is helpful to diagnose why RAG may not be finding content you wished to surface.
+
 The codebase has the bones for richer retrieval control, but the UI is not yet a full “corpus librarian” dashboard.
 
 What users can already do:
@@ -180,6 +188,8 @@ So the retrieval substrate is farther along than the retrieval control surface.
 
 ## 12. Some code cleanup debt is still plainly present
 
+**UPDATED 3/25**: We have started to remove commented code blocks and "if (False)" now that we're more confident in GitHub to do this work for us. Getting rid of these also makes diffs easier to use.
+
 This repo is functional, but it is not pretending to be squeaky-clean.
 
 You can see active cleanup debt in things like:
@@ -194,6 +204,8 @@ That does not mean the app is broken. It means the code is mid-flight rather tha
 ---
 
 ## 13. A few design-doc promises are still ahead of reality
+
+**UPDATED 3/22**: Web retrieval should behave like any other artifact. Many of the shortcomings described below have been resolved - if only partially.
 
 Some of the project docs describe a larger future system than the one running today.
 
