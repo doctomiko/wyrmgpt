@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .artifact_reading_planner import ArtifactReadiness, get_artifact_readiness
 from .chunking import chunk_markdown, chunk_prose
-from .config import load_deployment_defs, load_provider_defs, load_summary_config
+from .config import load_summary_config
 from .db import (
     db_session,
     get_artifact_derivative,
@@ -17,10 +17,10 @@ from .db import (
     set_artifact_summary,
     upsert_artifact_derivative_conn,
 )
-from .providers.base import ChatProvider, ModelCatalogProvider
-from .providers.openai_provider import OpenAIProvider
+from .providers.base import ChatProvider
+from .providers.factories import build_provider_registry
 from .providers.registry import ProviderRegistry
-from .providers.types import ModelCatalog, ModelInput, ProviderDef, ResolvedDeployment
+from .providers.types import ModelCatalog, ModelInput, ResolvedDeployment
 from .summary_helper import _call_summary_model, _chunk_transcript, cleanup_summary_text
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,32 +51,6 @@ def _load_model_catalog() -> ModelCatalog:
         return {}
 
 
-def _build_provider_registry(model_catalog: ModelCatalog) -> ProviderRegistry:
-    providers = load_provider_defs()
-    deployments = load_deployment_defs()
-
-    compat_factory = lambda provider_def: OpenAIProvider(provider_def, model_catalog=model_catalog)
-
-    chat_factories: dict[str, Callable[[ProviderDef], ChatProvider]] = {
-        "openai": compat_factory,
-        "ollama": compat_factory,
-        "lmstudio": compat_factory,
-        "openai_compat": compat_factory,
-    }
-    catalog_factories: dict[str, Callable[[ProviderDef], ModelCatalogProvider]] = {
-        "openai": compat_factory,
-        "ollama": compat_factory,
-        "lmstudio": compat_factory,
-        "openai_compat": compat_factory,
-    }
-    return ProviderRegistry(
-        providers=providers,
-        deployments=deployments,
-        chat_factories=chat_factories,
-        catalog_factories=catalog_factories,
-    )
-
-
 # TODO move this to config.py and/or replace it with what is already there
 def _read_prompt_file(path_text: str, default_value: str = "") -> str:
     raw = Path(path_text)
@@ -98,7 +72,7 @@ def _read_prompt_file(path_text: str, default_value: str = "") -> str:
 
 def _resolve_summary_runtime(requested_deployment_id: str = "summary_default") -> tuple[ResolvedDeployment, ChatProvider, Any]:
     model_catalog = _load_model_catalog()
-    registry = _build_provider_registry(model_catalog)
+    registry = build_provider_registry(model_catalog)
     requested = (requested_deployment_id or "summary_default").strip() or "summary_default"
     if requested not in registry.deployments:
         if requested != "summary_default" and "summary_default" in registry.deployments:

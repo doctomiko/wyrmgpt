@@ -1,14 +1,12 @@
 import json
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 import time
 from fastapi import HTTPException
 
-from server.config import load_deployment_defs, load_provider_defs
-from server.providers.base import ChatProvider, ModelCatalogProvider
-from server.providers.openai_provider import OpenAIProvider
+from server.providers.factories import build_provider_registry as _build_provider_registry
 from server.providers.registry import ProviderRegistry
-from server.providers.types import ModelCatalog, ModelInput, ProviderDef
+from server.providers.types import ModelCatalog, ModelInput
 
 from server.routes.base import app
 import server.runtime as runtime
@@ -84,31 +82,7 @@ def build_provider_registry(
     model_catalog: ModelCatalog | None = None
 ) -> ProviderRegistry:
     model_catalog = model_catalog or runtime.MODEL_CATALOG
-    providers = load_provider_defs()
-    deployments = load_deployment_defs()
-
-    compat_factory = lambda provider_def: OpenAIProvider(provider_def, model_catalog=model_catalog)
-
-    chat_factories: dict[str, Callable[[ProviderDef], ChatProvider]] = {
-        "openai": compat_factory,
-        "ollama": compat_factory,
-        "lmstudio": compat_factory,
-        "openai_compat": compat_factory,
-    }
-
-    catalog_factories: dict[str, Callable[[ProviderDef], ModelCatalogProvider]] = {
-        "openai": compat_factory,
-        "ollama": compat_factory,
-        "lmstudio": compat_factory,
-        "openai_compat": compat_factory,
-    }
-
-    return ProviderRegistry(
-        providers=providers,
-        deployments=deployments,
-        chat_factories=chat_factories,
-        catalog_factories=catalog_factories,
-    )
+    return _build_provider_registry(model_catalog)
 
 
 def load_model_catalog() -> ModelCatalog:

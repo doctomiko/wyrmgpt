@@ -6,7 +6,10 @@
     "input_cost_per_million": 1.25,
     "output_cost_per_million": 10.0,
     "context_window": 500000,
-    "tags": ["general", "flagship"]
+    "tags": [
+      "general",
+      "flagship"
+    ]
   },
   "gpt-5.2": {
     "vendor": "OpenAI",
@@ -15,7 +18,11 @@
     "input_cost_per_million": 1.75,
     "output_cost_per_million": 14.0,
     "context_window": 400000,
-    "tags": ["frontier", "reasoning", "general"]
+    "tags": [
+      "frontier",
+      "reasoning",
+      "general"
+    ]
   },
   "gpt-5.2-pro": {
     "vendor": "OpenAI",
@@ -24,7 +31,11 @@
     "input_cost_per_million": 21.0,
     "output_cost_per_million": 168.0,
     "context_window": 400000,
-    "tags": ["frontier", "reasoning", "high-cost"]
+    "tags": [
+      "frontier",
+      "reasoning",
+      "high-cost"
+    ]
   },
   "gpt-5.1": {
     "vendor": "OpenAI",
@@ -33,7 +44,9 @@
     "input_cost_per_million": 1.25,
     "output_cost_per_million": 10.0,
     "context_window": 200000,
-    "tags": ["general"]
+    "tags": [
+      "general"
+    ]
   },
   "gpt-5": {
     "vendor": "OpenAI",
@@ -42,7 +55,11 @@
     "input_cost_per_million": 1.25,
     "output_cost_per_million": 10.0,
     "context_window": 272000,
-    "tags": ["general", "reasoning", "previous-gen"]
+    "tags": [
+      "general",
+      "reasoning",
+      "previous-gen"
+    ]
   },
   "gpt-5-mini": {
     "vendor": "OpenAI",
@@ -51,7 +68,10 @@
     "input_cost_per_million": 0.25,
     "output_cost_per_million": 2.0,
     "context_window": 500000,
-    "tags": ["cheap", "fast"]
+    "tags": [
+      "cheap",
+      "fast"
+    ]
   },
   "gpt-5-nano": {
     "vendor": "OpenAI",
@@ -60,7 +80,11 @@
     "input_cost_per_million": 0.05,
     "output_cost_per_million": 0.4,
     "context_window": 200000,
-    "tags": ["cheap", "utility", "fast"]
+    "tags": [
+      "cheap",
+      "utility",
+      "fast"
+    ]
   },
   "gpt-5.2-chat-latest": {
     "vendor": "OpenAI",
@@ -69,7 +93,11 @@
     "input_cost_per_million": 1.75,
     "output_cost_per_million": 14.0,
     "context_window": 400000,
-    "tags": ["alias", "frontier", "reasoning"]
+    "tags": [
+      "alias",
+      "frontier",
+      "reasoning"
+    ]
   },
   "gpt-5.1-chat-latest": {
     "vendor": "OpenAI",
@@ -78,7 +106,10 @@
     "input_cost_per_million": 1.25,
     "output_cost_per_million": 10.0,
     "context_window": 200000,
-    "tags": ["alias", "general"]
+    "tags": [
+      "alias",
+      "general"
+    ]
   },
   "gpt-5-chat-latest": {
     "vendor": "OpenAI",
@@ -87,7 +118,10 @@
     "input_cost_per_million": 1.25,
     "output_cost_per_million": 10.0,
     "context_window": 272000,
-    "tags": ["alias", "general"]
+    "tags": [
+      "alias",
+      "general"
+    ]
   },
   "gpt-5.2-codex": {
     "vendor": "OpenAI",
@@ -96,7 +130,10 @@
     "input_cost_per_million": 1.75,
     "output_cost_per_million": 14.0,
     "context_window": 400000,
-    "tags": ["code", "reasoning"]
+    "tags": [
+      "code",
+      "reasoning"
+    ]
   },
   "gpt-5.1-codex-max": {
     "vendor": "OpenAI",
@@ -105,7 +142,10 @@
     "input_cost_per_million": 1.25,
     "output_cost_per_million": 10.0,
     "context_window": 400000,
-    "tags": ["code", "long-context"]
+    "tags": [
+      "code",
+      "long-context"
+    ]
   },
   "gpt-5.1-codex": {
     "vendor": "OpenAI",
@@ -114,7 +154,9 @@
     "input_cost_per_million": 1.25,
     "output_cost_per_million": 10.0,
     "context_window": 200000,
-    "tags": ["code"]
+    "tags": [
+      "code"
+    ]
   },
   "gpt-5-codex": {
     "vendor": "OpenAI",
@@ -123,16 +165,22 @@
     "input_cost_per_million": 1.25,
     "output_cost_per_million": 10.0,
     "context_window": 272000,
-    "tags": ["code"]
+    "tags": [
+      "code"
+    ]
   },
   "gpt-4.1": {
     "vendor": "OpenAI",
     "display_name": "GPT-4.1",
-    "description": "Smartest non-reasoning GPT model; strong general-purpose default.",
+    "description": "Smart non-reasoning GPT model; strong general-purpose default.",
     "input_cost_per_million": 2.0,
     "output_cost_per_million": 8.0,
     "context_window": 1048576,
-    "tags": ["general", "non-reasoning"]
+    "tags": [
+      "general",
+      "non-reasoning",
+      "provider:openai"
+    ]
   },
   "gpt-4.1-mini": {
     "vendor": "OpenAI",
@@ -141,7 +189,10 @@
     "input_cost_per_million": 0.4,
     "output_cost_per_million": 2.8,
     "context_window": 200000,
-    "tags": ["cheap", "fast"]
+    "tags": [
+      "cheap",
+      "fast"
+    ]
   },
   "gpt-4.1-nano": {
     "vendor": "OpenAI",
@@ -150,7 +201,10 @@
     "input_cost_per_million": 0.2,
     "output_cost_per_million": 0.8,
     "context_window": 100000,
-    "tags": ["cheap", "utility"]
+    "tags": [
+      "cheap",
+      "utility"
+    ]
   },
   "gpt-4o": {
     "vendor": "OpenAI",
@@ -159,7 +213,10 @@
     "input_cost_per_million": 4.25,
     "output_cost_per_million": 17.0,
     "context_window": 128000,
-    "tags": ["multimodal", "deprecated-soon"]
+    "tags": [
+      "multimodal",
+      "deprecated-soon"
+    ]
   },
   "gpt-4o-2024-11-20": {
     "vendor": "OpenAI",
@@ -168,7 +225,11 @@
     "input_cost_per_million": 4.25,
     "output_cost_per_million": 17.0,
     "context_window": 128000,
-    "tags": ["multimodal", "pinned", "legacy-favorite"]
+    "tags": [
+      "multimodal",
+      "pinned",
+      "legacy-favorite"
+    ]
   },
   "gpt-4o-mini": {
     "vendor": "OpenAI",
@@ -177,7 +238,11 @@
     "input_cost_per_million": 0.25,
     "output_cost_per_million": 1.0,
     "context_window": 128000,
-    "tags": ["cheap", "fast", "multimodal"]
+    "tags": [
+      "cheap",
+      "fast",
+      "multimodal"
+    ]
   },
   "o1": {
     "vendor": "OpenAI",
@@ -186,7 +251,10 @@
     "input_cost_per_million": 7.5,
     "output_cost_per_million": 30.0,
     "context_window": 200000,
-    "tags": ["reasoning", "previous-gen"]
+    "tags": [
+      "reasoning",
+      "previous-gen"
+    ]
   },
   "o1-pro": {
     "vendor": "OpenAI",
@@ -195,7 +263,11 @@
     "input_cost_per_million": 75.0,
     "output_cost_per_million": 300.0,
     "context_window": 200000,
-    "tags": ["reasoning", "high-cost", "previous-gen"]
+    "tags": [
+      "reasoning",
+      "high-cost",
+      "previous-gen"
+    ]
   },
   "o1-mini": {
     "vendor": "OpenAI",
@@ -204,16 +276,23 @@
     "input_cost_per_million": 0.55,
     "output_cost_per_million": 2.2,
     "context_window": 128000,
-    "tags": ["cheap", "reasoning", "previous-gen"]
+    "tags": [
+      "cheap",
+      "reasoning",
+      "previous-gen"
+    ]
   },
   "o3": {
     "vendor": "OpenAI",
     "display_name": "o3",
-    "description": "Reasoning model for complex tasks; largely superseded by GPT-5.x.",
-    "input_cost_per_million": 3.5,
-    "output_cost_per_million": 14.0,
+    "description": "Reasoning model for complex tasks.",
+    "input_cost_per_million": 2.0,
+    "output_cost_per_million": 8.0,
     "context_window": 200000,
-    "tags": ["reasoning"]
+    "tags": [
+      "reasoning",
+      "provider:openai"
+    ]
   },
   "o3-pro": {
     "vendor": "OpenAI",
@@ -222,7 +301,10 @@
     "input_cost_per_million": 10.0,
     "output_cost_per_million": 40.0,
     "context_window": 200000,
-    "tags": ["reasoning", "high-cost"]
+    "tags": [
+      "reasoning",
+      "high-cost"
+    ]
   },
   "o3-deep-research": {
     "vendor": "OpenAI",
@@ -231,7 +313,10 @@
     "input_cost_per_million": 5.0,
     "output_cost_per_million": 20.0,
     "context_window": 400000,
-    "tags": ["reasoning", "research"]
+    "tags": [
+      "reasoning",
+      "research"
+    ]
   },
   "o3-mini": {
     "vendor": "OpenAI",
@@ -240,7 +325,10 @@
     "input_cost_per_million": 0.55,
     "output_cost_per_million": 2.2,
     "context_window": 128000,
-    "tags": ["cheap", "reasoning"]
+    "tags": [
+      "cheap",
+      "reasoning"
+    ]
   },
   "o4-mini": {
     "vendor": "OpenAI",
@@ -249,7 +337,10 @@
     "input_cost_per_million": 2.0,
     "output_cost_per_million": 8.0,
     "context_window": 200000,
-    "tags": ["reasoning", "previous-gen"]
+    "tags": [
+      "reasoning",
+      "previous-gen"
+    ]
   },
   "o4-mini-deep-research": {
     "vendor": "OpenAI",
@@ -258,7 +349,11 @@
     "input_cost_per_million": 1.0,
     "output_cost_per_million": 4.0,
     "context_window": 400000,
-    "tags": ["reasoning", "research", "previous-gen"]
+    "tags": [
+      "reasoning",
+      "research",
+      "previous-gen"
+    ]
   },
   "gpt-5.1-thinking": {
     "vendor": "OpenAI",
@@ -267,6 +362,90 @@
     "input_cost_per_million": 1.25,
     "output_cost_per_million": 10.0,
     "context_window": 200000,
-    "tags": ["reasoning", "custom"]
+    "tags": [
+      "reasoning",
+      "custom"
+    ]
+  },
+  "gemini-2.5-flash": {
+    "vendor": "Google",
+    "display_name": "Gemini 2.5 Flash",
+    "description": "Fast multimodal Gemini model with low latency and broad context window.",
+    "input_cost_per_million": 0.3,
+    "output_cost_per_million": 2.5,
+    "context_window": 1048576,
+    "tags": [
+      "fast",
+      "multimodal",
+      "vision",
+      "provider:google"
+    ]
+  },
+  "gemini-2.5-flash-lite": {
+    "vendor": "Google",
+    "display_name": "Gemini 2.5 Flash-Lite",
+    "description": "Cheapest Gemini 2.5 tier for low-cost throughput.",
+    "input_cost_per_million": 0.1,
+    "output_cost_per_million": 0.4,
+    "context_window": 1048576,
+    "tags": [
+      "cheap",
+      "fast",
+      "multimodal",
+      "provider:google"
+    ]
+  },
+  "gemini-2.5-pro": {
+    "vendor": "Google",
+    "display_name": "Gemini 2.5 Pro",
+    "description": "Higher-end Gemini model for harder reasoning and larger workloads.",
+    "input_cost_per_million": 1.25,
+    "output_cost_per_million": 10.0,
+    "context_window": 1048576,
+    "tags": [
+      "reasoning",
+      "multimodal",
+      "vision",
+      "provider:google"
+    ]
+  },
+  "claude-sonnet-4-6": {
+    "vendor": "Anthropic",
+    "display_name": "Claude Sonnet 4.6",
+    "description": "Balanced Claude model for general-purpose work.",
+    "input_cost_per_million": 3.0,
+    "output_cost_per_million": 15.0,
+    "context_window": 1000000,
+    "tags": [
+      "general",
+      "writing",
+      "provider:anthropic"
+    ]
+  },
+  "claude-haiku-4-5": {
+    "vendor": "Anthropic",
+    "display_name": "Claude Haiku 4.5",
+    "description": "Fastest low-cost Claude tier.",
+    "input_cost_per_million": 1.0,
+    "output_cost_per_million": 5.0,
+    "context_window": 200000,
+    "tags": [
+      "cheap",
+      "fast",
+      "provider:anthropic"
+    ]
+  },
+  "claude-opus-4-6": {
+    "vendor": "Anthropic",
+    "display_name": "Claude Opus 4.6",
+    "description": "Highest-end Claude tier for difficult reasoning and analysis.",
+    "input_cost_per_million": 5.0,
+    "output_cost_per_million": 25.0,
+    "context_window": 1000000,
+    "tags": [
+      "reasoning",
+      "premium",
+      "provider:anthropic"
+    ]
   }
 }

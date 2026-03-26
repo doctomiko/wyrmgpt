@@ -4,17 +4,14 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Callable
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from server.config import load_deployment_defs, load_provider_defs
-from server.providers.base import ChatProvider, ModelCatalogProvider
-from server.providers.openai_provider import OpenAIProvider
+from server.providers.factories import build_provider_registry
 from server.providers.registry import ProviderRegistry
-from server.providers.types import ModelCatalog, ProviderDef
+from server.providers.types import ModelCatalog
 
 
 ALLOWED_OPENAI_PREFIXES = ("gpt-", "o1", "o3", "o4")
@@ -32,34 +29,6 @@ def load_model_catalog() -> ModelCatalog:
     except Exception as e:
         print("Failed to load model_catalog.json:", e)
     return {}
-
-
-def build_provider_registry(model_catalog: ModelCatalog) -> ProviderRegistry:
-    providers = load_provider_defs()
-    deployments = load_deployment_defs()
-
-    compat_factory = lambda provider_def: OpenAIProvider(provider_def, model_catalog=model_catalog)
-
-    chat_factories: dict[str, Callable[[ProviderDef], ChatProvider]] = {
-        "openai": compat_factory,
-        "ollama": compat_factory,
-        "lmstudio": compat_factory,
-        "openai_compat": compat_factory,
-    }
-
-    catalog_factories: dict[str, Callable[[ProviderDef], ModelCatalogProvider]] = {
-        "openai": compat_factory,
-        "ollama": compat_factory,
-        "lmstudio": compat_factory,
-        "openai_compat": compat_factory,
-    }
-
-    return ProviderRegistry(
-        providers=providers,
-        deployments=deployments,
-        chat_factories=chat_factories,
-        catalog_factories=catalog_factories,
-    )
 
 
 def provider_ids_with_catalog_support(registry: ProviderRegistry) -> list[str]:

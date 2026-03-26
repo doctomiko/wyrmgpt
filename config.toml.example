@@ -118,6 +118,15 @@ type = "ollama"
 base_url = "http://localhost:11434/v1"
 api_key = "ollama"
 
+[providers.google]
+type = "google"
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+api_key = "" # stored in config.secrets.toml
+
+[providers.anthropic]
+type = "anthropic"
+api_key = "" # stored in config.secrets.toml
+
 [deployments.chat_default]
 provider = "openai"
 model = "gpt-5.4"
@@ -146,6 +155,54 @@ tags = ["remote", "warm", "legacy-favorite"]
 provider = "openai"
 model = "gpt-4o-mini"
 display_name = "OpenAI GPT-4o Mini"
+capabilities = ["chat", "stream", "catalog"]
+enabled = true
+tags = ["remote", "fast", "cheap"]
+
+[deployments.chat_4_1]
+provider = "openai"
+model = "gpt-4.1"
+display_name = "OpenAI GPT-4.1"
+capabilities = ["chat", "stream", "catalog"]
+enabled = true
+tags = ["remote", "general"]
+
+[deployments.chat_o3]
+provider = "openai"
+model = "o3"
+display_name = "OpenAI o3"
+capabilities = ["chat", "stream", "catalog"]
+enabled = true
+tags = ["remote", "reasoning"]
+
+[deployments.chat_google_flash]
+provider = "google"
+model = "gemini-2.5-flash"
+display_name = "Google Gemini 2.5 Flash"
+capabilities = ["chat", "stream", "catalog"]
+enabled = true
+tags = ["remote", "fast", "cheap", "vision"]
+
+[deployments.chat_google_pro]
+provider = "google"
+model = "gemini-2.5-pro"
+display_name = "Google Gemini 2.5 Pro"
+capabilities = ["chat", "stream", "catalog"]
+enabled = true
+tags = ["remote", "reasoning", "vision"]
+
+[deployments.chat_claude_sonnet]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+display_name = "Anthropic Claude Sonnet 4.6"
+capabilities = ["chat", "stream", "catalog"]
+enabled = true
+tags = ["remote", "general", "writing"]
+
+[deployments.chat_claude_haiku]
+provider = "anthropic"
+model = "claude-haiku-4-5"
+display_name = "Anthropic Claude Haiku 4.5"
 capabilities = ["chat", "stream", "catalog"]
 enabled = true
 tags = ["remote", "fast", "cheap"]

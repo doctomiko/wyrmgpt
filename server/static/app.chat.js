@@ -758,6 +758,7 @@ async function sendSingle(text, model) {
   const choice = describeSelection(model || "");
   //const assistantBody = addAssistantMsgWithModel(model, "Thinking…", now);
   const assistantBody = addAssistantMsgWithModel(choice.display_name || model, "Thinking…", now);
+  const assistantBubble = assistantBody.closest(".msg.assistant");
 
   const request_body = JSON.stringify({
     conversation_id: conversationId,
@@ -765,29 +766,41 @@ async function sendSingle(text, model) {
     message: text
   });
 
-  const res = await fetch("/api/chat", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: request_body
-  });
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: request_body
+    });
 
-  const headerCid = res.headers.get("X-Conversation-Id");
-  if (headerCid) {
-    conversationId = headerCid;
-    localStorage.setItem("callie_mvp_conversation_id", conversationId);
-  }
+    const headerCid = res.headers.get("X-Conversation-Id");
+    if (headerCid) {
+      conversationId = headerCid;
+      localStorage.setItem("callie_mvp_conversation_id", conversationId);
+    }
 
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder("utf-8");
+    if (!res.body) {
+      throw new Error("Empty response body from /api/chat");
+    }
 
-  let buffer = "";
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const visibleBuffer = stripAssistantToolBlocks(stripZeit(buffer));
-    assistantBody.innerHTML = renderMarkdown(visibleBuffer || "Thinking…");
-    chatWindow.scrollTop = chatWindow.scrollHeight;
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+
+    let buffer = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const visibleBuffer = stripAssistantToolBlocks(stripZeit(buffer));
+      const looksLikeError = visibleBuffer.startsWith("**Model error**") || visibleBuffer.startsWith("**Server exception**");
+      assistantBubble?.classList.toggle("error", looksLikeError);
+      assistantBody.innerHTML = renderMarkdown(visibleBuffer || "Thinking…");
+      chatWindow.scrollTop = chatWindow.scrollHeight;
+    }
+  } catch (e) {
+    console.error("Failed single send", e);
+    assistantBubble?.classList.add("error");
+    assistantBody.innerHTML = renderMarkdown("**Client error**" + (e?.message || String(e) || "Unknown client-side failure"));
   }
 }
 
@@ -849,7 +862,7 @@ async function sendAB(text, modelA, modelB) {
     const msg =
       (body.error && body.error.message) ||
       body.message ||
-      "OpenAI API error";
+      "API error";
 
     const lines = [];
     lines.push(`**${slotName} error** (HTTP ${status || "?"})`);

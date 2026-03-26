@@ -1,6 +1,7 @@
 
 import asyncio
 from functools import partial
+import traceback
 import uuid
 import anyio
 from fastapi import HTTPException
@@ -11,7 +12,7 @@ from server.api_models import ABCanonicalRequest, ABChatRequest, ChatRequest, Ne
 from server.config import load_tool_config
 from server.context import build_context, build_model_input
 from server.db import db_add_message, db_create_conversation, db_ensure_files_artifacted_for_conversation, db_update_ab_canonical, db_update_conversation_scaffold_event
-from server.logging_helper import log_warn
+from server.logging_helper import log_error, log_warn
 from server.providers.openai_provider import ProviderExecutionError, extract_error_message
 from server.providers.registry import ProviderRegistry
 from server.providers.types import ModelInput
@@ -85,6 +86,46 @@ async def call_model_with_recovery(target, model_input: ModelInput) -> RowDict:
                 return {"ok": False, "error": last_err_payload}
 
     return {"ok": False, "error": last_err_payload or {"status_code": 500, "body": {"error": {"message": "Unknown error"}}}}
+
+
+def _generic_error_payload(exc: Exception) -> RowDict:
+    return {
+        "status_code": None,
+        "request_id": None,
+        "body": {
+            "message": str(exc) or repr(exc),
+        },
+        "provider_error_type": type(exc).__name__,
+    }
+
+
+def _store_single_error_message(
+    *,
+    conversation_id: str,
+    target,
+    payload: RowDict,
+    pending_tool_event_ids: list[int],
+) -> None:
+    msg = extract_error_message(payload)
+    status = payload.get("status_code")
+    bubble = f"[Model error] {status or ''} {msg}".strip()
+    full = postprocess_text(bubble)
+    if not full:
+        return
+
+    assistant_message_id = db_add_message(
+        conversation_id,
+        "assistant",
+        full,
+        meta={
+            "model": target.model,
+            "provider": target.provider_id,
+            "deployment_id": target.id,
+            "kind": "error",
+            **payload,
+        },
+    )
+    attach_scaffold_events_to_message(pending_tool_event_ids, assistant_message_id)
 
 
 # endregion
@@ -238,9 +279,37 @@ def chat(
                 attach_scaffold_events_to_message(pending_tool_event_ids, assistant_message_id)
                 persist_citations_for_assistant_message(assistant_message_id, ctx)
         except ProviderExecutionError as e:
-            yield f"\n[server exception: {type(e).__name__}]"
+            payload = dict(e.payload or {})
+            if "provider_error_type" not in payload:
+                payload["provider_error_type"] = type(e).__name__
+            _store_single_error_message(
+                conversation_id=cid,
+                target=target,
+                payload=payload,
+                pending_tool_event_ids=pending_tool_event_ids,
+            )
+
+            status = payload.get("status_code")
+            req_id = payload.get("request_id")
+            msg = extract_error_message(payload)
+            lines = [f"**Model error** (HTTP {status or '?'})", msg]
+            if req_id:
+                lines.insert(1, f"request_id: `{req_id}`")
+            yield "" + "".join(lines)
         except Exception as e:
-            yield f"\n[server exception: {type(e).__name__}]"
+            log_error("Chat stream failed for conversation %s: %s%s", cid, e, traceback.format_exc())
+            payload = _generic_error_payload(e)
+            _store_single_error_message(
+                conversation_id=cid,
+                target=target,
+                payload=payload,
+                pending_tool_event_ids=pending_tool_event_ids,
+            )
+            msg = extract_error_message(payload)
+            yield "" + "".join([
+                f"**Server exception** ({type(e).__name__})",
+                msg,
+            ])
 
     resp = StreamingResponse(gen(), media_type="text/plain; charset=utf-8")
     resp.headers["X-Conversation-Id"] = cid

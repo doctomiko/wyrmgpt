@@ -90,16 +90,6 @@ def extract_error_message(payload: dict[str, Any]) -> str:
         return body.get("message") or "API error"
     return "API error"
 
-if (False):
-    def extract_error_message(payload: dict[str, Any]) -> str:
-        body = payload.get("body") or {}
-        if isinstance(body, dict):
-            err = body.get("error")
-            if isinstance(err, dict):
-                return err.get("message") or body.get("message") or "OpenAI API error"
-            return body.get("message") or "OpenAI API error"
-        return "OpenAI API error"
-
 
 class OpenAIProvider:
     def __init__(self, provider_def: ProviderDef, model_catalog: ModelCatalog | None = None):
@@ -110,13 +100,6 @@ class OpenAIProvider:
             kwargs["api_key"] = api_key
         if provider_def.base_url:
             kwargs["base_url"] = provider_def.base_url
-
-        if (False):
-            kwargs: dict[str, Any] = {}
-            if provider_def.api_key:
-                kwargs["api_key"] = provider_def.api_key
-            if provider_def.base_url:
-                kwargs["base_url"] = provider_def.base_url
 
         self.client = OpenAI(**kwargs)
         self.provider_def = provider_def
@@ -146,24 +129,6 @@ class OpenAIProvider:
         except APIStatusError as e:
             payload = openai_error_payload(e)
             raise ProviderExecutionError(extract_error_message(payload), payload=payload) from e
-    if (False):
-        def complete(self, deployment: ResolvedDeployment, model_input: ModelInput) -> ChatResult:
-            try:
-                resp = self.client.responses.create(
-                    model=deployment.model,
-                    input=cast(ResponseInputParam, model_input),
-                )
-                text = extract_output_text(resp)
-                return ChatResult(
-                    text=text,
-                    provider_id=deployment.provider_id,
-                    deployment_id=deployment.id,
-                    model=deployment.model,
-                    raw=resp,
-                )
-            except APIStatusError as e:
-                payload = openai_error_payload(e)
-                raise ProviderExecutionError(extract_error_message(payload), payload=payload) from e
 
     def stream_text(self, deployment: ResolvedDeployment, model_input: ModelInput) -> Iterator[str]:
         try:
