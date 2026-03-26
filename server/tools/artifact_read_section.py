@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..db import update_artifact_reading_session, update_artifact_reading_step
+from ..db import db_update_artifact_reading_session, db_update_artifact_reading_step
 from .artifact_helpers import load_or_synthesize_artifact_chunks, render_chunk_window, resolve_artifact_section_reference
 from .base import ToolExecutionContext, ToolResult, ToolSpec
 
@@ -28,8 +28,8 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
     section_meta: dict[str, Any] | None = None
 
     if ordinal is not None and session_id is not None:
-        from ..db import get_artifact_reading_step
-        step = get_artifact_reading_step(int(session_id), int(ordinal))
+        from ..db import db_get_artifact_reading_step
+        step = db_get_artifact_reading_step(int(session_id), int(ordinal))
         if not step:
             return ToolResult(ok=False, tool=TOOL_SPEC.name, error=f"reading step not found: session={session_id} ordinal={ordinal}")
         chunk_start = int(step.get("chunk_start"))
@@ -60,8 +60,8 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
     if mark_active and session_id is not None:
         ord_value = int(section_meta.get("ordinal") or ordinal or 0) if section_meta else 0
         if ord_value > 0:
-            update_artifact_reading_step(int(session_id), ord_value, status="active")
-            update_artifact_reading_session(
+            db_update_artifact_reading_step(int(session_id), ord_value, status="active")
+            db_update_artifact_reading_session(
                 int(session_id),
                 current_section_ordinal=ord_value,
                 current_chunk_position=int(chunk_end),

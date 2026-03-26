@@ -6,12 +6,14 @@ from pathlib import Path
 import re
 from functools import lru_cache
 
+from server import runtime
+
 from .logging_helper import log_debug, log_warn
 from .providers.registry import ProviderRegistry
 from .db import (
     get_app_setting, get_conversation_summary_text,
-    get_messages, get_messages_raw, get_context_sources,
-    list_memory_pins, list_memories, list_conversations,
+    db_get_messages, db_get_messages_raw, get_context_sources,
+    db_list_pins, db_list_memories, db_list_conversations,
     ensure_artifacts_for_files, gather_scoped_files, list_artifacts_for_file_ids, get_artifact_by_id,
     ensure_conversation_transcript_artifact_fresh,
     load_artifact_row_for_context,
@@ -20,9 +22,9 @@ from .db import (
     list_conversation_retained_artifacts,
     retain_conversation_artifact_conn,
     create_or_update_conversation_scaffold_event_by_input_conn,
-    list_artifact_reading_sessions,
+    db_list_artifact_reading_sessions,
     list_artifact_reading_sessions_for_conversation,
-    list_artifact_reading_steps,
+    db_list_artifact_reading_steps,
 )
 
 from .config import (
@@ -515,7 +517,7 @@ def _select_other_project_conversation_rows_for_context(
     if project_id is None or limit <= 0:
         return []
 
-    rows = list_conversations(limit=max(limit * 8, 200), include_archived=False)
+    rows = db_list_conversations(limit=max(limit * 8, 200), include_archived=False)
     out: list[dict] = []
 
     for c in rows:
@@ -989,7 +991,7 @@ def _format_active_reading_session_message(conversation_id: str, *, user_text: s
         artifact_id = (session.get("artifact_id") or "").strip()
         status = (session.get("status") or "").strip() or "active"
         current_ordinal = session.get("current_section_ordinal")
-        steps = list_artifact_reading_steps(session_id)
+        steps = db_list_artifact_reading_steps(session_id)
         next_step = None
         for s in steps:
             s_status = str(s.get("status") or "").strip().lower()
@@ -1112,7 +1114,7 @@ def _select_scoped_conversation_ids_for_context(
     _add(conversation_id)
 
     if project_id is not None and len(out) < limit:
-        rows = list_conversations(limit=max(limit * 8, 200), include_archived=False)
+        rows = db_list_conversations(limit=max(limit * 8, 200), include_archived=False)
         for c in rows:
             if int(c.get("project_id") or 0) == int(project_id):
                 _add(c.get("id"))
@@ -1308,8 +1310,8 @@ def build_context(
     active_session_rows = list_artifact_reading_sessions_for_conversation(conversation_id)
     active_reading_mode = bool(active_session_rows)
 
-    history_rows = get_messages(conversation_id, limit=ctx_cfg.history_limit)
-    history_rows_raw = get_messages_raw(conversation_id, limit=ctx_cfg.history_limit)
+    history_rows = db_get_messages(conversation_id, limit=ctx_cfg.history_limit)
+    history_rows_raw = db_get_messages_raw(conversation_id, limit=ctx_cfg.history_limit)
     if active_reading_mode:
         reading_history_limit = min(max(8, preview_limit * 2), 16)
         history_rows = history_rows[-reading_history_limit:]
@@ -1371,7 +1373,7 @@ def build_context(
     query_expand_chat_window_after = max(0, int(ret_cfg.query_expand_chat_window_after))
 
     # Fetch a wider pool first, then scope/order locally so project pins do not get crowded out by globals.
-    all_pins = list_memory_pins(limit=max(int(ctx_cfg.memory_pin_limit or 50) * 4, 200))
+    all_pins = db_list_pins(limit=max(int(ctx_cfg.memory_pin_limit or 50) * 4, 200))
     # This breaks pins out into LLM readable information we can put in a system block
     pinned = _order_scoped_pins_for_context(
         all_pins,
@@ -1413,7 +1415,7 @@ def build_context(
 
     # Memories first.
     scoped_memories = _order_scoped_memories_for_context(
-        list_memories(limit=max(max_full_memories * 4, 200)),
+        db_list_memories(limit=max(max_full_memories * 4, 200)),
         project_id,
         limit=max(max_full_memories * 4, 200),
     )
@@ -2021,13 +2023,14 @@ def build_model_input(
         query_cfg: RetrievalConfig | None = None,
         ctx: dict | None = None,
         tool_cfg: ToolConfig | None = None,
-        tool_registry: ToolRegistry | None = None,
+        tools: ToolRegistry | None = None,
     ) -> ModelInput:
     """
     Build a Responses-API compatible input.
     Use string `content` for all text messages (max compatibility).
     Keep file/image messages as typed parts ONLY when needed.
     """
+    tools = tools or runtime.TOOL_REGISTRY
     ctx_cfg = ctx_cfg or load_context_config()
     query_cfg = query_cfg or load_retrieval_config()
     tool_cfg = tool_cfg or load_tool_config()
@@ -2037,8 +2040,8 @@ def build_model_input(
     history_rows = ctx.get("history_rows") or []
     system_messages = [{"role": "system", "content": ctx["system_text"]}]
     
-    if tool_registry and tool_cfg.enabled and tool_cfg.allow_assistant_tool_blocks:
-        system_messages.append({"role": "system", "content": tool_registry.build_system_prompt_block()})
+    if tools and tool_cfg.enabled and tool_cfg.allow_assistant_tool_blocks:
+        system_messages.append({"role": "system", "content": tools.build_system_prompt_block()})
 
     normalized_file_messages = ctx.get("file_messages") or []
     whole_artifact_messages = ctx.get("whole_artifact_messages") or []
@@ -2058,12 +2061,13 @@ def build_context_panel_payload(
     ctx_cfg: ContextConfig | None = None,
     query_cfg: RetrievalConfig | None = None,
     tool_cfg: ToolConfig | None = None,
-    tool_registry: ToolRegistry | None = None,
+    tools: ToolRegistry | None = None,
 ) -> dict:
     """
     Side-panel-only diagnostic payload.
     This is NOT the function used to assemble model input for a live chat turn.
     """
+    tools = tools or runtime.TOOL_REGISTRY
     ctx_cfg = ctx_cfg or load_context_config()
     query_cfg = query_cfg or load_retrieval_config()
 
@@ -2085,7 +2089,7 @@ def build_context_panel_payload(
         query_cfg=query_cfg,
         ctx=ctx,
         tool_cfg=tool_cfg,
-        tool_registry=tool_registry,
+        tools=tools,
     )
 
     preview_limit = max(1, int(ctx_cfg.preview_limit))

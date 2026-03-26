@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from server.db import get_or_create_project, list_global_files, move_file_scope  # noqa: E402
+from server.db import db_get_or_create_project, db_list_global_files, db_move_file_scope  # noqa: E402
 
 
 TARGET_PROJECT_NAME = "Images"
@@ -28,7 +28,7 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=None, help="Only move up to this many matching files.")
     args = ap.parse_args()
 
-    files = [f for f in list_global_files() if is_target_file(f)]
+    files = [f for f in db_list_global_files() if is_target_file(f)]
     files.sort(key=lambda f: (str(f.get("name") or "").lower(), str(f.get("id") or "")))
 
     if args.limit is not None:
@@ -39,7 +39,7 @@ def main() -> None:
     if not files:
         return
 
-    project = get_or_create_project(TARGET_PROJECT_NAME, visibility="private")
+    project = db_get_or_create_project(TARGET_PROJECT_NAME, visibility="private")
     print(f'Target project: {project["name"]} (id={project["id"]})')
 
     moved = 0
@@ -55,7 +55,7 @@ def main() -> None:
             continue
 
         try:
-            out = move_file_scope(
+            out = db_move_file_scope(
                 file_id,
                 scope_type="project",
                 scope_id=int(project["id"]),

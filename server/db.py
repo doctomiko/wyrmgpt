@@ -47,6 +47,7 @@ from .db_migrate_2 import (
 IMPORT_CFG = load_import_config()
 SIDECAR_THRESHOLD_BYTES = IMPORT_CFG.artifact_sidecar_threshold_bytes # 500 * 1024 # 500KB default threshold for when to use sidecar files for artifact content
 
+# We don't load CORE_CFG from runtime.py to prevent circular loops.
 core_cfg = load_core_config()
 
 # near the top of db.py, alongside other imports or type helpers:
@@ -314,7 +315,7 @@ def _ensure_project_exists(conn: sqlite3.Connection, project_id: int) -> None:
     if not row:
         raise ValueError(f"Project not found: {project_id}")
 
-def list_projects(
+def db_list_projects(
     include_global: bool = False,
     include_unassigned: bool = True,
 ) -> list[dict]:
@@ -384,7 +385,7 @@ def get_global_project_id() -> int:
         newid: int = cur.lastrowid # type: ignore[union-attr]
         return newid
 
-def get_conversation_project_id(conn, conversation_id: str) -> int | None:
+def db_get_conversation_project_id(conn, conversation_id: str) -> int | None:
     row = conn.execute(
         "SELECT project_id FROM conversations WHERE id = ?",
         (conversation_id,),
@@ -396,7 +397,7 @@ def get_conversation_project_id(conn, conversation_id: str) -> int | None:
         return int(pid)
     return get_global_project_id()
 
-def get_or_create_project(name: str, visibility: str = "private") -> dict:
+def db_get_or_create_project(name: str, visibility: str = "private") -> dict:
     name = (name or "").strip()
     if not name:
         raise ValueError("Project name cannot be empty.")
@@ -436,7 +437,7 @@ def get_or_create_project(name: str, visibility: str = "private") -> dict:
             "updated_at": row2["updated_at"],
         }
 
-def project_add_conversation(project_id: int, conversation_id: str, set_primary: bool = True) -> None:
+def db_project_add_conversation(project_id: int, conversation_id: str, set_primary: bool = True) -> None:
     if project_id is None:
         raise ValueError("project_id is required.")
     conversation_id = (conversation_id or "").strip()
@@ -460,7 +461,7 @@ def project_add_conversation(project_id: int, conversation_id: str, set_primary:
                 (int(project_id), _utc_now_iso(), conversation_id),
             )
 
-def update_project(
+def db_update_project(
     project_id: int,
     name: str | None = None,
     visibility: str | None = None,
@@ -542,7 +543,7 @@ def update_project(
         "updated_at": row["updated_at"],
     }
 
-def set_project_hidden(project_id: int, hidden: bool = True) -> None:
+def db_set_project_hidden(project_id: int, hidden: bool = True) -> None:
     with db_session() as conn:
         _ensure_project_exists(conn, int(project_id))
         row = conn.execute(
@@ -557,7 +558,7 @@ def set_project_hidden(project_id: int, hidden: bool = True) -> None:
         )
 
 
-def get_project_delete_preview(project_id: int) -> dict:
+def db_get_project_delete_preview(project_id: int) -> dict:
     project_id = int(project_id)
     global_project_id = get_global_project_id()
     if project_id == global_project_id:
@@ -630,7 +631,7 @@ def get_project_delete_preview(project_id: int) -> dict:
     }
 
 
-def delete_project(project_id: int) -> dict:
+def db_delete_project(project_id: int) -> dict:
     project_id = int(project_id)
     global_project_id = get_global_project_id()
     if project_id == global_project_id:
@@ -714,7 +715,7 @@ def delete_project(project_id: int) -> dict:
         "promoted_files": len(file_ids),
     }
 
-def project_import(
+def db_project_import(
     project_id: int,
     source_project_id: int,
     include_tags: str | None = None,
@@ -790,7 +791,7 @@ def _ensure_conversation_exists(conn: sqlite3.Connection, conversation_id: str) 
     if not row:
         raise ValueError(f"Conversation not found: {conversation_id}")
 
-def create_conversation(conversation_id: str, title: str = "New chat") -> None:
+def db_create_conversation(conversation_id: str, title: str = "New chat") -> None:
     now = _utc_now_iso()
     title = (title or "").strip() or "New chat"
     with db_session() as conn:
@@ -822,7 +823,7 @@ def _summary_excerpt(text: str, max_chars: int = 220) -> str:
         out = out[:max_chars].rstrip() + "…"
     return out
 
-def list_conversations(
+def db_list_conversations(
     limit: int = core_cfg.limit_api_conversations, 
     include_archived: bool = False
 ) -> list[dict]:
@@ -874,27 +875,27 @@ def list_conversations(
             for r in rows
         ]
 
-def set_conversation_project(conversation_id: str, project_id: int | None) -> None:
+def db_set_conversation_project(conversation_id: str, project_id: int | None) -> None:
     with db_session() as conn:
         conn.execute(
             "UPDATE conversations SET project_id = ?, updated_at = ? WHERE id = ?",
             (project_id, _utc_now_iso(), conversation_id),
         )
 
-def set_conversation_archived(conversation_id: str, archived: bool) -> None:
+def db_set_conversation_archived(conversation_id: str, archived: bool) -> None:
     with db_session() as conn:
         conn.execute(
             "UPDATE conversations SET archived = ?, updated_at = ? WHERE id = ?",
             (1 if archived else 0, _utc_now_iso(), conversation_id),
         )
 
-def delete_conversation(conversation_id: str) -> None:
+def db_delete_conversation(conversation_id: str) -> None:
     with db_session() as conn:
         conn.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
         conn.execute("DELETE FROM conversation_settings WHERE conversation_id = ?", (conversation_id,))
         conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
 
-def get_conversation_title(conversation_id: str) -> str | None:
+def db_get_conversation_title(conversation_id: str) -> str | None:
     with db_session() as conn:
         row = conn.execute(
             "SELECT title FROM conversations WHERE id = ?",
@@ -903,8 +904,8 @@ def get_conversation_title(conversation_id: str) -> str | None:
         return row["title"] if row else None
 
 
-def get_conversation_context(conversation_id: str, preview_limit: int = 20) -> dict:
-    title = get_conversation_title(conversation_id)
+def db_get_conversation_context(conversation_id: str, preview_limit: int = 20) -> dict:
+    title = db_get_conversation_title(conversation_id)
     if title is None:
         raise KeyError("Conversation not found.")
 
@@ -921,7 +922,7 @@ def get_conversation_context(conversation_id: str, preview_limit: int = 20) -> d
         ).fetchone()
 
     # Messages preview: last N raw messages (so UI can show meta if desired)
-    raw = get_messages_raw(conversation_id, limit=2000)
+    raw = db_get_messages_raw(conversation_id, limit=2000)
     preview = raw[-max(0, int(preview_limit)):] if preview_limit else []
     global_project_id = get_global_project_id()
 
@@ -971,8 +972,8 @@ def get_context_sources(conversation_id: str) -> dict:
 def conversation_summary_artifact_id(conversation_id: str) -> str:
     return _deterministic_artifact_id(source_kind="conversation:summary", source_id=conversation_id)
 
-def save_conversation_summary_artifact(conversation_id: str, summary_text: str, model: str) -> str:
-    title = get_conversation_title(conversation_id) or "Conversation"
+def db_save_conversation_summary_artifact(conversation_id: str, summary_text: str, model: str) -> str:
+    title = db_get_conversation_title(conversation_id) or "Conversation"
     artifact_id = conversation_summary_artifact_id(conversation_id)
 
     with db_session() as conn:
@@ -1012,9 +1013,9 @@ def get_conversation_summary_text(conversation_id: str) -> str:
                 return ""
     return ""
 
-def get_transcript_for_summary(conversation_id: str) -> tuple[str, str]:
+def db_get_transcript_for_summary(conversation_id: str) -> tuple[str, str]:
     """Retrieves information to summarize a conversation history"""
-    title = get_conversation_title(conversation_id)
+    title = db_get_conversation_title(conversation_id)
 
     # Only "not found" if row is missing. Empty title is allowed.
     if title is None:
@@ -1536,7 +1537,6 @@ def mark_conversation_transcript_dirty(
     if not conversation_id:
         raise ValueError("conversation_id is required.")
 
-    #core_cfg = load_core_config()
     ui_cfg = load_ui_config()
     local_timezone = ui_cfg.local_timezone
 
@@ -1578,7 +1578,7 @@ def reindex_conversation_transcript_artifact(
     return reindex_artifact_by_id(artifact_id)
 
 
-def refresh_conversation_transcript_artifact(
+def db_refresh_conversation_transcript_artifact(
     conversation_id: str,
     *,
     force_full: bool = False,
@@ -1588,7 +1588,6 @@ def refresh_conversation_transcript_artifact(
     if not conversation_id:
         raise ValueError("conversation_id is required.")
 
-    #core_cfg = load_core_config()
     ui_cfg = load_ui_config()
     local_timezone = ui_cfg.local_timezone
 
@@ -1724,7 +1723,7 @@ def ensure_conversation_transcript_artifact_fresh(
 ) -> dict:
     status = get_conversation_transcript_status(conversation_id)
     if force_full or status["stale"]:
-        return refresh_conversation_transcript_artifact(
+        return db_refresh_conversation_transcript_artifact(
             conversation_id,
             force_full=force_full,
             reason=reason or "lazy-repair",
@@ -1740,7 +1739,7 @@ def ensure_conversation_transcript_artifact_fresh(
     }
 
 
-def export_conversation_transcript_markdown(
+def db_export_conversation_transcript_markdown(
     conversation_id: str,
     *,
     refresh_if_stale: bool = True,
@@ -1891,7 +1890,7 @@ def save_context_cache(
         )
 
 
-def invalidate_context_cache_for_conversation(conversation_id: str) -> None:
+def db_invalidate_context_cache_for_conversation(conversation_id: str) -> None:
     """
     Drop any cached context for a single conversation.
     """
@@ -1907,7 +1906,7 @@ def invalidate_context_cache_for_conversation(conversation_id: str) -> None:
             (conversation_id,),
         )
 
-def invalidate_context_cache_for_project(project_id: int) -> None:
+def db_invalidate_context_cache_for_project(project_id: int) -> None:
     """
     Drop cached context for all conversations under a project.
     Useful after bulk file/import changes.
@@ -1951,7 +1950,7 @@ def _message_count(conn: sqlite3.Connection, conversation_id: str) -> int:
     ).fetchone()
     return int(row["c"])
 
-def add_message(
+def db_add_message(
         conversation_id: str,
         role: str,
         content: str,
@@ -2008,7 +2007,7 @@ def add_message(
 
     return new_message_id
 
-def get_messages_raw(conversation_id: str, limit: int = 200) -> list[dict]:
+def db_get_messages_raw(conversation_id: str, limit: int = 200) -> list[dict]:
     with db_session() as conn:
         rows = conn.execute(
             """
@@ -2051,8 +2050,8 @@ def get_messages_raw(conversation_id: str, limit: int = 200) -> list[dict]:
     return results
 
 
-def get_messages(conversation_id: str, limit: int = 200) -> list[dict]:
-    rows = get_messages_raw(conversation_id, limit=limit)
+def db_get_messages(conversation_id: str, limit: int = 200) -> list[dict]:
+    rows = db_get_messages_raw(conversation_id, limit=limit)
     result: list[dict] = []
     seen_groups: set[str] = set()
 
@@ -2074,7 +2073,7 @@ def get_messages(conversation_id: str, limit: int = 200) -> list[dict]:
     return result
 
 
-def update_ab_canonical(conversation_id: str, ab_group: str, slot: str) -> None:
+def db_update_ab_canonical(conversation_id: str, ab_group: str, slot: str) -> None:
     slot = (slot or "").upper()
     if slot not in ("A", "B"):
         return
@@ -2176,7 +2175,7 @@ def _fetch_memory_row(conn: sqlite3.Connection, memory_id: str) -> dict:
 
     return _memory_row_to_dict(row)
 
-def create_memory(
+def db_add_memory(
     content: str,
     importance: int = 0,
     tags: Any = None,
@@ -2251,7 +2250,7 @@ def create_memory(
     mem["artifact_reindex"] = reindex_info
     return mem
 
-def list_memories(limit: int = 200) -> list[dict]:
+def db_list_memories(limit: int = 200) -> list[dict]:
     """
     Query memories in order by highest importance first.
     Those with zero importance are effectively ignored,
@@ -2295,7 +2294,7 @@ def list_memories(limit: int = 200) -> list[dict]:
         return [_memory_row_to_dict(r) for r in rows]
 
 
-def update_memory(
+def db_update_memory(
     memory_id: str,
     content: str,
     importance: int = 0,
@@ -2368,7 +2367,7 @@ def update_memory(
     mem["artifact_reindex"] = reindex_info
     return mem
 
-def delete_memory(memory_id: str) -> None:
+def db_delete_memory(memory_id: str) -> None:
     memory_id = (memory_id or "").strip()
     if not memory_id:
         raise ValueError("memory_id is required.")
@@ -2382,7 +2381,7 @@ def delete_memory(memory_id: str) -> None:
         conn.execute("DELETE FROM memory_conversations WHERE memory_id = ?", (memory_id,))
         conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
 
-def memory_link_project(memory_id: str, project_id: int) -> None:
+def db_memory_link_project(memory_id: str, project_id: int) -> None:
     if not memory_id or not str(memory_id).strip():
         raise ValueError("memory_id is required.")
     if project_id is None:
@@ -2397,7 +2396,7 @@ def memory_link_project(memory_id: str, project_id: int) -> None:
             VALUES (?, ?)
         """, (memory_id, int(project_id)))
 
-def memory_link_conversation(memory_id: str, conversation_id: str) -> None:
+def db_memory_link_conversation(memory_id: str, conversation_id: str) -> None:
     if not memory_id or not str(memory_id).strip():
         raise ValueError("memory_id is required.")
     conversation_id = (conversation_id or "").strip()
@@ -2669,7 +2668,7 @@ def _ensure_memory_pin_exists(conn: sqlite3.Connection, pin_id: int) -> sqlite3.
         raise ValueError(f"Pin not found: {pin_id}")
     return row
 
-def update_memory_pin(
+def db_update_pin(
     pin_id: int,
     text: str,
     *,
@@ -2731,7 +2730,7 @@ def update_memory_pin(
         row = conn.execute("SELECT * FROM memory_pins WHERE id = ?", (int(pin_id),)).fetchone()
         return _pin_row_to_dict(row)
 
-def add_memory_pin(
+def db_add_pin(
     text: str,
     *,
     pin_kind: str = "instruction",
@@ -2854,7 +2853,7 @@ def upsert_about_you_pin(
         row = conn.execute("SELECT * FROM memory_pins WHERE id = ?", (int(cur.lastrowid),)).fetchone()
         return _pin_row_to_dict(row)
 
-def get_about_you_pin() -> dict | None:
+def db_get_about_you_pin() -> dict | None:
     with db_session() as conn:
         row = conn.execute("""
             SELECT *
@@ -2868,7 +2867,7 @@ def get_about_you_pin() -> dict | None:
         """).fetchone()
         return _pin_row_to_dict(row) if row else None
 
-def list_memory_pins(limit: int = 200) -> list[dict]:
+def db_list_pins(limit: int = 200) -> list[dict]:
     with db_session() as conn:
         rows = conn.execute("""
             SELECT
@@ -2881,7 +2880,7 @@ def list_memory_pins(limit: int = 200) -> list[dict]:
         """, (limit,)).fetchall()
         return [_pin_row_to_dict(r) for r in rows]
 
-def delete_memory_pin(pin_id: int) -> None:
+def db_delete_pin(pin_id: int) -> None:
     with db_session() as conn:
         # TODO shouldn't we quit and warn if it doesn't?
         _ensure_memory_pin_exists(conn, pin_id)
@@ -2958,7 +2957,7 @@ def reindex_corpus_for_conversation(
         """
         # do self-heal / queries / chunk writes
         # Ensure missing file artifacts are created (cheap now that it’s capped)
-        ensure_files_artifacted_for_conversation(
+        db_ensure_files_artifacted_for_conversation(
             conversation_id=cid,
             limit_per_scope=IMPORT_CFG.ensure_files_limit_per_scope,
             include_global=include_global,
@@ -4609,7 +4608,7 @@ def retain_conversation_artifact_conn(
     return retained_id
 
 
-def retain_conversation_artifact(
+def db_retain_conversation_artifact(
     *,
     conversation_id: str,
     artifact_id: str,
@@ -5036,7 +5035,7 @@ def _normalize_json_text_arg(value: str | dict | list | None) -> str | None:
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
 
-def get_artifact_reading_session(session_id: int) -> dict | None:
+def db_get_artifact_reading_session(session_id: int) -> dict | None:
     with db_session() as conn:
         row = conn.execute(
             "SELECT * FROM artifact_reading_sessions WHERE id = ?",
@@ -5093,7 +5092,7 @@ def list_artifact_reading_sessions_for_conversation(
 
 
 
-def list_artifact_reading_sessions(
+def db_list_artifact_reading_sessions(
     *,
     conversation_id: str | None = None,
     artifact_id: str | None = None,
@@ -5256,7 +5255,7 @@ def upsert_artifact_reading_session(
         return dict(out)
 
 
-def update_artifact_reading_session(
+def db_update_artifact_reading_session(
     session_id: int,
     *,
     mode: str | None = None,
@@ -5366,7 +5365,7 @@ def replace_artifact_reading_steps(
         return [dict(r) for r in rows]
 
 
-def list_artifact_reading_steps(session_id: int) -> list[dict]:
+def db_list_artifact_reading_steps(session_id: int) -> list[dict]:
     with db_session() as conn:
         rows = conn.execute(
             "SELECT * FROM artifact_reading_steps WHERE session_id = ? ORDER BY ordinal ASC, id ASC",
@@ -5375,7 +5374,7 @@ def list_artifact_reading_steps(session_id: int) -> list[dict]:
         return [dict(r) for r in rows]
 
 
-def get_artifact_reading_step(session_id: int, ordinal: int) -> dict | None:
+def db_get_artifact_reading_step(session_id: int, ordinal: int) -> dict | None:
     with db_session() as conn:
         row = conn.execute(
             """
@@ -5419,7 +5418,7 @@ def get_next_artifact_reading_step(
         return dict(row) if row else None
 
 
-def update_artifact_reading_step(
+def db_update_artifact_reading_step(
     session_id: int,
     ordinal: int,
     *,
@@ -5762,7 +5761,7 @@ def create_or_update_conversation_scaffold_event_by_input_conn(
         output_json=output_json_text,
     )
 
-def create_conversation_scaffold_event(
+def db_create_conversation_scaffold_event(
     *,
     conversation_id: str,
     message_id: int | None = None,
@@ -5836,7 +5835,7 @@ def update_conversation_scaffold_event_conn(
     )
 
 
-def update_conversation_scaffold_event(
+def db_update_conversation_scaffold_event(
     *,
     event_id: int,
     message_id: int | None = None,
@@ -5902,7 +5901,7 @@ def _scaffold_event_anchor_before_message(event_kind: str) -> bool:
     return ek.startswith("tool") or ek in {"artifact_reading_notes"}
 
 
-def list_conversation_history_with_scaffold_events(
+def db_list_conversation_history_with_scaffold_events(
     conversation_id: str,
 ) -> list[dict]:
     """
@@ -6055,7 +6054,7 @@ def replace_citations_for_message_conn(
     )
 
 
-def replace_citations_for_message(
+def db_replace_citations_for_message(
     *,
     assistant_message_id: int,
     citations: list[dict],
@@ -6306,7 +6305,7 @@ def _build_citation_scope_cards_from_rows_conn(conn: sqlite3.Connection, rows: l
     return out
 
 
-def list_citation_scope_cards_for_conversation(conversation_id: str) -> list[dict]:
+def db_list_citation_scope_cards_for_conversation(conversation_id: str) -> list[dict]:
     cid = (conversation_id or "").strip()
     if not cid:
         return []
@@ -6328,7 +6327,7 @@ def list_citation_scope_cards_for_conversation(conversation_id: str) -> list[dic
         return _build_citation_scope_cards_from_rows_conn(conn, [dict(r) for r in rows])
 
 
-def list_citation_scope_cards_for_project(project_id: int) -> list[dict]:
+def db_list_citation_scope_cards_for_project(project_id: int) -> list[dict]:
     with db_session() as conn:
         rows = conn.execute(
             """
@@ -6363,7 +6362,7 @@ def _ensure_file_exists(conn: sqlite3.Connection, file_id: int | str) -> None:
     if row is None:
         raise ValueError(f"File not found: {file_id_str}")
     
-def register_file(name: str, path: str, mime_type: str | None = None) -> dict:
+def db_register_file(name: str, path: str, mime_type: str | None = None) -> dict:
     name = (name or "").strip()
     path = (path or "").strip()
     mime_type = (mime_type or "").strip() or None
@@ -6385,7 +6384,7 @@ def register_file(name: str, path: str, mime_type: str | None = None) -> dict:
         )
     return {"id": fid}
 
-def project_add_file(project_id: int, file_id: str) -> None:
+def db_project_add_file(project_id: int, file_id: str) -> None:
     if project_id is None:
         raise ValueError("project_id is required.")
     file_id = (file_id or "").strip()
@@ -6401,7 +6400,7 @@ def project_add_file(project_id: int, file_id: str) -> None:
             (int(project_id), file_id),
         )
 
-def conversation_link_file(conversation_id: str, file_id: str) -> None:
+def db_conversation_link_file(conversation_id: str, file_id: str) -> None:
     """
     Link a file to a conversation (for chat-scoped context).
     Idempotent via PRIMARY KEY (conversation_id, file_id).
@@ -6424,7 +6423,7 @@ def conversation_link_file(conversation_id: str, file_id: str) -> None:
             (conversation_id, file_id),
         )
 
-def list_files_for_conversation(
+def db_list_files_for_conversation(
     conversation_id: str,
     include_deleted: bool = False,
 ) -> list[dict]:
@@ -6452,7 +6451,7 @@ def list_files_for_conversation(
     print(f"[db] list_files_for_conversation({conversation_id!r}, include_deleted={include_deleted}) -> {len(rows)} rows")
     return [dict(r) for r in rows]
 
-def list_files_for_project(
+def db_list_files_for_project(
     project_id: int,
     include_deleted: bool = False,
 ) -> list[dict]:
@@ -6477,7 +6476,7 @@ def list_files_for_project(
     print(f"[db] list_files_for_project({project_id}, include_deleted={include_deleted}) -> {len(rows)} rows")
     return [dict(r) for r in rows]
 
-def list_all_files(include_deleted: bool = False) -> list[dict]:
+def db_list_all_files(include_deleted: bool = False) -> list[dict]:
     """
     Return all files in the files table, optionally including soft-deleted ones.
     """
@@ -6490,7 +6489,7 @@ def list_all_files(include_deleted: bool = False) -> list[dict]:
     print(f"[db] list_all_files(include_deleted={include_deleted}) -> {len(rows)} rows")
     return [dict(r) for r in rows]
 
-def list_global_files(include_deleted: bool = False) -> list[dict]:
+def db_list_global_files(include_deleted: bool = False) -> list[dict]:
     """
     Returns all globally scoped files.
     Supports both:
@@ -6523,7 +6522,7 @@ def list_global_files(include_deleted: bool = False) -> list[dict]:
 
     return [dict(r) for r in rows]
 
-def get_files_summary() -> dict:
+def db_get_files_summary() -> dict:
     """
     Return a simple summary: total file count and counts grouped by scope_type.
     """
@@ -6553,7 +6552,7 @@ def get_files_summary() -> dict:
 
     return {"total": total, "by_scope": by_scope}
 
-def register_scoped_file(
+def db_register_scoped_file(
     name: str,
     path: str,
     mime_type: str | None = None,
@@ -6631,7 +6630,7 @@ def register_scoped_file(
         )
     return {"id": fid}
 
-def find_same_scope_same_name_file(
+def db_find_same_scope_same_name_file(
     *,
     name: str,
     scope_type: str | None,
@@ -6663,7 +6662,7 @@ def find_same_scope_same_name_file(
         row = conn.execute(sql, params).fetchone()
     return dict(row) if row else None
 
-def replace_file_in_place(
+def db_replace_file_in_place(
     file_id: str,
     *,
     path: str,
@@ -6693,9 +6692,9 @@ def replace_file_in_place(
             """,
             (path, mime_type, sha256, _utc_now_iso(), file_id),
         )
-    return get_file_by_id(file_id)
+    return db_get_file_by_id(file_id)
 
-def rename_file(file_id: str, new_name: str) -> dict:
+def db_rename_file(file_id: str, new_name: str) -> dict:
     file_id = (file_id or "").strip()
     new_name = (new_name or "").strip()
     if not file_id:
@@ -6777,8 +6776,8 @@ def rename_file(file_id: str, new_name: str) -> dict:
             (new_name, now, file_id),
         )
 
-    updated_file = get_file_by_id(file_id)
-    artifact_file(updated_file)
+    updated_file = db_get_file_by_id(file_id)
+    db_artifact_file(updated_file)
     invalidate_all_context_cache()
     return {
         "id": updated_file["id"],
@@ -6788,7 +6787,7 @@ def rename_file(file_id: str, new_name: str) -> dict:
         "old_path": old_path_raw,
     }
 
-def list_files_by_sha256(sha256: str, include_deleted: bool = False) -> list[dict]:
+def db_list_files_by_sha256(sha256: str, include_deleted: bool = False) -> list[dict]:
     sha256 = (sha256 or "").strip().lower()
     if not sha256:
         return []
@@ -6802,7 +6801,7 @@ def list_files_by_sha256(sha256: str, include_deleted: bool = False) -> list[dic
 
     return [dict(r) for r in rows]
 
-def update_file_description(file_id: str, description: str | None) -> None:
+def db_update_file_description(file_id: str, description: str | None) -> None:
     file_id = (file_id or "").strip()
     if not file_id:
         raise ValueError("file_id is required.")
@@ -6848,12 +6847,12 @@ def update_file_description(file_id: str, description: str | None) -> None:
             (now, file_id),
         )
 
-    updated_file = get_file_by_id(file_id)
-    artifact_file(updated_file)
+    updated_file = db_get_file_by_id(file_id)
+    db_artifact_file(updated_file)
     invalidate_all_context_cache()
 
 
-def set_file_image_caption(
+def db_set_file_image_caption(
     file_id: str,
     caption: str | None,
     *,
@@ -6909,13 +6908,13 @@ def set_file_image_caption(
             (now, file_id),
         )
 
-    updated_file = get_file_by_id(file_id)
-    artifact_file(updated_file)
+    updated_file = db_get_file_by_id(file_id)
+    db_artifact_file(updated_file)
     invalidate_all_context_cache()
     return updated_file
 
 
-def set_file_image_ocr_text(
+def db_set_file_image_ocr_text(
     file_id: str,
     ocr_text: str | None,
     *,
@@ -6971,13 +6970,13 @@ def set_file_image_ocr_text(
             (now, file_id),
         )
 
-    updated_file = get_file_by_id(file_id)
-    artifact_file(updated_file)
+    updated_file = db_get_file_by_id(file_id)
+    db_artifact_file(updated_file)
     invalidate_all_context_cache()
     return updated_file
 
 
-def move_file_scope(
+def db_move_file_scope(
     file_id: str,
     *,
     scope_type: str,
@@ -7072,7 +7071,7 @@ def move_file_scope(
     updated_file = dict(updated_row)
 
     # Rebuild artifact scope to match the file's new scope.
-    artifact_file(updated_file)
+    db_artifact_file(updated_file)
 
     # Scope changes can affect many contexts, especially when moving into global scope.
     invalidate_all_context_cache()
@@ -7090,7 +7089,7 @@ def move_file_scope(
 
 
 
-def move_artifact_scope(
+def db_move_artifact_scope(
     artifact_id: str,
     *,
     scope_type: str,
@@ -7139,7 +7138,7 @@ def move_artifact_scope(
 
         if source_kind == "file":
             raise ValueError("File-backed artifacts should be promoted by moving the underlying file instead.")
-        if scope_rank(target_scope_type) < scope_rank(old_scope_type):
+        if db_scope_rank(target_scope_type) < db_scope_rank(old_scope_type):
              raise ValueError("Artifacts can only be promoted to the same or a higher scope.")
 
         if target_scope_type == "project":
@@ -7188,7 +7187,7 @@ def move_artifact_scope(
 
     invalidate_all_context_cache()
     return {"id": artifact_id, "scope_type": target_scope_type, "scope_id": scope_id, "scope_uuid": target_scope_uuid, "old_scope_type": old_scope_type, "old_scope_id": old_scope_id, "old_scope_uuid": old_scope_uuid}
-def get_file_by_id(file_id: str) -> dict:
+def db_get_file_by_id(file_id: str) -> dict:
     """
     Fetch a file row by id from the files table.
 
@@ -7262,16 +7261,16 @@ def gather_scoped_files(conversation_id: str) -> dict[str, dict]:
     files_by_id: dict[str, dict] = {}
 
     # Conversation-scoped files
-    for f in list_files_for_conversation(conversation_id, include_deleted=False):
+    for f in db_list_files_for_conversation(conversation_id, include_deleted=False):
         files_by_id[f["id"]] = f
 
     # Project-scoped files, if any
     if project_id:
-        for f in list_files_for_project(project_id, include_deleted=False):
+        for f in db_list_files_for_project(project_id, include_deleted=False):
             files_by_id[f["id"]] = f
 
     # Global / unscoped files
-    for f in list_all_files(include_deleted=False):
+    for f in db_list_all_files(include_deleted=False):
         scope_type = f.get("scope_type")
         # Treat explicit "global" or completely unscoped files as global.
         if not scope_type or scope_type == "global":
@@ -7285,7 +7284,7 @@ class FileDeleteAction(Enum):
     MOVE = 1
     DELETE = 2
 
-def delete_file_cascade(
+def db_delete_file_cascade(
     file_id: str,
     *,
     deleted_by_user_id: str | None = None,
@@ -7373,9 +7372,9 @@ def delete_file_cascade(
     # invalidate caches outside the db_session for simplicity
     try:
         if scope_type == "conversation" and scope_uuid:
-            invalidate_context_cache_for_conversation(scope_uuid)
+            db_invalidate_context_cache_for_conversation(scope_uuid)
         elif scope_type == "project" and scope_id is not None:
-            invalidate_context_cache_for_project(int(scope_id))
+            db_invalidate_context_cache_for_project(int(scope_id))
     except Exception:
         pass
 
@@ -7420,7 +7419,7 @@ def delete_file_cascade(
         "moved_to": moved_to,
     }
 
-def list_files_same_name_any_scope(name: str, include_deleted: bool = False) -> list[dict]:
+def db_list_files_same_name_any_scope(name: str, include_deleted: bool = False) -> list[dict]:
     name = (name or "").strip()
     if not name:
         return []
@@ -7437,7 +7436,7 @@ def list_files_same_name_any_scope(name: str, include_deleted: bool = False) -> 
 # endregion
 # region Artifacts
 
-def scope_rank(scope_type: str | None) -> int:
+def db_scope_rank(scope_type: str | None) -> int:
     st = (scope_type or "").strip().lower()
     if st == "global":
         return 3
@@ -7648,7 +7647,7 @@ def ensure_files_artifacted_for_conversation_conn(
     _heal("chat", "chat", None, cid)  # TODO remove after DB cleanup
 
     # Project-scoped files (if conversation is in a project)
-    pid = get_conversation_project_id(conn, cid)
+    pid = db_get_conversation_project_id(conn, cid)
     if pid is not None:
         _heal("project", "project", pid, None)
 
@@ -7737,7 +7736,7 @@ def rebuild_file_artifacts_batch(conn, *, data_dir="data", sidecar_threshold_byt
         created += 1
     return created
 
-def ensure_files_artifacted_for_conversation(
+def db_ensure_files_artifacted_for_conversation(
     *,
     conversation_id: str,
     limit_per_scope: int = 5,
@@ -7969,7 +7968,7 @@ def hydrate_artifact_content_text(conn, artifact_id: str) -> str:
     _hydrate_artifact_content_text(art)
     return (art.get("content_text") or "")
 
-def get_scoped_artifact_debug(conversation_id: str, *, include_global: bool = False, preview_chars: int = 180) -> dict:
+def db_get_scoped_artifact_debug(conversation_id: str, *, include_global: bool = False, preview_chars: int = 180) -> dict:
     with db_session() as conn:
         scope_keys = _scope_keys_for_conversation(conn, conversation_id, include_global=include_global)
         arts = iter_artifacts_with_file_hints_for_scope_keys(conn, scope_keys)
@@ -8077,14 +8076,14 @@ def ensure_artifacts_for_files(files_by_id: dict[str, dict]) -> None:
     for file_id, file_row in files_by_id.items():
         # If file row doesn't have data, we are the data layer, so let's go get it!!
         if file_row is None:
-            file_row = get_file_by_id(file_id)
+            file_row = db_get_file_by_id(file_id)
         existing = existing_by_file_id.get(str(file_id).strip(), [])
 
         if existing:
             continue  # already artifacted
 
         try:
-            artifact_file(file_row)
+            db_artifact_file(file_row)
         except Exception as exc:
             # This might be "no project_id for global file" or a decode error; just log and move on.
             print(f"[context] artifact_file failed for file {file_id}: {exc}")
@@ -8151,7 +8150,7 @@ def get_artifact_by_id(artifact_id: str, *, include_deleted: bool = False, hydra
     return art
 
 
-def list_artifacts_for_file(
+def db_list_artifacts_for_file(
     file_id: int | str,
     include_deleted: bool = False,
 ) -> list[dict]:
@@ -8259,7 +8258,7 @@ def conversation_link_artifact(conversation_id: str, artifact_id: str) -> None:
             (conversation_id, artifact_id),
         )
 
-def list_artifacts_for_project(
+def db_list_artifacts_for_project(
     project_id: int,
     include_deleted: bool = False,
     ) -> list[dict]:
@@ -8284,7 +8283,7 @@ def list_artifacts_for_project(
     return out
 
 
-def list_artifacts_for_conversation(
+def db_list_artifacts_for_conversation(
     conversation_id: str,
     include_deleted: bool = False,
 ) -> list[dict]:
@@ -8310,7 +8309,7 @@ def list_artifacts_for_conversation(
     return out
 
 
-def list_global_artifacts(include_deleted: bool = False) -> list[dict]:
+def db_list_global_artifacts(include_deleted: bool = False) -> list[dict]:
     with db_session() as conn:
         global_project_id = get_global_project_id()
         sql = """
@@ -8335,7 +8334,7 @@ def list_global_artifacts(include_deleted: bool = False) -> list[dict]:
 
 # region Add/Upsert File-Artifact
 
-def artifact_file(file_row) -> str:
+def db_artifact_file(file_row) -> str:
     """
     Convenience wrapper around upsert_file_artifact for end-to-end artifacting of a single file.
     Uses the file row's real scope, not global defaults.

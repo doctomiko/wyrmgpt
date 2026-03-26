@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from server.db import (  # noqa: E402
     db_session,
     init_schema,
-    refresh_conversation_transcript_artifact,
+    db_refresh_conversation_transcript_artifact,
 )
 
 
@@ -58,7 +58,7 @@ def main() -> None:
     fail = 0
     for i, cid in enumerate(ids, start=1):
         try:
-            out = refresh_conversation_transcript_artifact(
+            out = db_refresh_conversation_transcript_artifact(
                 cid,
                 force_full=True,
                 reason="transcript-regeneration-script",

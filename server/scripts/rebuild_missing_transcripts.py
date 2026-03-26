@@ -10,7 +10,7 @@ from server.db import (  # noqa: E402
     db_session,
     init_schema,
     get_conversation_transcript_status,
-    refresh_conversation_transcript_artifact,
+    db_refresh_conversation_transcript_artifact,
 )
 
 
@@ -56,7 +56,7 @@ def main() -> None:
                 print(f"[{i}/{len(ids)}] skip {cid} (transcript exists; stale={stale})")
                 continue
 
-            out = refresh_conversation_transcript_artifact(
+            out = db_refresh_conversation_transcript_artifact(
                 cid,
                 force_full=bool(args.force or missing),
                 reason="backfill-script",

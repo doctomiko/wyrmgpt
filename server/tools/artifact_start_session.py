@@ -11,9 +11,9 @@ from ..reading_session_notes import coerce_reading_strategy, load_reading_questi
 from ..db import (
     get_artifact_reading_session_for_conversation_artifact,
     get_next_artifact_reading_step,
-    list_artifact_reading_steps,
+    db_list_artifact_reading_steps,
     replace_artifact_reading_steps,
-    update_artifact_reading_session,
+    db_update_artifact_reading_session,
     upsert_artifact_reading_session,
 )
 from .artifact_helpers import load_or_synthesize_artifact_chunks
@@ -175,13 +175,13 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
     existing = get_artifact_reading_session_for_conversation_artifact(conversation_id, artifact_id)
     if existing and not restart:
         session_id = int(existing["id"])
-        stored_steps = list_artifact_reading_steps(session_id)
+        stored_steps = db_list_artifact_reading_steps(session_id)
         next_step = get_next_artifact_reading_step(
             session_id,
             after_ordinal=existing.get("current_section_ordinal"),
             include_active=True,
         )
-        existing = update_artifact_reading_session(
+        existing = db_update_artifact_reading_session(
             session_id,
             status="active",
             strategy_json=(strategy_payload if (strategy is not None or not existing.get("strategy_json")) else None),
@@ -217,7 +217,7 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
 
     session_id = int(session["id"])
     stored_steps = replace_artifact_reading_steps(session_id, steps)
-    session = update_artifact_reading_session(session_id, current_section_ordinal=None, current_chunk_position=None, status="active")
+    session = db_update_artifact_reading_session(session_id, current_section_ordinal=None, current_chunk_position=None, status="active")
     next_step = get_next_artifact_reading_step(session_id, after_ordinal=None, include_active=True)
 
     return ToolResult(

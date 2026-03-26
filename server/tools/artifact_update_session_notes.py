@@ -3,10 +3,10 @@ from __future__ import annotations
 from typing import Any
 
 from ..db import (
-    get_artifact_reading_session,
-    list_artifact_reading_steps,
-    update_artifact_reading_session,
-    update_artifact_reading_step,
+    db_get_artifact_reading_session,
+    db_list_artifact_reading_steps,
+    db_update_artifact_reading_session,
+    db_update_artifact_reading_step,
 )
 from .base import ToolExecutionContext, ToolResult, ToolSpec
 
@@ -34,16 +34,16 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
     if ordinal <= 0:
         return ToolResult(ok=False, tool=TOOL_SPEC.name, error="ordinal is required")
 
-    session = get_artifact_reading_session(session_id)
+    session = db_get_artifact_reading_session(session_id)
     if not session:
         return ToolResult(ok=False, tool=TOOL_SPEC.name, error=f"reading session not found: {session_id}")
 
-    step = update_artifact_reading_step(session_id, ordinal, status=status, notes=notes)
-    steps = list_artifact_reading_steps(session_id)
+    step = db_update_artifact_reading_step(session_id, ordinal, status=status, notes=notes)
+    steps = db_list_artifact_reading_steps(session_id)
     done_count = sum(1 for s in steps if (s.get("status") or "") == "done")
     complete = done_count == len(steps) and len(steps) > 0
 
-    session = update_artifact_reading_session(
+    session = db_update_artifact_reading_session(
         session_id,
         current_section_ordinal=ordinal,
         current_chunk_position=int(current_chunk_position) if current_chunk_position is not None else None,

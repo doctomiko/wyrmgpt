@@ -17,13 +17,13 @@ if str(ROOT) not in sys.path:
 from server.db import (
     create_conversation_scaffold_event_conn,
     db_session,
-    get_file_by_id,
-    get_or_create_project,
+    db_get_file_by_id,
+    db_get_or_create_project,
     init_schema,
-    list_files_by_sha256,
-    project_add_conversation,
-    register_scoped_file,
-    refresh_conversation_transcript_artifact,
+    db_list_files_by_sha256,
+    db_project_add_conversation,
+    db_register_scoped_file,
+    db_refresh_conversation_transcript_artifact,
     reindex_corpus_for_conversation,
     upsert_file_artifact,
 )
@@ -607,7 +607,7 @@ def _resolve_project_for_conversation(convo: dict, caches: dict[str, dict[str, s
     if existing:
         return int(existing), key
     name = _project_name_for_conversation(convo)
-    project = get_or_create_project(name=name, visibility="private")
+    project = db_get_or_create_project(name=name, visibility="private")
     project_id = int(project["id"])
     caches["project"][key] = str(project_id)
     with db_session() as conn:
@@ -979,14 +979,14 @@ def _import_root_assets(source: ExportSource, source_label: str, caches: dict[st
             sha256 = _sha256_file(dest)
             mime_type = mimetypes.guess_type(dest.name)[0] or "application/octet-stream"
             existing = None
-            for row in list_files_by_sha256(sha256):
+            for row in db_list_files_by_sha256(sha256):
                 if (row.get("scope_type") or "").strip() == "global":
                     existing = row
                     break
             if existing:
                 file_row = existing
             else:
-                reg = register_scoped_file(
+                reg = db_register_scoped_file(
                     name=dest.name,
                     path=str(dest),
                     mime_type=mime_type,
@@ -998,7 +998,7 @@ def _import_root_assets(source: ExportSource, source_label: str, caches: dict[st
                     provenance=f"openai_export:{source_label}",
                     description=f"Imported from OpenAI export root asset {relname}",
                 )
-                file_row = get_file_by_id(reg["id"])
+                file_row = db_get_file_by_id(reg["id"])
             with db_session() as conn:
                 artifact_id = upsert_file_artifact(conn, file_row=file_row, scope_type="global", scope_id=None)
                 _upsert_import_identity_conn(conn, asset_type="file", local_id=file_row["id"], import_id=relname, imported_name=dest.name)
@@ -1289,7 +1289,7 @@ def _import_conversation(convo: dict, *, prefix: str, zip_names: list[str], cach
             latest_created_at = msg_created_at
 
     if project_id is not None:
-        project_add_conversation(project_id, local_cid, set_primary=True)
+        db_project_add_conversation(project_id, local_cid, set_primary=True)
 
     if latest_msg_id is not None and not metadata_only:
         # lighter than refreshing immediately; transcript/reindex can still be optional
@@ -1297,7 +1297,7 @@ def _import_conversation(convo: dict, *, prefix: str, zip_names: list[str], cach
         mark_conversation_transcript_dirty(local_cid, latest_message_id=latest_msg_id, latest_message_created_at=latest_created_at)
 
     if refresh_transcripts and not metadata_only:
-        refresh_conversation_transcript_artifact(local_cid, force_full=True, reason="openai-export-import")
+        db_refresh_conversation_transcript_artifact(local_cid, force_full=True, reason="openai-export-import")
     if reindex and not metadata_only:
         reindex_corpus_for_conversation(conversation_id=local_cid, force=True, include_global=False)
 

@@ -9,7 +9,7 @@ import time
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from server.config import load_import_config
-from server.db import db_session, reindex_corpus_for_conversation, ensure_files_artifacted_for_conversation, _migrate_schema_v9
+from server.db import db_session, reindex_corpus_for_conversation, db_ensure_files_artifacted_for_conversation, _migrate_schema_v9
 
 def list_all_conversation_ids(include_archived: bool = False) -> list[str]:
     """
@@ -106,7 +106,7 @@ def main():
 
     # Simple progress report
     for i, cid in enumerate(convo_ids, start=1):
-        ensure_files_artifacted_for_conversation(
+        db_ensure_files_artifacted_for_conversation(
             conversation_id=cid,
             limit_per_scope=import_cfg.ensure_files_limit_per_scope,
             include_global=True,

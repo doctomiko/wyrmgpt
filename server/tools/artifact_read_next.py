@@ -3,10 +3,10 @@ from __future__ import annotations
 from typing import Any
 
 from ..db import (
-    get_artifact_reading_session,
+    db_get_artifact_reading_session,
     get_artifact_reading_session_for_conversation_artifact,
     get_next_artifact_reading_step,
-    get_artifact_reading_step,
+    db_get_artifact_reading_step,
     list_artifact_reading_sessions_for_conversation,
 )
 from .artifact_read_section import execute as execute_read_section
@@ -30,7 +30,7 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
 
     session = None
     if session_id > 0:
-        session = get_artifact_reading_session(session_id)
+        session = db_get_artifact_reading_session(session_id)
     elif artifact_id and conversation_id:
         session = get_artifact_reading_session_for_conversation_artifact(conversation_id, artifact_id)
     elif conversation_id:
@@ -79,12 +79,12 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
     if not read_result.ok:
         return read_result
 
-    session = get_artifact_reading_session(session_id) or session
+    session = db_get_artifact_reading_session(session_id) or session
     refreshed_current = session.get("current_section_ordinal")
     current_step = None
     if refreshed_current is not None:
         try:
-            current_step = get_artifact_reading_step(session_id, int(refreshed_current))
+            current_step = db_get_artifact_reading_step(session_id, int(refreshed_current))
         except Exception:
             current_step = None
     next_step = get_next_artifact_reading_step(session_id, after_ordinal=refreshed_current)

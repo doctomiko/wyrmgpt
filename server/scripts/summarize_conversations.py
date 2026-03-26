@@ -17,9 +17,9 @@ from server.config import (
 from server.context import _get_prompt
 from server.db import (
     db_session,
-    get_transcript_for_summary,
+    db_get_transcript_for_summary,
     init_schema,
-    save_conversation_summary_artifact,
+    db_save_conversation_summary_artifact,
 )
 from server.providers.base import ChatProvider, ModelCatalogProvider
 from server.providers.openai_provider import OpenAIProvider
@@ -181,7 +181,7 @@ def main() -> None:
                     continue
 
             try:
-                title, transcript = get_transcript_for_summary(cid)
+                title, transcript = db_get_transcript_for_summary(cid)
             except ValueError as e:
                 skip += 1
                 print(f"[{i}/{len(ids)}] skip {cid} ({e})")
@@ -211,7 +211,7 @@ def main() -> None:
                     f"empty summary (title={title!r}, transcript_chars={len(transcript)})"
                 )
 
-            save_conversation_summary_artifact(cid, summary_text, target.model)
+            db_save_conversation_summary_artifact(cid, summary_text, target.model)
 
             ok += 1
             print(f"[{i}/{len(ids)}] ok   {cid}  ({len(summary_text)} chars)")

@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from .logging_helper import log_warn
 from .markdown_helper import extract_explicit_urls
 from .db import (
-    db_session, get_conversation_project_id,
+    db_session, db_get_conversation_project_id,
     upsert_web_source_conn, insert_web_source_snapshot_conn,
     get_web_snapshot_bundle_conn, upsert_artifact_text,
     retain_conversation_artifact_conn, reindex_artifact_by_id,
@@ -48,7 +48,7 @@ def ingest_urls_from_user_message(
     artifact_ids_to_reindex: list[str] = []
 
     with db_session() as conn:
-        project_id = get_conversation_project_id(conn, conversation_id)
+        project_id = db_get_conversation_project_id(conn, conversation_id)
 
         for url in urls:
             try:

@@ -16,7 +16,7 @@ from server.db import (
     create_conversation_scaffold_event_conn,
     db_session,
     init_schema,
-    refresh_conversation_transcript_artifact,
+    db_refresh_conversation_transcript_artifact,
 )
 
 
@@ -402,7 +402,7 @@ def main() -> None:
     total_conversations = len(affected_conversations)
     for idx, cid in enumerate(affected_conversations, start=1):
         try:
-            out = refresh_conversation_transcript_artifact(
+            out = db_refresh_conversation_transcript_artifact(
                 cid,
                 force_full=True,
                 reason="openai-user-editable-context-cleanup",

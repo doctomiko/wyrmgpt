@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..db import create_memory
+from ..db import db_add_memory
 from .base import ToolExecutionContext, ToolResult, ToolSpec
 
 TOOL_SPEC = ToolSpec(
@@ -55,7 +55,7 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
     tags = _normalize_tags(arguments.get("tags"))
     origin_kind = str(arguments.get("origin_kind") or "assistant_tool").strip() or "assistant_tool"
 
-    mem = create_memory(
+    mem = db_add_memory(
         content=content,
         importance=importance,
         tags=tags,

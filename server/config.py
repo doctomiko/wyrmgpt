@@ -557,7 +557,7 @@ IMPORT_DEFAULTS: ImportConfig = ImportConfig()
 @dataclass(frozen=True)
 class ToolConfig:
     enabled: bool = True
-    catalog_file: str = "./server/tool_catalog.json"
+    catalog_file: str = str(_HERE / "tool_catalog.json")
     allow_assistant_tool_blocks: bool = True
     max_calls_per_message: int = 4
 TOOLS_DEFAULTS: ToolConfig = ToolConfig()

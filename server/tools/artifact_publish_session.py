@@ -6,9 +6,9 @@ from typing import Any
 from ..db import (
     db_session,
     get_artifact_by_id,
-    get_artifact_reading_session,
-    get_conversation_project_id,
-    list_artifact_reading_steps,
+    db_get_artifact_reading_session,
+    db_get_conversation_project_id,
+    db_list_artifact_reading_steps,
     reindex_artifact_by_id,
     retain_conversation_artifact_conn,
     upsert_artifact_text,
@@ -119,11 +119,11 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
     if publish_kind not in {"reading_recap", "reading_journal_transcript"}:
         return ToolResult(ok=False, tool=TOOL_SPEC.name, error=f"unsupported publish_kind: {publish_kind}")
 
-    session = get_artifact_reading_session(session_id)
+    session = db_get_artifact_reading_session(session_id)
     if not session:
         return ToolResult(ok=False, tool=TOOL_SPEC.name, error=f"reading session not found: {session_id}")
 
-    steps = list_artifact_reading_steps(session_id)
+    steps = db_list_artifact_reading_steps(session_id)
     source_artifact = get_artifact_by_id(str(session.get("artifact_id") or ""), hydrate=False)
     if source_artifact and str(source_artifact.get("source_kind") or "").strip().lower().startswith("reading_session:"):
         return ToolResult(ok=False, tool=TOOL_SPEC.name, error="cannot publish a reading session from a reading-session-derived artifact")
@@ -165,7 +165,7 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         elif scope_type == "project":
             scope_id = explicit_project_id
             if scope_id is None and conversation_id:
-                scope_id = get_conversation_project_id(conn, conversation_id)
+                scope_id = db_get_conversation_project_id(conn, conversation_id)
             if scope_id is None:
                 scope_type = "conversation"
         artifact_id = upsert_artifact_text(

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..db import db_session, list_artifact_reading_sessions, list_artifact_reading_steps
+from ..db import db_session, db_list_artifact_reading_sessions, db_list_artifact_reading_steps
 from .base import ToolExecutionContext, ToolResult, ToolSpec
 
 TOOL_SPEC = ToolSpec(
@@ -88,7 +88,7 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         # project scope to avoid the accidental AND filter.
         project_id = None
 
-    rows = list_artifact_reading_sessions(
+    rows = db_list_artifact_reading_sessions(
         conversation_id=conversation_id,
         project_id=project_id,
         artifact_id=artifact_id,
@@ -102,7 +102,7 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
     sessions: list[dict[str, Any]] = []
     for row in rows:
         session_id = int(row.get("id") or 0)
-        steps = list_artifact_reading_steps(session_id)
+        steps = db_list_artifact_reading_steps(session_id)
         done_count = sum(1 for s in steps if str(s.get("status") or "").strip().lower() == "done")
         next_step = next(
             (
