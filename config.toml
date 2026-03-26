@@ -132,6 +132,11 @@ api_key = "" # stored in config.secrets.toml
 type = "anthropic"
 api_key = "" # stored in config.secrets.toml
 
+[providers.brave]
+type = "brave"
+base_url = "https://api.search.brave.com/res/v1"
+api_key = "" # stored in config.secrets.toml
+
 [deployments.chat_default]
 provider = "openai"
 model = "gpt-5.4"

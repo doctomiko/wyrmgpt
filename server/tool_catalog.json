@@ -365,6 +365,69 @@
     },
     "system_usage": "Use when the user wants a transcript, journal transcript, recap, export, publication, or other durable artifact derived from a completed or in-progress reading session. Prefer this over artifact.read_next when the request is about outputs from the session rather than reading more text."
   },
+  "web.search": {
+    "module": "web_search",
+    "enabled": true,
+    "display_name": "Web Search",
+    "description": "Run a web search and return ranked result links with titles and snippets.",
+    "tags": [
+      "web",
+      "search",
+      "brave"
+    ],
+    "input_schema": {
+      "type": "object",
+      "required": [
+        "query"
+      ],
+      "properties": {
+        "query": {
+          "type": "string",
+          "minLength": 2
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 8
+        },
+        "country": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 8,
+          "default": "us"
+        },
+        "search_lang": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 8,
+          "default": "en"
+        },
+        "safesearch": {
+          "type": "string",
+          "enum": [
+            "off",
+            "moderate",
+            "strict"
+          ],
+          "default": "moderate"
+        },
+        "freshness": {
+          "type": "string"
+        },
+        "extra_snippets": {
+          "type": "boolean",
+          "default": true
+        },
+        "conversation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "system_usage": "Use when current facts, news, or external references are needed. Use this before web.ingest_url, then fetch only one or two promising URLs if deeper reading is needed."
+  },
   "web.ingest_url": {
     "module": "web_ingest_url",
     "enabled": true,
