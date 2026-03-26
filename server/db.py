@@ -5808,6 +5808,10 @@ def update_conversation_scaffold_event_conn(
 
     input_json_text = _normalize_scaffold_event_json_arg(input_json)
     output_json_text = _normalize_scaffold_event_json_arg(output_json)
+    if input_json is None:
+        input_json_text = current.get("input_json")
+    if output_json is None:
+        output_json_text = current.get("output_json")
 
     conn.execute(
         """
@@ -5891,6 +5895,43 @@ def list_conversation_scaffold_events(
         sql += " LIMIT ?"
         params.append(int(limit))
 
+    with db_session() as conn:
+        rows = conn.execute(sql, tuple(params)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def db_get_latest_conversation_scaffold_event_id(conversation_id: str) -> int:
+    cid = (conversation_id or "").strip()
+    if not cid:
+        return 0
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(MAX(id), 0) AS max_id FROM conversation_scaffold_events WHERE conversation_id = ?",
+            (cid,),
+        ).fetchone()
+        return int((dict(row).get("max_id") if row is not None else 0) or 0)
+
+
+def db_list_conversation_scaffold_events_since(
+    conversation_id: str,
+    *,
+    after_event_id: int = 0,
+    limit: int | None = None,
+) -> list[dict]:
+    cid = (conversation_id or "").strip()
+    if not cid:
+        return []
+    params: list[Any] = [cid, max(0, int(after_event_id or 0))]
+    sql = """
+        SELECT *
+        FROM conversation_scaffold_events
+        WHERE conversation_id = ?
+          AND id > ?
+        ORDER BY id ASC
+    """
+    if limit is not None and int(limit) > 0:
+        sql += " LIMIT ?"
+        params.append(int(limit))
     with db_session() as conn:
         rows = conn.execute(sql, tuple(params)).fetchall()
         return [dict(r) for r in rows]

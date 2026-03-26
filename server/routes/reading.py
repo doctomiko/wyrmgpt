@@ -4,7 +4,7 @@ from typing import Any
 from server.artifact_reading_planner import get_artifact_readiness
 from server.config import load_summary_config
 from server.db import db_create_conversation_scaffold_event, db_update_artifact_reading_session, db_update_artifact_reading_step, db_list_artifact_reading_steps, db_get_artifact_reading_step, db_get_artifact_reading_session
-from server.logging_helper import log_warn
+from server.logging_helper import log_info, log_warn
 from server.reading_session_notes import build_reading_notes_prompts, coerce_reading_strategy, load_reading_questions, parse_reading_notes_output
 from server.routes.deployments import make_utility_completion
 from server.tools.base import ToolInvocationRequest, ToolResult
@@ -113,6 +113,7 @@ def maybe_capture_reading_notes_for_result(
         )
 
         try:
+            log_info("Reading notes captured for session %s section %s.", session_id, ordinal)
             db_create_conversation_scaffold_event(
                 conversation_id=conversation_id,
                 message_id=None,

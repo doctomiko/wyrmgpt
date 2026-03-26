@@ -134,52 +134,287 @@ function addMsg(role, text) {
   return div;
 }
 
+let liveScaffoldCards = new Map();
+
 function clearChat() {
   chatWindow.innerHTML = "";
+  liveScaffoldCards = new Map();
 }
 
-function addScaffoldEventCard(evRow) {
+function scaffoldEventId(evRow) {
+  const raw = evRow?.id ?? evRow?.event_id ?? evRow?.live_event_id ?? null;
+  return raw == null ? "" : String(raw);
+}
+
+function normalizeScaffoldJson(value) {
+  if (value == null || value === "") return null;
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+function scaffoldStatusLabel(status) {
+  const s = String(status || "").toLowerCase();
+  if (s === "ok" || s === "ready") return "complete";
+  if (s === "running") return "running";
+  if (s === "error") return "error";
+  return s || "event";
+}
+
+function ensureLiveScaffoldHost(anchorEl) {
+  if (!anchorEl || !anchorEl.parentNode) return chatWindow;
+  let host = anchorEl.previousElementSibling;
+  if (!host || !host.classList || !host.classList.contains("liveScaffoldHost")) {
+    host = document.createElement("div");
+    host.className = "liveScaffoldHost";
+    anchorEl.parentNode.insertBefore(host, anchorEl);
+  }
+  return host;
+}
+
+function scaffoldPrettyJsonText(value) {
+  if (value == null || value === "") return "";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function scaffoldToolName(evRow) {
+  const inputJson = normalizeScaffoldJson(evRow?.input_json);
+  if (inputJson && typeof inputJson === "object" && !Array.isArray(inputJson)) {
+    return String(inputJson.tool || inputJson.name || "").trim();
+  }
+  return "";
+}
+
+function scaffoldToolResultPayload(evRow) {
+  const outputJson = normalizeScaffoldJson(evRow?.output_json);
+  if (outputJson && typeof outputJson === "object" && !Array.isArray(outputJson)) {
+    const inner = outputJson.result;
+    if (inner && typeof inner === "object" && !Array.isArray(inner)) return inner;
+    return outputJson;
+  }
+  return null;
+}
+
+function scaffoldResultDate(item) {
+  return String(item?.age || item?.page_age || item?.date || "").trim();
+}
+
+function scaffoldSnippetParts(text, limit = 280) {
+  const raw = String(text || "").replace(/\s+/g, " ").trim();
+  if (!raw) return { preview: "", rest: "" };
+  if (raw.length <= limit) return { preview: raw, rest: "" };
+  const cut = raw.slice(0, limit);
+  const breakAt = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("! "), cut.lastIndexOf("? "), cut.lastIndexOf("; "));
+  const idx = breakAt >= Math.floor(limit * 0.55) ? breakAt + 1 : limit;
+  return {
+    preview: raw.slice(0, idx).trim(),
+    rest: raw.slice(idx).trim(),
+  };
+}
+
+function renderWebSearchScaffoldHtml(evRow) {
+  const payload = scaffoldToolResultPayload(evRow);
+  const results = Array.isArray(payload?.results) ? payload.results : [];
+  if (!results.length) return "";
+
+  const itemsHtml = results.map((item) => {
+    const title = escapeHtml(String(item?.title || item?.url || item?.canonical_url || "result"));
+    const urlRaw = String(item?.url || item?.canonical_url || "").trim();
+    const safeUrl = isLikelyLinkableUrl(urlRaw) ? sanitizeHref(urlRaw) : "";
+    const domain = escapeHtml(String(item?.domain || "").trim());
+    const dateText = escapeHtml(scaffoldResultDate(item));
+    const snippetText = [
+      String(item?.snippet || "").trim(),
+      ...((Array.isArray(item?.extra_snippets) ? item.extra_snippets : []).map(x => String(x || "").trim()).filter(Boolean)),
+    ].filter(Boolean).join(" ");
+    const snippet = scaffoldSnippetParts(snippetText, 300);
+    const metaBits = [];
+    if (domain) metaBits.push(`<span class="scaffoldSearchDomain">${domain}</span>`);
+    if (dateText) metaBits.push(`<span class="scaffoldSearchDate">${dateText}</span>`);
+    const metaHtml = metaBits.length ? `<div class="scaffoldSearchMetaLine">${metaBits.join('<span class="scaffoldSearchDot">•</span>')}</div>` : "";
+    const previewHtml = snippet.preview ? `<div class="scaffoldSearchSnippet">${escapeHtml(snippet.preview)}</div>` : "";
+    const moreHtml = snippet.rest
+      ? `<details class="scaffoldSearchMore"><summary>[more]</summary><div class="scaffoldSearchSnippet scaffoldSearchSnippetMore">${escapeHtml(snippet.rest)}</div></details>`
+      : "";
+    const titleHtml = safeUrl
+      ? `<a class="scaffoldSearchTitleLink" href="${safeUrl}" target="_blank" rel="noopener noreferrer">${title}</a>`
+      : title;
+    const urlHtml = safeUrl
+      ? `<a class="scaffoldSearchUrl" href="${safeUrl}" target="_blank" rel="noopener noreferrer">${escapeHtml(urlRaw)}</a>`
+      : `<div class="scaffoldSearchUrl">${escapeHtml(urlRaw)}</div>`;
+    return `
+      <article class="scaffoldSearchResult">
+        <div class="scaffoldSearchTitle">${titleHtml}</div>
+        ${urlRaw ? urlHtml : ""}
+        ${metaHtml}
+        ${previewHtml}
+        ${moreHtml}
+      </article>
+    `.trim();
+  }).join("");
+
+  return `<div class="scaffoldSearchResults">${itemsHtml}</div>`;
+}
+
+function renderScaffoldBodyHtml(evRow) {
+  const toolName = scaffoldToolName(evRow);
+  if (toolName === "web.search") {
+    const custom = renderWebSearchScaffoldHtml(evRow);
+    if (custom) return custom;
+  }
+  const bodyText = String(evRow?.body_text || "").trim();
+  return bodyText ? renderMarkdown(stripZeit(bodyText)) : "";
+}
+
+function buildScaffoldCardShell() {
   const wrap = document.createElement("div");
   wrap.className = "scaffoldCard";
 
+  const header = document.createElement("div");
+  header.className = "scaffoldHeader";
+
+  const badge = document.createElement("span");
+  badge.className = "scaffoldBadge";
+
   const title = document.createElement("div");
   title.className = "scaffoldTitle";
-  title.textContent = evRow.title || `Scaffold: ${evRow.event_kind || "event"}`;
+
+  header.appendChild(badge);
+  header.appendChild(title);
 
   const meta = document.createElement("div");
   meta.className = "scaffoldMeta";
-  const parts = [];
-  if (evRow.status) parts.push(`status=${evRow.status}`);
-  if (evRow.created_at) parts.push(formatReadableDateTime(evRow.created_at));
-  meta.textContent = parts.join(" · ");
 
   const body = document.createElement("div");
   body.className = "scaffoldBody";
-  body.innerHTML = renderMarkdown(stripZeit(evRow.body_text || ""));
 
-  wrap.appendChild(title);
-  if (meta.textContent) wrap.appendChild(meta);
-  if ((evRow.body_text || "").trim()) wrap.appendChild(body);
+  const detailsWrap = document.createElement("div");
+  detailsWrap.className = "scaffoldDetailsStack";
 
-  const detailsBits = [];
-  if (evRow.input_json) detailsBits.push(`Input:\n${typeof evRow.input_json === "string" ? evRow.input_json : JSON.stringify(evRow.input_json, null, 2)}`);
-  if (evRow.output_json) detailsBits.push(`Output:\n${typeof evRow.output_json === "string" ? evRow.output_json : JSON.stringify(evRow.output_json, null, 2)}`);
-  if (detailsBits.length) {
-    const details = document.createElement("details");
-    details.className = "scaffoldDetails";
-    const summary = document.createElement("summary");
-    const kind = String(evRow.event_kind || "").toLowerCase();
-    summary.textContent = kind.startsWith("tool") ? "Tool details" : "Scaffold details";
-    const pre = document.createElement("pre");
-    pre.className = "ctxPre";
-    pre.textContent = detailsBits.join("\n\n");
-    details.appendChild(summary);
-    details.appendChild(pre);
-    wrap.appendChild(details);
+  const inputDetails = document.createElement("details");
+  inputDetails.className = "scaffoldDetails";
+  const inputSummary = document.createElement("summary");
+  inputSummary.className = "scaffoldDetailsSummary";
+  const inputPre = document.createElement("pre");
+  inputPre.className = "ctxPre";
+  inputDetails.appendChild(inputSummary);
+  inputDetails.appendChild(inputPre);
+
+  const outputDetails = document.createElement("details");
+  outputDetails.className = "scaffoldDetails";
+  const outputSummary = document.createElement("summary");
+  outputSummary.className = "scaffoldDetailsSummary";
+  const outputPre = document.createElement("pre");
+  outputPre.className = "ctxPre";
+  outputDetails.appendChild(outputSummary);
+  outputDetails.appendChild(outputPre);
+
+  detailsWrap.appendChild(inputDetails);
+  detailsWrap.appendChild(outputDetails);
+
+  wrap.appendChild(header);
+  wrap.appendChild(meta);
+  wrap.appendChild(body);
+  wrap.appendChild(detailsWrap);
+
+  wrap._scaffoldEls = { badge, title, meta, body, detailsWrap, inputDetails, inputSummary, inputPre, outputDetails, outputSummary, outputPre };
+  return wrap;
+}
+
+function populateScaffoldCard(wrap, evRow) {
+  const els = wrap._scaffoldEls || {};
+  const status = String(evRow.status || "").toLowerCase() || "running";
+  wrap.dataset.status = status;
+  wrap.dataset.eventId = scaffoldEventId(evRow);
+
+  if (els.badge) {
+    els.badge.textContent = scaffoldStatusLabel(status);
+  }
+  if (els.title) {
+    els.title.textContent = evRow.title || `Scaffold · ${evRow.event_kind || "event"}`;
+  }
+  if (els.meta) {
+    const parts = [];
+    if (evRow.event_kind) parts.push(String(evRow.event_kind));
+    if (evRow.updated_at || evRow.created_at) parts.push(formatReadableDateTime(evRow.updated_at || evRow.created_at));
+    els.meta.textContent = parts.join(" · ");
+    els.meta.style.display = els.meta.textContent ? "" : "none";
+  }
+  if (els.body) {
+    const bodyHtml = renderScaffoldBodyHtml(evRow);
+    els.body.innerHTML = bodyHtml;
+    els.body.style.display = bodyHtml ? "" : "none";
   }
 
-  chatWindow.appendChild(wrap);
+  const inputJson = normalizeScaffoldJson(evRow.input_json);
+  const outputJson = normalizeScaffoldJson(evRow.output_json);
+  const toolName = scaffoldToolName(evRow);
+  const isTool = !!toolName || String(evRow.event_kind || "").toLowerCase().startsWith("tool");
+
+  if (els.inputDetails && els.inputSummary && els.inputPre) {
+    const inputText = scaffoldPrettyJsonText(inputJson);
+    if (inputText) {
+      els.inputSummary.textContent = isTool ? "Tool parameters" : "Scaffold input";
+      els.inputPre.textContent = inputText;
+      els.inputDetails.style.display = "";
+    } else {
+      els.inputDetails.style.display = "none";
+    }
+  }
+
+  if (els.outputDetails && els.outputSummary && els.outputPre) {
+    const outputText = scaffoldPrettyJsonText(outputJson);
+    if (outputText) {
+      els.outputSummary.textContent = isTool ? "Tool results" : "Scaffold output";
+      els.outputPre.textContent = outputText;
+      els.outputDetails.style.display = "";
+    } else {
+      els.outputDetails.style.display = "none";
+    }
+  }
+
+  if (els.detailsWrap) {
+    const hasVisible = [els.inputDetails, els.outputDetails].some((node) => node && node.style.display !== "none");
+    els.detailsWrap.style.display = hasVisible ? "" : "none";
+  }
+}
+
+function addScaffoldEventCard(evRow, options = {}) {
+  const eventId = scaffoldEventId(evRow);
+  const anchorEl = options.anchorEl || null;
+  const reuseLive = !!options.reuseLive && !!eventId && liveScaffoldCards.has(eventId);
+
+  let wrap = reuseLive ? liveScaffoldCards.get(eventId) : null;
+  if (!wrap) {
+    wrap = buildScaffoldCardShell();
+    if (eventId) liveScaffoldCards.set(eventId, wrap);
+
+    if (anchorEl) {
+      const host = ensureLiveScaffoldHost(anchorEl);
+      host.appendChild(wrap);
+    } else {
+      chatWindow.appendChild(wrap);
+    }
+  }
+
+  populateScaffoldCard(wrap, evRow);
   chatWindow.scrollTop = chatWindow.scrollHeight;
+  return wrap;
+}
+
+function upsertLiveScaffoldEvent(evRow, anchorEl) {
+  const wrap = addScaffoldEventCard(evRow, { anchorEl, reuseLive: true });
+  try {
+    console.debug("[scaffold]", scaffoldEventId(evRow), evRow?.event_kind || "event", evRow);
+  } catch {}
   return wrap;
 }
 
@@ -501,6 +736,55 @@ function stripAssistantToolBlocks(text) {
   return String(text || "").replace(/```tool[\s\S]*?```/g, "").trim();
 }
 
+function sanitizeHref(url) {
+  return String(url || "")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function trimTrailingUrlPunctuation(url) {
+  return String(url || "").replace(/[.,;:!?)}\]>'"]+$/g, "");
+}
+
+function isLikelyLinkableUrl(url) {
+  const raw = trimTrailingUrlPunctuation(url);
+  if (!/^https?:\/\//i.test(raw)) return false;
+  try {
+    const parsed = new URL(raw);
+    const host = String(parsed.hostname || "").toLowerCase();
+    if (!host) return false;
+    if (host === "localhost") return true;
+    if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(host)) return true;
+    if (host.includes(".")) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function linkifyExplicitUrlsInEscapedHtml(text) {
+  if (!text) return "";
+  const urlParts = String(text).split(/(<[^>]+>)/g);
+  const explicitUrlRe = /(^|[\s(])((https?:\/\/[^\s<>()]+))/gi;
+
+  for (let i = 0; i < urlParts.length; i++) {
+    const part = urlParts[i];
+    if (!part || part.startsWith("<")) continue;
+    urlParts[i] = part.replace(explicitUrlRe, (match, prefix, url) => {
+      const trimmed = trimTrailingUrlPunctuation(url);
+      const trailing = url.slice(trimmed.length);
+      if (!isLikelyLinkableUrl(trimmed)) {
+        return match;
+      }
+      const safeUrl = sanitizeHref(trimmed);
+      return `${prefix}<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${safeUrl}</a>${trailing}`;
+    });
+  }
+
+  return urlParts.join("");
+}
+
 function renderMarkdown(text) {
   if (!text) return "";
 
@@ -537,54 +821,35 @@ function renderMarkdown(text) {
       t = t.replace(/\*(.+?)\*/g, "<em>$1</em>");
       t = t.replace(/_(.+?)_/g, "<em>$1</em>");
 
-      // Markdown autolinks: <https://example.com>
-      t = t.replace(
-        /&lt;+\s*(https?:\/\/(?:(?!&gt;|&lt;|\s).)+)\s*&gt;+/g,
-        (match, url) => {
-          const safeUrl = url
-            .replace(/"/g, "&quot;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;");
-          return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${safeUrl}</a>`;
-        }
-      );
-
-      // Bare explicit URLs that are not already part of markdown links/autolinks.
-      // Only run this on text nodes, not inside HTML tags we already emitted.
-      {
-        const urlParts = t.split(/(<[^>]+>)/g);
-        for (let i = 0; i < urlParts.length; i++) {
-          const part = urlParts[i];
-          if (!part || part.startsWith("<")) continue;
-          urlParts[i] = part.replace(
-            /(^|[\s(])((https?:\/\/(?:(?!&lt;|&gt;|\s).)+))/g,
-            (match, prefix, url) => {
-              const safeUrl = url
-                .replace(/"/g, "&quot;")
-                .replace(/</g, "&lt;")
-                .replace(/>/g, "&gt;");
-              return `${prefix}<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${safeUrl}</a>`;
-            }
-          );
-        }
-        t = urlParts.join("");
-      }
-
-      // Strikethrough: ~~text~~
-      t = t.replace(/~~(.+?)~~/g, "<del>$1</del>");
-
       // Links: [text](https://example.com)
       // Only allow http/https, keep it simple and safe-ish.
       t = t.replace(
         /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
         (match, label, url) => {
-          const safeUrl = url
-            .replace(/"/g, "&quot;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;");
+          const trimmed = trimTrailingUrlPunctuation(url);
+          if (!isLikelyLinkableUrl(trimmed)) return match;
+          const safeUrl = sanitizeHref(trimmed);
           return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${label}</a>`;
         }
       );
+
+      // Markdown autolinks: <https://example.com>
+      t = t.replace(
+        /&lt;+\s*(https?:\/\/[^\s<>()]+)\s*&gt;+/gi,
+        (match, url) => {
+          const trimmed = trimTrailingUrlPunctuation(url);
+          if (!isLikelyLinkableUrl(trimmed)) return match;
+          const safeUrl = sanitizeHref(trimmed);
+          return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${safeUrl}</a>`;
+        }
+      );
+
+      // Bare explicit URLs that are not already part of markdown links/autolinks.
+      // Deliberately conservative: only explicit http/https URLs get linkified.
+      t = linkifyExplicitUrlsInEscapedHtml(t);
+
+      // Strikethrough: ~~text~~
+      t = t.replace(/~~(.+?)~~/g, "<del>$1</del>");
 
       // unordered lists
       t = t.replace(/^(?:[-*] )(.+)$/gm, "<li>$1</li>");
@@ -686,41 +951,123 @@ function applyAdvancedVisibility() {
 
 // #region Sending messages
 
+function parseEventStreamFrame(rawFrame) {
+  const lines = String(rawFrame || "").split(/\r?\n/);
+  let eventName = "message";
+  const dataLines = [];
+  for (const line of lines) {
+    if (!line) continue;
+    if (line.startsWith(":")) continue;
+    if (line.startsWith("event:")) {
+      eventName = line.slice(6).trim() || "message";
+      continue;
+    }
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trimStart());
+    }
+  }
+  if (!dataLines.length) return null;
+  const rawData = dataLines.join("\n");
+  let data = rawData;
+  try {
+    data = JSON.parse(rawData);
+  } catch {
+    // leave as string
+  }
+  return { event: eventName, data };
+}
+
+async function consumeEventStream(res, onEvent) {
+  if (!res.body) {
+    throw new Error("Empty streamed response body.");
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary >= 0) {
+      const frame = buffer.slice(0, boundary).trim();
+      buffer = buffer.slice(boundary + 2);
+      if (frame) {
+        const parsed = parseEventStreamFrame(frame);
+        if (parsed) onEvent(parsed);
+      }
+      boundary = buffer.indexOf("\n\n");
+    }
+
+    if (done) {
+      const tail = buffer.trim();
+      if (tail) {
+        const parsed = parseEventStreamFrame(tail);
+        if (parsed) onEvent(parsed);
+      }
+      break;
+    }
+  }
+}
+
+function renderSingleAssistantState(assistantBody, assistantBubble, text) {
+  const visibleBuffer = stripAssistantToolBlocks(stripZeit(text || ""));
+  const looksLikeError = visibleBuffer.startsWith("**Model error**") || visibleBuffer.startsWith("**Server exception**") || visibleBuffer.startsWith("**Client error**");
+  assistantBubble?.classList.toggle("error", looksLikeError);
+  assistantBody.innerHTML = renderMarkdown(visibleBuffer || "Thinking…");
+  chatWindow.scrollTop = chatWindow.scrollHeight;
+}
+
+function renderABSlotState(msgEl, slotLabelEl, slotName, slotModel, slotData) {
+  msgEl.classList.remove("error");
+
+  if (!slotData) {
+    msgEl.textContent = "(empty)";
+    return;
+  }
+
+  if (slotData.ok) {
+    const t = stripZeit(slotData.text || "") || "(empty)";
+    msgEl.innerHTML = renderMarkdown(t);
+    if (slotModel) slotLabelEl.textContent = `${slotName} · ${slotModel}`;
+    return;
+  }
+
+  msgEl.classList.add("error");
+
+  const err = slotData.error || {};
+  const status = err.status_code || "";
+  const reqId = err.request_id || "";
+  const body = err.body || {};
+  const msg =
+    (body.error && body.error.message) ||
+    body.message ||
+    slotData.text ||
+    "API error";
+
+  const lines = [];
+  lines.push(`**${slotName} error** (HTTP ${status || "?"})`);
+  if (reqId) lines.push(`request_id: \`${reqId}\``);
+  lines.push(msg);
+
+  msgEl.innerHTML = renderMarkdown(lines.join("\n\n"));
+  if (slotModel) slotLabelEl.textContent = `${slotName} · ${slotModel}`;
+}
+
 async function send() {
   const text = chatWindowInputTextbox.value.trim();
   if (!text) return;
   chatWindowInputTextbox.value = "";
-  // Reset the RAG timer
   cancelScheduledContextRefresh();
   lastContextDraftSent = "";
 
-  // Base model from A
   const modelA = topBarModelSelectA?.value || null;
   let modelB = modelA;
-  // If B is visible and has a value, use it
   if (topBarModelSelectB && topBarModelSelectB.style.display !== "none") {
     const v = (topBarModelSelectB.value || "").trim();
     if (v) modelB = v;
   }
-
-  const choiceA = describeSelection(modelA || "");
-  const choiceB = describeSelection(modelB || "");
-
-  const metaA = {
-    ab_group: "A",
-    canonical: true,
-    model: choiceA.display_name || choiceA.id,
-    deployment_id: choiceA.kind === "deployment" ? choiceA.id : null,
-    provider: choiceA.provider_id || null,
-  };
-
-  const metaB = {
-    ab_group: "B",
-    canonical: false,
-    model: choiceB.display_name || choiceB.id,
-    deployment_id: choiceB.kind === "deployment" ? choiceB.id : null,
-    provider: choiceB.provider_id || null,
-  };
 
   const useAB =
     typeof advancedMode !== "undefined" &&
@@ -753,24 +1100,25 @@ async function send() {
 
 async function sendSingle(text, model) {
   const now = nowIso();
-  addUserMsgWithTime(text, now); //addMsg("user", text);
-  // build an assistant message shell with model label
+  addUserMsgWithTime(text, now);
   const choice = describeSelection(model || "");
-  //const assistantBody = addAssistantMsgWithModel(model, "Thinking…", now);
   const assistantBody = addAssistantMsgWithModel(choice.display_name || model, "Thinking…", now);
   const assistantBubble = assistantBody.closest(".msg.assistant");
+  const assistantWrap = assistantBody.closest(".msgWithModel");
 
-  const request_body = JSON.stringify({
+  const requestBody = JSON.stringify({
     conversation_id: conversationId,
     model: model,
-    message: text
+    message: text,
   });
+
+  let accumulatedText = "";
 
   try {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: request_body
+      body: requestBody,
     });
 
     const headerCid = res.headers.get("X-Conversation-Id");
@@ -779,28 +1127,26 @@ async function sendSingle(text, model) {
       localStorage.setItem("callie_mvp_conversation_id", conversationId);
     }
 
-    if (!res.body) {
-      throw new Error("Empty response body from /api/chat");
-    }
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder("utf-8");
-
-    let buffer = "";
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const visibleBuffer = stripAssistantToolBlocks(stripZeit(buffer));
-      const looksLikeError = visibleBuffer.startsWith("**Model error**") || visibleBuffer.startsWith("**Server exception**");
-      assistantBubble?.classList.toggle("error", looksLikeError);
-      assistantBody.innerHTML = renderMarkdown(visibleBuffer || "Thinking…");
-      chatWindow.scrollTop = chatWindow.scrollHeight;
-    }
+    await consumeEventStream(res, ({ event, data }) => {
+      if (event === "assistant.delta") {
+        accumulatedText += data?.text || "";
+        renderSingleAssistantState(assistantBody, assistantBubble, accumulatedText);
+        return;
+      }
+      if (event === "assistant.final") {
+        accumulatedText = data?.text || accumulatedText;
+        renderSingleAssistantState(assistantBody, assistantBubble, accumulatedText);
+        if (data && data.ok === false) assistantBubble?.classList.add("error");
+        return;
+      }
+      if (event === "scaffold") {
+        upsertLiveScaffoldEvent(data || {}, assistantWrap);
+      }
+    });
   } catch (e) {
     console.error("Failed single send", e);
     assistantBubble?.classList.add("error");
-    assistantBody.innerHTML = renderMarkdown("**Client error**" + (e?.message || String(e) || "Unknown client-side failure"));
+    assistantBody.innerHTML = renderMarkdown(`**Client error**\n\n${e?.message || String(e) || "Unknown client-side failure"}`);
   }
 }
 
@@ -814,10 +1160,9 @@ async function sendAB(text, modelA, modelB) {
     choiceA.display_name || modelA,
     choiceB.display_name || modelB,
     now,
-    now
+    now,
   );
 
-  // These will be updated after the server returns.
   let detailsA = {
     pending: true,
     slot: "A",
@@ -834,99 +1179,65 @@ async function sendAB(text, modelA, modelB) {
     provider: choiceB.provider_id || null,
     selected_label: choiceB.display_name || modelB,
   };
-  
+
   infoAEl.onclick = () => openMetaInfo(labelAEl.textContent || "A", detailsA);
   infoBEl.onclick = () => openMetaInfo(labelBEl.textContent || "B", detailsB);
-
-  function renderSlot(msgEl, slotLabelEl, slotName, slotModel, slotData) {
-    msgEl.classList.remove("error");
-
-    if (!slotData) {
-      msgEl.textContent = "(empty)";
-      return;
-    }
-
-    if (slotData.ok) {
-      const t = stripZeit(slotData.text || "") || "(empty)";
-      msgEl.innerHTML = renderMarkdown(t);
-      if (slotModel) slotLabelEl.textContent = `${slotName} · ${slotModel}`;
-      return;
-    }
-
-    msgEl.classList.add("error");
-
-    const err = slotData.error || {};
-    const status = err.status_code || "";
-    const reqId = err.request_id || "";
-    const body = err.body || {};
-    const msg =
-      (body.error && body.error.message) ||
-      body.message ||
-      "API error";
-
-    const lines = [];
-    lines.push(`**${slotName} error** (HTTP ${status || "?"})`);
-    if (reqId) lines.push(`request_id: \`${reqId}\``);
-    lines.push(msg);
-
-    msgEl.innerHTML = renderMarkdown(lines.join("\n\n"));
-    if (slotModel) slotLabelEl.textContent = `${slotName} · ${slotModel}`;
-  }
 
   const payload = {
     conversation_id: conversationId,
     model_a: modelA,
     model_b: modelB,
-    message: text
+    message: text,
   };
 
   try {
     const res = await fetch("/api/chat_ab", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
     });
 
-    const data = await res.json();
-
-    if (data.conversation_id) {
-      conversationId = data.conversation_id;
+    const headerCid = res.headers.get("X-Conversation-Id");
+    if (headerCid) {
+      conversationId = headerCid;
       localStorage.setItem("callie_mvp_conversation_id", conversationId);
     }
 
-    rowEl.dataset.abGroup = data.ab_group || "";
-
-    const labelA = data.deployment_a
-      ? `${data.deployment_a} · ${data.model_a || choiceA.model || modelA}`
-      : (data.model_a || choiceA.display_name || modelA);
-
-    const labelB = data.deployment_b
-      ? `${data.deployment_b} · ${data.model_b || choiceB.model || modelB}`
-      : (data.model_b || choiceB.display_name || modelB);
-
-
-    const msgs = await loadMessages(conversationId);
-    clearChat();
-    if (!msgs.length) {
-      addMsg("assistant", "Empty chat. Say something mean to the void.");
-    } else {
-      renderMessagesWithAB(msgs);
-    }
-
-    renderSlot(msgAEl, labelAEl, "A", labelA, data.a);
-    renderSlot(msgBEl, labelBEl, "B", labelB, data.b);
-
-    // Update the info payloads AFTER we have data
-    detailsA = { slot: "A", model: data.model_a || modelA, ab_group: data.ab_group || null, result: data.a };
-    detailsB = { slot: "B", model: data.model_b || modelB, ab_group: data.ab_group || null, result: data.b };
-
-    markCanonical(rowEl, data.canonical_slot || "A");
+    await consumeEventStream(res, ({ event, data }) => {
+      if (event === "ab.init") {
+        rowEl.dataset.abGroup = data?.ab_group || "";
+        detailsA = { ...detailsA, ...data, slot: "A" };
+        detailsB = { ...detailsB, ...data, slot: "B" };
+        return;
+      }
+      if (event === "assistant.final") {
+        const slot = data?.slot || "A";
+        const slotLabel = data?.deployment_id
+          ? `${data.deployment_id} · ${data.model || (slot === "A" ? choiceA.model : choiceB.model)}`
+          : (data?.model || (slot === "A" ? choiceA.display_name || modelA : choiceB.display_name || modelB));
+        if (slot === "A") {
+          renderABSlotState(msgAEl, labelAEl, "A", slotLabel, data);
+          detailsA = { slot: "A", ab_group: rowEl.dataset.abGroup || null, result: data, model: data?.model || modelA };
+        } else {
+          renderABSlotState(msgBEl, labelBEl, "B", slotLabel, data);
+          detailsB = { slot: "B", ab_group: rowEl.dataset.abGroup || null, result: data, model: data?.model || modelB };
+        }
+        return;
+      }
+      if (event === "scaffold") {
+        upsertLiveScaffoldEvent(data || {}, rowEl);
+        return;
+      }
+      if (event === "ab.done") {
+        markCanonical(rowEl, "A");
+      }
+    });
   } catch (e) {
     console.error("Failed A/B send", e);
     msgAEl.classList.add("error");
     msgBEl.classList.add("error");
-    msgAEl.textContent = "[A] error during A/B call";
-    msgBEl.textContent = "[B] error during A/B call";
+    msgAEl.innerHTML = renderMarkdown("**Client error**\n\nA/B call failed.");
+    msgBEl.innerHTML = renderMarkdown("**Client error**\n\nA/B call failed.");
   }
 }
 

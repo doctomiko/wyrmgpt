@@ -8,10 +8,8 @@ from typing import Iterable
 
 _URL_RE = re.compile(r'(?i)\bhttps?://[^\s<>()]+\b')
 _ANGLE_AUTOLINK_URL_RE = re.compile(r'(?i)<+\s*(https?://[^\s<>()]+)\s*>+')
-# domain/path without scheme, excluding emails
-_HOSTPATH_RE = re.compile(
-    r'(?i)\b(?![\w.+-]+@)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9-]{2,})+)(/[^\s<>()]*)?\b'
-)
+# Intentionally do NOT autolink bare host/path strings like "example.com".
+# House policy is conservative: only explicit http/https URLs become clickable links.
 
 def _normalize_existing_autolinks(text: str) -> str:
     if not text:
@@ -63,15 +61,13 @@ def apply_house_markdown_normalization(text: str) -> str:
 
 def autolink_text(text: str) -> str:
     """
-    Autolink URLs and domain/path strings.
+    Autolink only explicit http/https URLs.
     Uses markdown autolink form: <https://...>.
     Avoids double-wrapping content that is already inside angle-bracket autolinks.
     """
     if not text:
         return text
 
-    # First wrap explicit URLs.
-    #text = _URL_RE.sub(lambda m: f"<{m.group(0)}>", text)
     text = _normalize_existing_autolinks(text)
     parts = re.split(r"(<[^>\n]+>)", text)
     for i, part in enumerate(parts):
@@ -80,23 +76,7 @@ def autolink_text(text: str) -> str:
         if part.startswith("<") and part.endswith(">"):
             continue
         parts[i] = _URL_RE.sub(lambda m: f"<{m.group(0)}>", part)
-    text = "".join(parts)
 
-    # Then only host/path-wrap segments that are NOT already inside <...>.
-    parts = re.split(r"(<[^>\n]+>)", text)
-
-    def repl(m):
-        host = m.group(1)
-        path = m.group(2) or ""
-        full = f"{host}{path}"
-        return f"<https://{full}>"
-
-    for i, part in enumerate(parts):
-        if not part or (part.startswith("<") and part.endswith(">")):
-            continue
-        parts[i] = _HOSTPATH_RE.sub(repl, part)
-
-    #return "".join(parts)
     return _normalize_existing_autolinks("".join(parts))
 
 

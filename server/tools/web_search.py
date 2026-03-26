@@ -79,6 +79,48 @@ def _truncate(text: str, limit: int = 140) -> str:
     return raw[: max(0, limit - 1)].rstrip() + "…"
 
 
+def _escape_md_label(text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return "result"
+    return raw.replace("[", r"\[").replace("]", r"\]")
+
+
+def _render_search_result_block(item: dict[str, Any]) -> str:
+    url = str(item.get("url") or item.get("canonical_url") or "").strip()
+    title = _escape_md_label(str(item.get("title") or url or "result"))
+    snippet = str(item.get("snippet") or "").strip()
+    extra = [str(x).strip() for x in (item.get("extra_snippets") or []) if str(x or "").strip()]
+    age = str(item.get("age") or item.get("page_age") or "").strip()
+    domain = str(item.get("domain") or "").strip()
+
+    lines: list[str] = []
+    if url:
+        lines.append(f"[{title}]({url})")
+        lines.append(url)
+    else:
+        lines.append(title)
+    meta_bits = [bit for bit in (domain, age) if bit]
+    if meta_bits:
+        lines.append(" · ".join(meta_bits))
+    summary_parts = [snippet, *extra[:2]]
+    summary_parts = [part for part in summary_parts if part]
+    if summary_parts:
+        lines.append(_truncate(" ".join(summary_parts), 320))
+    return "\n".join(lines).strip()
+
+
+def _render_search_results_markdown(query: str, results: list[dict[str, Any]]) -> str:
+    header = f"Brave web search for '{query}' returned {len(results)} results."
+    if not results:
+        return header
+    blocks = [_render_search_result_block(item) for item in results if isinstance(item, dict)]
+    blocks = [b for b in blocks if b]
+    if not blocks:
+        return header
+    return header + "\n\n" + "\n\n".join(blocks)
+
+
 def _load_brave_provider() -> tuple[str, str]:
     providers = load_provider_defs()
     provider = providers.get("brave")
@@ -161,18 +203,7 @@ def execute(arguments: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
                 display_text=f"Web search found {len(results)} results for '{query}', but could not store the search receipt.",
             )
 
-    bullets = []
-    for item in results[:3]:
-        title = _truncate(str(item.get("title") or item.get("url") or "result"), 72)
-        domain = str(item.get("domain") or "").strip()
-        if domain:
-            bullets.append(f"{title} ({domain})")
-        else:
-            bullets.append(title)
-    summary = "; ".join(bullets)
-    display_text = f"Brave web search for '{query}' returned {len(results)} results."
-    if summary:
-        display_text += f" Top hits: {summary}"
+    display_text = _render_search_results_markdown(query, results)
 
     return ToolResult(
         ok=True,

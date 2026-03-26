@@ -437,6 +437,201 @@ main#chat {
 .msg.user { background: var(--user); align-self: flex-end; }
 .msg.assistant { background: var(--asst); align-self: flex-start; }
 
+
+.liveScaffoldHost {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-self: stretch;
+  width: 100%;
+  max-width: min(980px, 100%);
+}
+
+.scaffoldCard {
+  align-self: flex-start;
+  width: 100%;
+  max-width: min(980px, 100%);
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(174, 255, 220, 0.28);
+  border-left: 4px solid rgba(167, 255, 215, 0.9);
+  background: linear-gradient(180deg, rgba(10, 56, 36, 0.88), rgba(8, 41, 28, 0.88));
+  color: var(--text);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+.scaffoldCard[data-status="running"] {
+  background: linear-gradient(180deg, rgba(12, 72, 45, 0.92), rgba(8, 49, 31, 0.92));
+  border-color: rgba(174, 255, 220, 0.34);
+}
+
+.scaffoldCard[data-status="ok"],
+.scaffoldCard[data-status="ready"] {
+  background: linear-gradient(180deg, rgba(9, 58, 37, 0.9), rgba(6, 38, 25, 0.9));
+}
+
+.scaffoldCard[data-status="error"] {
+  background: linear-gradient(180deg, rgba(68, 20, 20, 0.92), rgba(46, 12, 12, 0.92));
+  border-color: rgba(255, 170, 170, 0.32);
+  border-left-color: rgba(255, 168, 168, 0.92);
+}
+
+.scaffoldHeader {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.scaffoldBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 72px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(180, 255, 224, 0.14);
+  border: 1px solid rgba(180, 255, 224, 0.24);
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.scaffoldTitle {
+  font-size: 13px;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.scaffoldMeta {
+  margin-bottom: 6px;
+  font-size: 11px;
+  color: rgba(232, 255, 244, 0.82);
+}
+
+.scaffoldBody {
+  font-size: 13px;
+  line-height: 1.35;
+  color: #ffffff;
+}
+
+.scaffoldBody a {
+  color: #aef7da;
+}
+
+.scaffoldBody a:hover {
+  color: #cffff0;
+}
+
+.scaffoldBody p:first-child,
+.scaffoldBody h1:first-child,
+.scaffoldBody h2:first-child,
+.scaffoldBody h3:first-child,
+.scaffoldBody h4:first-child,
+.scaffoldBody h5:first-child,
+.scaffoldBody h6:first-child {
+  margin-top: 0;
+}
+
+.scaffoldDetailsStack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.scaffoldDetails {
+  margin-top: 0;
+}
+
+.scaffoldDetailsSummary {
+  cursor: pointer;
+  font-size: 12px;
+  color: rgba(232, 255, 244, 0.92);
+}
+
+.scaffoldDetails .ctxPre {
+  margin-top: 8px;
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.scaffoldSearchResults {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.scaffoldSearchResult {
+  padding: 8px 0;
+  border-top: 1px solid rgba(174, 255, 220, 0.12);
+}
+
+.scaffoldSearchResult:first-child {
+  padding-top: 0;
+  border-top: none;
+}
+
+.scaffoldSearchTitle {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.scaffoldSearchTitleLink {
+  color: #aef7da;
+  text-decoration: none;
+}
+
+.scaffoldSearchTitleLink:hover {
+  color: #cffff0;
+  text-decoration: underline;
+}
+
+.scaffoldSearchUrl {
+  display: inline-block;
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.25;
+  color: rgba(216, 255, 239, 0.78);
+  word-break: break-all;
+}
+
+.scaffoldSearchMetaLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: rgba(226, 255, 242, 0.84);
+}
+
+.scaffoldSearchDot {
+  opacity: 0.6;
+}
+
+.scaffoldSearchSnippet {
+  margin-top: 4px;
+  color: #ffffff;
+}
+
+.scaffoldSearchMore {
+  margin-top: 4px;
+}
+
+.scaffoldSearchMore summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: #aef7da;
+}
+
+.scaffoldSearchSnippetMore {
+  margin-top: 4px;
+}
+
 /* Side-by-side A/B responses */
 
 .abRow {

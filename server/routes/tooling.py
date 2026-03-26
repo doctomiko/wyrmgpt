@@ -2,26 +2,26 @@ import asyncio
 from functools import partial
 import json
 import re
-from typing import Any
+from datetime import datetime, timezone
+import uuid
+from typing import Any, Iterator
 
-from server.api_helpers import RowDict, postprocess_text, strip_zeitgeber_prefix, attach_scaffold_events_to_message
-from server.api_models import ChatRequest
-from server.config import load_tool_config
-from server.context import build_context, build_model_input
-from server.db import db_create_conversation, db_add_message, db_create_conversation_scaffold_event, db_ensure_files_artifacted_for_conversation, db_get_conversation_project_id
+from server.api_helpers import RowDict, strip_zeitgeber_prefix
+from server.db import (
+    db_create_conversation_scaffold_event,
+    db_get_conversation_project_id,
+    db_list_conversation_scaffold_events_since,
+    db_update_conversation_scaffold_event,
+)
 from server.db_helpers import db_session
-from server.logging_helper import log_warn
-from server.providers.openai_provider import ProviderExecutionError
+from server.logging_helper import log_debug, log_info, log_warn
 from server.providers.registry import ProviderRegistry
 from server.providers.types import ModelInput
-from server.routes.library import persist_citations_for_assistant_message
 from server.routes.reading import maybe_capture_reading_notes_for_result
 from server.tools.base import ToolExecutionContext, ToolInvocationRequest, ToolResult
 from server.tools.registry import ToolRegistry
-from server.web_ingest import ingest_urls_from_user_message
 
 import server.runtime as runtime
-from server.routes.base import app
 
 
 _TOOL_BLOCK_FENCE_RE = re.compile(r"```tool\s*\{.*?\}\s*```", re.DOTALL | re.IGNORECASE)
@@ -31,7 +31,12 @@ _TRIVIAL_TOOL_WRAPPER_RE = re.compile(
     re.IGNORECASE,
 )
 
+
 # region Tooling helpers
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
 
 def _tooling_enabled(tool_cfg, tool_registry) -> bool:
     return bool(
@@ -103,86 +108,165 @@ def _tool_result_to_input_message(result: ToolResult) -> dict[str, Any]:
     return {"role": "user", "content": "\n".join(body).strip()}
 
 
-def _persist_tool_event(
-    *,
-    conversation_id: str,
-    message_id: int | None,
-    request: ToolInvocationRequest,
-    result: ToolResult,
-) -> int | None:
+def _resolve_project_id(conversation_id: str) -> int | None:
+    if not conversation_id:
+        return None
     try:
-        body_lines = [
-            f"Tool: {request.tool}",
-            f"Status: {'ok' if result.ok else 'error'}",
-        ]
-        if result.display_text:
-            body_lines.extend(["", result.display_text.strip()])
-        elif result.error:
-            body_lines.extend(["", result.error.strip()])
-        return db_create_conversation_scaffold_event(
-            conversation_id=conversation_id,
-            message_id=message_id,
-            event_kind=result.event_kind or "tool_result",
-            status="ready" if result.ok else "error",
-            title=f"Tool · {request.tool}",
-            body_text="\n".join(body_lines).strip(),
-            input_json={"tool": request.tool, "arguments": request.arguments},
-            output_json=result.as_dict(),
-        )
+        with db_session() as conn:
+            return db_get_conversation_project_id(conn, conversation_id)
     except Exception as exc:
-        log_warn(f"Tool scaffold event persistence failed for {request.tool}: {exc}")
+        log_warn(f"Tool execution could not resolve project for conversation {conversation_id}: {exc}")
         return None
 
 
-def _execute_tool_requests(
-    *,
-    target,
-    tool_registry: ToolRegistry,
-    conversation_id: str,
-    user_text: str,
-    requests: list[ToolInvocationRequest],
-) -> tuple[list[ToolResult], list[int]]:
-    project_id = None
-    if conversation_id:
-        try:
-            with db_session() as conn:
-                project_id = db_get_conversation_project_id(conn, conversation_id)
-        except Exception as exc:
-            log_warn(f"Tool execution could not resolve project for conversation {conversation_id}: {exc}")
+def _tool_event_title(request: ToolInvocationRequest) -> str:
+    return f"Scaffold · Tool call · {request.tool}"
 
-    exec_ctx = ToolExecutionContext(
-        conversation_id=conversation_id,
-        project_id=project_id,
-        user_text=user_text,
-    )
-    out: list[ToolResult] = []
-    event_ids: list[int] = []
-    for request in requests:
-        try:
-            result = tool_registry.execute(request, ctx=exec_ctx)
-            result = maybe_capture_reading_notes_for_result(
-                target=target,
-                conversation_id=conversation_id,
-                user_text=user_text,
-                request=request,
-                result=result,
-            )
-        except Exception as exc:
-            result = ToolResult(
-                ok=False,
-                tool=request.tool,
-                error=f"{type(exc).__name__}: {exc}",
-            )
-        event_id = _persist_tool_event(
+
+def _tool_event_input_payload(request: ToolInvocationRequest) -> dict[str, Any]:
+    return {"tool": request.tool, "arguments": dict(request.arguments or {})}
+
+
+def _tool_event_start_body(request: ToolInvocationRequest) -> str:
+    return f"Calling `{request.tool}`..."
+
+
+def _tool_event_result_body(request: ToolInvocationRequest, result: ToolResult) -> str:
+    lead = f"`{request.tool}` {'completed.' if result.ok else 'failed.'}"
+    detail = (result.display_text or result.error or "").strip()
+    if detail:
+        return f"{lead}\n\n{detail}"
+    return lead
+
+
+def _build_live_scaffold_row(
+    *,
+    event_id: int | str,
+    conversation_id: str,
+    request: ToolInvocationRequest,
+    status: str,
+    title: str,
+    body_text: str,
+    created_at: str,
+    updated_at: str | None = None,
+    output_json: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    row_event_id = int(event_id) if isinstance(event_id, int) or (isinstance(event_id, str) and event_id.isdigit()) else str(event_id)
+    return {
+        "id": row_event_id,
+        "row_type": "scaffold_event",
+        "conversation_id": conversation_id,
+        "message_id": None,
+        "event_kind": "tool_call",
+        "status": status,
+        "title": title,
+        "body_text": body_text,
+        "input_json": _tool_event_input_payload(request),
+        "output_json": output_json,
+        "created_at": created_at,
+        "updated_at": updated_at or created_at,
+    }
+
+
+def _new_live_event_id(request: ToolInvocationRequest) -> str:
+    slug = re.sub(r"[^a-z0-9_.-]+", "-", (request.tool or "tool").strip().lower()).strip("-") or "tool"
+    return f"live:{slug}:{uuid.uuid4().hex[:10]}"
+
+
+def _iter_additional_scaffold_rows(
+    *,
+    conversation_id: str,
+    after_event_id: int,
+    seen_event_ids: set[int] | None = None,
+) -> tuple[list[dict[str, Any]], int]:
+    cursor = max(0, int(after_event_id or 0))
+    rows = db_list_conversation_scaffold_events_since(conversation_id, after_event_id=cursor)
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        rid = int(row.get("id") or 0)
+        if rid > cursor:
+            cursor = rid
+        if seen_event_ids is not None and rid in seen_event_ids:
+            continue
+        row["row_type"] = "scaffold_event"
+        if seen_event_ids is not None:
+            seen_event_ids.add(rid)
+        out.append(row)
+    return out, cursor
+
+
+def _create_tool_event_start(
+    *,
+    conversation_id: str,
+    request: ToolInvocationRequest,
+) -> tuple[int | None, str, dict[str, Any]]:
+    title = _tool_event_title(request)
+    body_text = _tool_event_start_body(request)
+    created_at = _utc_now_iso()
+    persisted_event_id: int | None = None
+    live_event_id = _new_live_event_id(request)
+    try:
+        persisted_event_id = int(db_create_conversation_scaffold_event(
             conversation_id=conversation_id,
             message_id=None,
-            request=request,
-            result=result,
-        )
-        if event_id:
-            event_ids.append(int(event_id))
-        out.append(result)
-    return out, event_ids
+            event_kind="tool_call",
+            status="running",
+            title=title,
+            body_text=body_text,
+            input_json=_tool_event_input_payload(request),
+            output_json=None,
+        ))
+        live_event_id = str(persisted_event_id)
+    except Exception as exc:
+        log_warn(f"Tool scaffold start persistence failed for {request.tool}: {exc}")
+    row = _build_live_scaffold_row(
+        event_id=live_event_id,
+        conversation_id=conversation_id,
+        request=request,
+        status="running",
+        title=title,
+        body_text=body_text,
+        created_at=created_at,
+    )
+    return persisted_event_id, live_event_id, row
+
+
+def _update_tool_event_result(
+    *,
+    conversation_id: str,
+    live_event_id: int | str,
+    persisted_event_id: int | None,
+    request: ToolInvocationRequest,
+    result: ToolResult,
+    created_at: str | None,
+) -> dict[str, Any]:
+    status = "ok" if result.ok else "error"
+    title = _tool_event_title(request)
+    body_text = _tool_event_result_body(request, result)
+    updated_at = _utc_now_iso()
+    output_json = result.as_dict()
+    if persisted_event_id is not None:
+        try:
+            db_update_conversation_scaffold_event(
+                event_id=int(persisted_event_id),
+                status=status,
+                title=title,
+                body_text=body_text,
+                output_json=output_json,
+            )
+        except Exception as exc:
+            log_warn(f"Tool scaffold result persistence failed for {request.tool}: {exc}")
+    return _build_live_scaffold_row(
+        event_id=live_event_id,
+        conversation_id=conversation_id,
+        request=request,
+        status=status,
+        title=title,
+        body_text=body_text,
+        created_at=created_at or updated_at,
+        updated_at=updated_at,
+        output_json=output_json,
+    )
 
 
 def should_attempt_tool_preflight(
@@ -208,7 +292,7 @@ def should_attempt_tool_preflight(
     return False
 
 
-def expand_input_with_tool_requests(
+def iter_expand_input_with_tool_requests(
     *,
     target,
     base_input: ModelInput,
@@ -219,10 +303,12 @@ def expand_input_with_tool_requests(
     providers: ProviderRegistry | None = None,
     user_message_id: int | None = None,
     initial_assistant_text: str | None = None,
-) -> tuple[ModelInput, str | None, bool, list[int]]:
+) -> Iterator[dict[str, Any]]:
+    del user_message_id  # reserved for future tool metadata, intentionally unused for now
     tools = tools or runtime.TOOL_REGISTRY
     if not _tooling_enabled(tool_cfg, tools):
-        return list(base_input), initial_assistant_text, False, []
+        return_value = (list(base_input), initial_assistant_text, False, [])
+        return return_value  # type: ignore[return-value]
     assert tools is not None
     providers = providers or runtime.PROVIDER_REGISTRY
     if providers is None:
@@ -234,6 +320,14 @@ def expand_input_with_tool_requests(
     used_tools = False
     pending_text = initial_assistant_text
     event_ids: list[int] = []
+    seen_event_ids: set[int] = set()
+    scaffold_cursor = 0
+    project_id = _resolve_project_id(conversation_id)
+    exec_ctx = ToolExecutionContext(
+        conversation_id=conversation_id,
+        project_id=project_id,
+        user_text=user_text,
+    )
 
     while remaining_calls > 0:
         if pending_text is None:
@@ -242,26 +336,89 @@ def expand_input_with_tool_requests(
 
         requests = tools.extract_requests_from_text(pending_text or "")
         if not response_requests_tool_execution(pending_text or "", tools):
-            return working_input, pending_text, used_tools, event_ids
+            return_value = (working_input, pending_text, used_tools, event_ids)
+            return return_value  # type: ignore[return-value]
 
         working_input.append({"role": "assistant", "content": pending_text or ""})
         allowed = requests[:remaining_calls]
         remaining_calls -= len(allowed)
-        tool_results, new_event_ids = _execute_tool_requests(
-            target=target,
-            tool_registry=tools,
-            conversation_id=conversation_id,
-            user_text=user_text,
-            requests=allowed,
-        )
-        event_ids.extend(new_event_ids)
-        for result in tool_results:
-            working_input.append(_tool_result_to_input_message(result))
 
-        used_tools = True
+        for request in allowed:
+            persisted_event_id: int | None = None
+            live_event_id: str | int = _new_live_event_id(request)
+            created_at = None
+            if conversation_id:
+                persisted_event_id, live_event_id, start_row = _create_tool_event_start(
+                    conversation_id=conversation_id,
+                    request=request,
+                )
+                created_at = start_row.get("created_at")
+                args_text = json.dumps(request.arguments or {}, ensure_ascii=False)
+                log_info("Tool call start cid=%s tool=%s args=%s", conversation_id, request.tool, args_text)
+                print(f"[tool.start] cid={conversation_id} tool={request.tool} args={args_text}", flush=True)
+                yield start_row
+                if persisted_event_id is not None:
+                    event_ids.append(int(persisted_event_id))
+                    seen_event_ids.add(int(persisted_event_id))
+                    scaffold_cursor = max(scaffold_cursor, int(persisted_event_id))
+
+            try:
+                tool_result = tools.execute(request, ctx=exec_ctx)
+                tool_result = maybe_capture_reading_notes_for_result(
+                    target=target,
+                    conversation_id=conversation_id,
+                    user_text=user_text,
+                    request=request,
+                    result=tool_result,
+                )
+            except Exception as exc:
+                log_warn("Tool call exception cid=%s tool=%s: %s", conversation_id, request.tool, exc)
+                tool_result = ToolResult(
+                    ok=False,
+                    tool=request.tool,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+
+            if conversation_id:
+                done_row = _update_tool_event_result(
+                    conversation_id=conversation_id,
+                    live_event_id=live_event_id,
+                    persisted_event_id=persisted_event_id,
+                    request=request,
+                    result=tool_result,
+                    created_at=created_at,
+                )
+                log_info("Tool call done cid=%s tool=%s ok=%s", conversation_id, request.tool, tool_result.ok)
+                print(f"[tool.done] cid={conversation_id} tool={request.tool} ok={tool_result.ok}", flush=True)
+                yield done_row
+                if persisted_event_id is not None:
+                    seen_event_ids.add(int(persisted_event_id))
+                    scaffold_cursor = max(scaffold_cursor, int(persisted_event_id))
+                extra_rows, scaffold_cursor = _iter_additional_scaffold_rows(
+                    conversation_id=conversation_id,
+                    after_event_id=scaffold_cursor,
+                    seen_event_ids=seen_event_ids,
+                )
+                for extra_row in extra_rows:
+                    log_debug("Scaffold relay cid=%s kind=%s event_id=%s", conversation_id, extra_row.get("event_kind"), extra_row.get("id"))
+                    yield extra_row
+
+            working_input.append(_tool_result_to_input_message(tool_result))
+            used_tools = True
+
         pending_text = None
 
-    return working_input, None, used_tools, event_ids
+    return_value = (working_input, None, used_tools, event_ids)
+    return return_value  # type: ignore[return-value]
+
+
+def expand_input_with_tool_requests(**kwargs):
+    iterator = iter_expand_input_with_tool_requests(**kwargs)
+    while True:
+        try:
+            next(iterator)
+        except StopIteration as stop:
+            return stop.value
 
 
 async def expand_input_with_tool_requests_async(**kwargs):
