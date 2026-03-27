@@ -3,6 +3,7 @@ from functools import partial
 import json
 import traceback
 import uuid
+import re
 
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -439,10 +440,57 @@ def _create_thinking_event_start(*, conversation_id: str, target, model_settings
     return row.get("id"), row
 
 
-def _update_thinking_event(*, event_id: int | None, row: dict[str, object], text_value: str, done: bool = False) -> dict[str, object]:
+def _normalize_thinking_heading(value: object) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"^\*\*(.+?)\*\*$", r"\1", text).strip()
+    text = re.sub(r"\s+", " ", text)
+    return text.lower()
+
+
+def _split_thinking_section_text(text_value: object) -> tuple[str, str]:
+    text = str(text_value or "").strip()
+    if not text:
+        return "", ""
+    cleaned = re.sub(r"^\*\*(.+?)\*\*$", r"\1", text).strip()
+    parts = re.split(r"\n\s*\n", cleaned, maxsplit=1)
+    first = parts[0].strip() if parts else ""
+    remainder = parts[1].strip() if len(parts) > 1 else ""
+    if first and len(first) <= 140:
+        return first, remainder
+    first_line = cleaned.splitlines()[0].strip() if cleaned.splitlines() else ""
+    if first_line and len(first_line) <= 140:
+        body = cleaned[len(first_line):].lstrip("\n").strip()
+        return first_line, body
+    return "", cleaned
+
+def _build_thinking_output_payload(thinking_sections: dict[str, dict[str, object]], thinking_section_order: list[str], current_text: str) -> dict[str, object]:
+    sections_payload: list[dict[str, object]] = []
+    for key in thinking_section_order:
+        section = thinking_sections.get(key) or {}
+        text_value = str(section.get("text") or "").strip()
+        if not text_value:
+            continue
+        title_value, body_value = _split_thinking_section_text(text_value)
+        history_list = []
+        for hist in section.get("history") or []:
+            hist_text = str(hist or "").strip()
+            if not hist_text or hist_text == text_value or hist_text in history_list:
+                continue
+            history_list.append(hist_text)
+        sections_payload.append({
+            "key": key,
+            "title": title_value,
+            "body": body_value,
+            "text": text_value,
+            "history": history_list,
+        })
+    return {"text": str(current_text or "").strip(), "sections": sections_payload}
+
+
+def _update_thinking_event(*, event_id: int | None, row: dict[str, object], text_value: str, output_payload: dict[str, object] | None = None, done: bool = False) -> dict[str, object]:
     row["status"] = "ok" if done else "running"
     row["body_text"] = text_value.strip()
-    row["output_json"] = {"text": text_value}
+    row["output_json"] = dict(output_payload or {"text": text_value})
     if event_id is not None:
         try:
             db_update_conversation_scaffold_event(
@@ -531,9 +579,10 @@ def chat(
         scaffold_state = {"value": scaffold_cursor}
         thinking_event_id: int | None = None
         thinking_row: dict[str, object] | None = None
-        thinking_sections: dict[str, str] = {}
+        thinking_sections: dict[str, dict[str, object]] = {}
         thinking_section_order: list[str] = []
         thinking_section_fallback_counter = 0
+        thinking_section_aliases: dict[str, str] = {}
         live_text_parts: list[str] = []
 
         def _emit_assistant_delta(delta_text: str):
@@ -551,17 +600,44 @@ def chat(
                 done_text = str(item.get("text") or "")
                 done_flag = bool(item.get("done")) or str(item.get("type") or "") == "reasoning_done"
 
-                section_key = item.get("summary_index")
-                if section_key is None:
-                    section_key = item.get("item_id")
-                if section_key is None:
-                    section_key = "fallback"
-                section_key = str(section_key)
-                if section_key not in thinking_sections:
-                    thinking_sections[section_key] = ""
-                    thinking_section_order.append(section_key)
+                provider_key = item.get("summary_index")
+                if provider_key is None:
+                    provider_key = item.get("item_id")
+                if provider_key is None:
+                    provider_key = "fallback"
+                provider_key = str(provider_key)
+                canonical_key = thinking_section_aliases.get(provider_key, provider_key)
 
-                current_section = thinking_sections.get(section_key, "")
+                candidate = (part_text or done_text or delta_text).strip()
+                title_candidate, _body_candidate = _split_thinking_section_text(candidate)
+                if title_candidate:
+                    title_key = f"title:{_normalize_thinking_heading(title_candidate)}"
+                    previous_key = canonical_key
+                    canonical_key = title_key
+                    thinking_section_aliases[provider_key] = canonical_key
+                    if previous_key != canonical_key and previous_key in thinking_sections:
+                        previous_section = thinking_sections.pop(previous_key)
+                        target_section = thinking_sections.get(canonical_key)
+                        if target_section is None:
+                            thinking_sections[canonical_key] = previous_section
+                            if previous_key in thinking_section_order:
+                                thinking_section_order[thinking_section_order.index(previous_key)] = canonical_key
+                        else:
+                            previous_history = list(previous_section.get("history") or [])
+                            target_history = list(target_section.get("history") or [])
+                            for hist in [str(previous_section.get("text") or "").strip(), *previous_history]:
+                                hist_text = str(hist or "").strip()
+                                if hist_text and hist_text != str(target_section.get("text") or "").strip() and hist_text not in target_history:
+                                    target_history.append(hist_text)
+                            target_section["history"] = target_history[-8:]
+                            if previous_key in thinking_section_order:
+                                thinking_section_order.remove(previous_key)
+                section = thinking_sections.get(canonical_key)
+                if section is None:
+                    section = {"text": "", "history": []}
+                    thinking_sections[canonical_key] = section
+                    thinking_section_order.append(canonical_key)
+                current_section = str(section.get("text") or "").strip()
                 updated_section = current_section
 
                 if event_type.endswith(".delta"):
@@ -573,7 +649,6 @@ def chat(
                         else:
                             updated_section = current_section + delta_text
                 else:
-                    candidate = (part_text or done_text or delta_text).strip()
                     if candidate:
                         if not current_section:
                             updated_section = candidate
@@ -584,22 +659,39 @@ def chat(
                         elif current_section.startswith(candidate):
                             updated_section = current_section
                         else:
-                            if section_key == "fallback" and len(thinking_section_order) == 1:
+                            current_title, _current_body = _split_thinking_section_text(current_section)
+                            if current_title and title_candidate and _normalize_thinking_heading(current_title) == _normalize_thinking_heading(title_candidate):
+                                updated_section = candidate
+                            elif canonical_key.startswith("title:"):
+                                updated_section = candidate
+                            elif canonical_key == "fallback" and len(thinking_section_order) == 1:
                                 updated_section = candidate
                             else:
                                 thinking_section_fallback_counter += 1
-                                section_key = f"fallback_{thinking_section_fallback_counter}"
-                                thinking_sections.setdefault(section_key, "")
-                                if section_key not in thinking_section_order:
-                                    thinking_section_order.append(section_key)
+                                canonical_key = f"fallback_{thinking_section_fallback_counter}"
+                                section = thinking_sections.setdefault(canonical_key, {"text": "", "history": []})
+                                if canonical_key not in thinking_section_order:
+                                    thinking_section_order.append(canonical_key)
+                                current_section = str(section.get("text") or "").strip()
                                 updated_section = candidate
 
                 updated_section = str(updated_section or "").strip()
-                thinking_sections[section_key] = updated_section
+                if updated_section != current_section and current_section:
+                    history = list(section.get("history") or [])
+                    if not history or history[-1] != current_section:
+                        history.append(current_section)
+                    section["history"] = history[-8:]
+                section["text"] = updated_section
+                title_value, body_value = _split_thinking_section_text(updated_section)
+                if title_value:
+                    section["title"] = title_value
+                if body_value:
+                    section["body"] = body_value
+
                 current_text = "\n\n".join(
-                    section
-                    for section in (thinking_sections.get(key, "").strip() for key in thinking_section_order)
-                    if section
+                    text_value
+                    for text_value in (str((thinking_sections.get(key) or {}).get("text") or "").strip() for key in thinking_section_order)
+                    if text_value
                 ).strip()
                 if not current_text and not done_flag:
                     return
@@ -617,6 +709,7 @@ def chat(
                         event_id=thinking_event_id,
                         row=thinking_row,
                         text_value=current_text,
+                        output_payload=_build_thinking_output_payload(thinking_sections, thinking_section_order, current_text),
                         done=done_flag,
                     )
                     yield _sse("scaffold", row)

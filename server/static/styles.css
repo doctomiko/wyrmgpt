@@ -648,6 +648,69 @@ main#chat {
   margin-top: 4px;
 }
 
+.thinkingSections {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.thinkingSection {
+  padding: 8px 0;
+  border-top: 1px solid rgba(255, 220, 138, 0.16);
+}
+
+.thinkingSection:first-child {
+  padding-top: 0;
+  border-top: none;
+}
+
+.thinkingSectionTitle {
+  font-size: 14px;
+  font-weight: 700;
+  color: #fff4cf;
+}
+
+.thinkingSectionBody {
+  margin-top: 4px;
+}
+
+.thinkingHistory {
+  margin-top: 6px;
+}
+
+.thinkingHistory summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: #ffd77d;
+}
+
+.thinkingHistoryList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.thinkingHistoryItem {
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.16);
+  border: 1px solid rgba(255, 225, 158, 0.14);
+}
+
+.thinkingHistoryLabel {
+  font-size: 12px;
+  font-weight: 700;
+  color: #ffe8aa;
+  margin-bottom: 4px;
+}
+
+.thinkingHistoryBody {
+  font-size: 12px;
+  line-height: 1.35;
+  color: rgba(255, 249, 233, 0.92);
+}
+
 /* Side-by-side A/B responses */
 
 .abRow {

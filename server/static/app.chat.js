@@ -220,6 +220,59 @@ function scaffoldSnippetParts(text, limit = 280) {
   };
 }
 
+function splitThinkingSectionTextClient(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return { title: "", body: "", text: "" };
+  const cleaned = raw.replace(/^\*\*(.+?)\*\*$/m, "$1").trim();
+  const parts = cleaned.split(/\n\s*\n/, 2);
+  const first = (parts[0] || "").trim();
+  const remainder = (parts[1] || "").trim();
+  if (first && first.length <= 140) {
+    return { title: first, body: remainder, text: cleaned };
+  }
+  const lines = cleaned.split(/\n/);
+  const firstLine = String(lines[0] || "").trim();
+  if (firstLine && firstLine.length <= 140) {
+    return { title: firstLine, body: cleaned.slice(firstLine.length).replace(/^\n+/, "").trim(), text: cleaned };
+  }
+  return { title: "", body: cleaned, text: cleaned };
+}
+
+function renderThinkingScaffoldHtml(evRow) {
+  const payload = normalizeScaffoldJson(evRow?.output_json);
+  const sections = Array.isArray(payload?.sections) ? payload.sections : [];
+  if (!sections.length) {
+    const bodyText = String(evRow?.body_text || "").trim();
+    return bodyText ? renderMarkdown(stripZeit(bodyText)) : "";
+  }
+  const itemsHtml = sections.map((section, idx) => {
+    const parsed = splitThinkingSectionTextClient(section?.text || section?.body || "");
+    const title = escapeHtml(String(section?.title || parsed.title || `Thought ${idx + 1}`));
+    const bodySource = String(section?.body || parsed.body || section?.text || "").trim();
+    const bodyHtml = bodySource ? renderMarkdown(stripZeit(bodySource)) : "";
+    const history = Array.isArray(section?.history) ? section.history.filter(Boolean) : [];
+    const historyHtml = history.length ? `
+      <details class="thinkingHistory">
+        <summary>Earlier drafts (${history.length})</summary>
+        <div class="thinkingHistoryList">${history.map((entry, hIdx) => {
+          const prev = splitThinkingSectionTextClient(entry);
+          const prevTitle = escapeHtml(String(prev.title || section?.title || `Draft ${history.length - hIdx}`));
+          const prevBody = String(prev.body || prev.text || "").trim();
+          const prevBodyHtml = prevBody ? renderMarkdown(stripZeit(prevBody)) : "";
+          return `<article class="thinkingHistoryItem"><div class="thinkingHistoryLabel">${prevTitle}</div><div class="thinkingHistoryBody">${prevBodyHtml}</div></article>`;
+        }).join("")}</div>
+      </details>` : "";
+    return `
+      <article class="thinkingSection">
+        <div class="thinkingSectionTitle">${title}</div>
+        ${bodyHtml ? `<div class="thinkingSectionBody">${bodyHtml}</div>` : ""}
+        ${historyHtml}
+      </article>
+    `.trim();
+  }).join("");
+  return `<div class="thinkingSections">${itemsHtml}</div>`;
+}
+
 function renderWebSearchScaffoldHtml(evRow) {
   const payload = scaffoldToolResultPayload(evRow);
   const results = Array.isArray(payload?.results) ? payload.results : [];
@@ -265,6 +318,11 @@ function renderWebSearchScaffoldHtml(evRow) {
 }
 
 function renderScaffoldBodyHtml(evRow) {
+  const eventKind = String(evRow?.event_kind || "").toLowerCase();
+  if (eventKind === "thinking") {
+    const customThinking = renderThinkingScaffoldHtml(evRow);
+    if (customThinking) return customThinking;
+  }
   const toolName = scaffoldToolName(evRow);
   if (toolName === "web.search") {
     const custom = renderWebSearchScaffoldHtml(evRow);
@@ -612,11 +670,12 @@ function applyBlockquotes(t) {
     const line = lines[i];
 
     // after escapeHtml, '>' is now '&gt;'
-    const m = line.match(/^((?:&gt;)+)\s?(.*)$/);
+    const discordBlock = line.match(/^(&gt;&gt;&gt;)\s?(.*)$/);
+    const m = discordBlock || line.match(/^((?:&gt;)+)\s?(.*)$/);
     if (m) {
       const markers = m[1];
       const content = m[2] || "";
-      const level = (markers.match(/&gt;/g) || []).length;
+      const level = discordBlock ? 1 : (markers.match(/&gt;/g) || []).length;
 
       // open new levels
       while (openLevel < level) {
