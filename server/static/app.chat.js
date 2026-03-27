@@ -220,20 +220,25 @@ function scaffoldSnippetParts(text, limit = 280) {
   };
 }
 
+function stripThinkingHeadingBold(text) {
+  return String(text || "").trim().replace(/^\*\*(.+?)\*\*$/, "$1").trim();
+}
+
 function splitThinkingSectionTextClient(text) {
   const raw = String(text || "").trim();
   if (!raw) return { title: "", body: "", text: "" };
-  const cleaned = raw.replace(/^\*\*(.+?)\*\*$/m, "$1").trim();
+  const cleaned = raw.trim();
   const parts = cleaned.split(/\n\s*\n/, 2);
-  const first = (parts[0] || "").trim();
+  const first = stripThinkingHeadingBold(parts[0] || "");
   const remainder = (parts[1] || "").trim();
   if (first && first.length <= 140) {
     return { title: first, body: remainder, text: cleaned };
   }
   const lines = cleaned.split(/\n/);
-  const firstLine = String(lines[0] || "").trim();
+  const firstLineRaw = String(lines[0] || "").trim();
+  const firstLine = stripThinkingHeadingBold(firstLineRaw);
   if (firstLine && firstLine.length <= 140) {
-    return { title: firstLine, body: cleaned.slice(firstLine.length).replace(/^\n+/, "").trim(), text: cleaned };
+    return { title: firstLine, body: cleaned.slice(firstLineRaw.length).replace(/^\n+/, "").trim(), text: cleaned };
   }
   return { title: "", body: cleaned, text: cleaned };
 }
@@ -247,23 +252,24 @@ function renderThinkingScaffoldHtml(evRow) {
   }
   const itemsHtml = sections.map((section, idx) => {
     const parsed = splitThinkingSectionTextClient(section?.text || section?.body || "");
-    const title = escapeHtml(String(section?.title || parsed.title || `Thought ${idx + 1}`));
+    const sectionKey = escapeHtml(String(section?.key || `section-${idx + 1}`));
+    const title = escapeHtml(stripThinkingHeadingBold(String(section?.title || parsed.title || `Thought ${idx + 1}`)));
     const bodySource = String(section?.body || parsed.body || section?.text || "").trim();
     const bodyHtml = bodySource ? renderMarkdown(stripZeit(bodySource)) : "";
     const history = Array.isArray(section?.history) ? section.history.filter(Boolean) : [];
     const historyHtml = history.length ? `
-      <details class="thinkingHistory">
+      <details class="thinkingHistory" data-section-key="${sectionKey}">
         <summary>Earlier drafts (${history.length})</summary>
         <div class="thinkingHistoryList">${history.map((entry, hIdx) => {
           const prev = splitThinkingSectionTextClient(entry);
-          const prevTitle = escapeHtml(String(prev.title || section?.title || `Draft ${history.length - hIdx}`));
+          const prevTitle = escapeHtml(stripThinkingHeadingBold(String(prev.title || section?.title || `Draft ${history.length - hIdx}`)));
           const prevBody = String(prev.body || prev.text || "").trim();
           const prevBodyHtml = prevBody ? renderMarkdown(stripZeit(prevBody)) : "";
           return `<article class="thinkingHistoryItem"><div class="thinkingHistoryLabel">${prevTitle}</div><div class="thinkingHistoryBody">${prevBodyHtml}</div></article>`;
         }).join("")}</div>
       </details>` : "";
     return `
-      <article class="thinkingSection">
+      <article class="thinkingSection" data-section-key="${sectionKey}">
         <div class="thinkingSectionTitle">${title}</div>
         ${bodyHtml ? `<div class="thinkingSectionBody">${bodyHtml}</div>` : ""}
         ${historyHtml}
@@ -387,6 +393,24 @@ function buildScaffoldCardShell() {
   return wrap;
 }
 
+function captureThinkingHistoryOpenState(bodyEl) {
+  const openKeys = new Set();
+  if (!bodyEl) return openKeys;
+  bodyEl.querySelectorAll('.thinkingHistory[open][data-section-key]').forEach((node) => {
+    const key = String(node.dataset.sectionKey || '').trim();
+    if (key) openKeys.add(key);
+  });
+  return openKeys;
+}
+
+function restoreThinkingHistoryOpenState(bodyEl, openKeys) {
+  if (!bodyEl || !(openKeys instanceof Set) || !openKeys.size) return;
+  bodyEl.querySelectorAll('.thinkingHistory[data-section-key]').forEach((node) => {
+    const key = String(node.dataset.sectionKey || '').trim();
+    node.open = !!(key && openKeys.has(key));
+  });
+}
+
 function populateScaffoldCard(wrap, evRow) {
   const els = wrap._scaffoldEls || {};
   const status = String(evRow.status || "").toLowerCase() || "running";
@@ -408,8 +432,13 @@ function populateScaffoldCard(wrap, evRow) {
     els.meta.style.display = els.meta.textContent ? "" : "none";
   }
   if (els.body) {
+    const preserveThinkingHistory = String(evRow?.event_kind || '').toLowerCase() === 'thinking';
+    const openThinkingHistory = preserveThinkingHistory ? captureThinkingHistoryOpenState(els.body) : null;
     const bodyHtml = renderScaffoldBodyHtml(evRow);
     els.body.innerHTML = bodyHtml;
+    if (preserveThinkingHistory && openThinkingHistory) {
+      restoreThinkingHistoryOpenState(els.body, openThinkingHistory);
+    }
     els.body.style.display = bodyHtml ? "" : "none";
   }
 

@@ -11,6 +11,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from server.api_helpers import (
     RowDict,
     attach_scaffold_events_to_message,
+    coerce_optional_float,
+    coerce_optional_int,
     postprocess_text,
     sleep_ms,
     strip_zeitgeber_prefix,
@@ -276,14 +278,17 @@ def _sse(event: str, payload: RowDict | dict | list | str | None = None) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def _numeric_scaffold_event_id(row: dict | None) -> int | None:
+def _numeric_scaffold_event_id(row: RowDict | None) -> int | None:
     if not row:
         return None
     raw = row.get("id")
-    try:
-        return int(raw)
-    except Exception:
-        return None
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if not raw:
+            return None
+    return coerce_optional_int(raw)
 
 
 def _collect_new_scaffold_frames(
@@ -366,21 +371,24 @@ def _prefers_streaming_preflight(target, model_settings: dict[str, object] | Non
 def _build_request_options(target, model_settings: dict[str, object] | None) -> dict[str, object]:
     settings = dict(model_settings or {})
     options: dict[str, object] = {}
-    if settings.get("max_output_tokens") is not None:
-        options["max_output_tokens"] = int(settings["max_output_tokens"])
+    max_output_tokens = coerce_optional_int(settings.get("max_output_tokens"))
+    if max_output_tokens is not None:
+        options["max_output_tokens"] = max_output_tokens
     provider_type = str(getattr(target, "provider_type", "") or "").strip().lower()
-    if settings.get("temperature") is not None:
-        temp_value = float(settings["temperature"])
+    temp_value = coerce_optional_float(settings.get("temperature"))
+    if temp_value is not None:
         if provider_type == "openai" and _openai_supports_thinking(target):
             log_info("Skipping temperature for OpenAI reasoning model %s; API may reject it as unsupported.", getattr(target, "model", ""))
         else:
             options["temperature"] = temp_value
-    if settings.get("top_p") is not None:
-        options["top_p"] = float(settings["top_p"])
-    if settings.get("top_k") is not None:
-        options["top_k"] = int(settings["top_k"])
+    top_p = coerce_optional_float(settings.get("top_p"))
+    if top_p is not None:
+        options["top_p"] = top_p
+    top_k = coerce_optional_int(settings.get("top_k"))
+    if top_k is not None:
+        options["top_k"] = top_k
 
-    thinking_level = int(settings.get("thinking_level") or 0)
+    thinking_level = coerce_optional_int(settings.get("thinking_level")) or 0
     show_thinking = bool(settings.get("show_thinking", True))
 
     if provider_type == "openai":
@@ -447,19 +455,25 @@ def _normalize_thinking_heading(value: object) -> str:
     return text.lower()
 
 
+def _strip_bold_heading_markers(value: object) -> str:
+    text = str(value or "").strip()
+    return re.sub(r"^\*\*(.+?)\*\*$", r"\1", text).strip()
+
+
 def _split_thinking_section_text(text_value: object) -> tuple[str, str]:
     text = str(text_value or "").strip()
     if not text:
         return "", ""
-    cleaned = re.sub(r"^\*\*(.+?)\*\*$", r"\1", text).strip()
+    cleaned = text.strip()
     parts = re.split(r"\n\s*\n", cleaned, maxsplit=1)
-    first = parts[0].strip() if parts else ""
+    first = _strip_bold_heading_markers(parts[0]) if parts else ""
     remainder = parts[1].strip() if len(parts) > 1 else ""
     if first and len(first) <= 140:
         return first, remainder
-    first_line = cleaned.splitlines()[0].strip() if cleaned.splitlines() else ""
+    first_line_raw = cleaned.splitlines()[0].strip() if cleaned.splitlines() else ""
+    first_line = _strip_bold_heading_markers(first_line_raw)
     if first_line and len(first_line) <= 140:
-        body = cleaned[len(first_line):].lstrip("\n").strip()
+        body = cleaned[len(first_line_raw):].lstrip("\n").strip()
         return first_line, body
     return "", cleaned
 
@@ -472,7 +486,10 @@ def _build_thinking_output_payload(thinking_sections: dict[str, dict[str, object
             continue
         title_value, body_value = _split_thinking_section_text(text_value)
         history_list = []
-        for hist in section.get("history") or []:
+        history_raw = section.get("history")
+        if not isinstance(history_raw, list):
+            history_raw = []
+        for hist in history_raw:
             hist_text = str(hist or "").strip()
             if not hist_text or hist_text == text_value or hist_text in history_list:
                 continue
@@ -623,8 +640,10 @@ def chat(
                             if previous_key in thinking_section_order:
                                 thinking_section_order[thinking_section_order.index(previous_key)] = canonical_key
                         else:
-                            previous_history = list(previous_section.get("history") or [])
-                            target_history = list(target_section.get("history") or [])
+                            previous_history_raw = previous_section.get("history")
+                            target_history_raw = target_section.get("history")
+                            previous_history = list(previous_history_raw) if isinstance(previous_history_raw, list) else []
+                            target_history = list(target_history_raw) if isinstance(target_history_raw, list) else []
                             for hist in [str(previous_section.get("text") or "").strip(), *previous_history]:
                                 hist_text = str(hist or "").strip()
                                 if hist_text and hist_text != str(target_section.get("text") or "").strip() and hist_text not in target_history:
@@ -677,7 +696,8 @@ def chat(
 
                 updated_section = str(updated_section or "").strip()
                 if updated_section != current_section and current_section:
-                    history = list(section.get("history") or [])
+                    history_raw = section.get("history")
+                    history = list(history_raw) if isinstance(history_raw, list) else []
                     if not history or history[-1] != current_section:
                         history.append(current_section)
                     section["history"] = history[-8:]
@@ -790,7 +810,10 @@ def chat(
                 parts: list[str] = []
                 for item in provider.stream_text(target, follow_input, request_options=request_options):
                     yield from _emit_stream_item(item, parts)
-                if request_options.get("reasoning") and not any((thinking_sections.get(key, "") or "").strip() for key in thinking_section_order):
+                if request_options.get("reasoning") and not any(
+                    str((thinking_sections.get(key) or {}).get("text") or "").strip()
+                    for key in thinking_section_order
+                ):
                     log_info("No thinking summaries observed cid=%s deployment=%s model=%s", cid, target.id, target.model)
                 final_text = postprocess_text((wrapper_text if wrapper_text else "") + "".join(parts))
             elif preflight_terminal_text is not None:
@@ -816,7 +839,10 @@ def chat(
                 for item in provider.stream_text(target, raw_input, request_options=request_options):
                     yield from _emit_stream_item(item, parts)
 
-                if request_options.get("reasoning") and not any((thinking_sections.get(key, "") or "").strip() for key in thinking_section_order):
+                if request_options.get("reasoning") and not any(
+                    str((thinking_sections.get(key) or {}).get("text") or "").strip()
+                    for key in thinking_section_order
+                ):
                     log_info("No thinking summaries observed cid=%s deployment=%s model=%s", cid, target.id, target.model)
                 streamed_text = strip_zeitgeber_prefix("".join(parts))
                 if response_requests_tool_execution(streamed_text, tools):
@@ -857,7 +883,10 @@ def chat(
                             follow_parts: list[str] = []
                             for item in provider.stream_text(target, follow_input, request_options=request_options):
                                 yield from _emit_stream_item(item, follow_parts)
-                            if request_options.get("reasoning") and not any((thinking_sections.get(key, "") or "").strip() for key in thinking_section_order):
+                            if request_options.get("reasoning") and not any(
+                                str((thinking_sections.get(key) or {}).get("text") or "").strip()
+                                for key in thinking_section_order
+                            ):
                                 log_info("No thinking summaries observed cid=%s deployment=%s model=%s", cid, target.id, target.model)
                             final_text = postprocess_text("".join(follow_parts))
                         else:

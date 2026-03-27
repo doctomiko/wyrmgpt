@@ -72,6 +72,13 @@ def coerce_optional_int(value: Any) -> int | None:
         return None
 
 
+def coerce_optional_float(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def normalize_scope_type(scope_type: str | None) -> str:
     st = (scope_type or "").strip().lower()
     if st in ("conversation", "chat"):
