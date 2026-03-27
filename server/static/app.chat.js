@@ -207,6 +207,23 @@ function scaffoldResultDate(item) {
   return String(item?.age || item?.page_age || item?.date || "").trim();
 }
 
+function formatDurationMs(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n) || n < 0) return "";
+  const totalMs = Math.round(n);
+  const totalSeconds = Math.floor(totalMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  const millis = totalMs % 1000;
+  if (minutes > 0) {
+    return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+  }
+  if (seconds > 0) {
+    return millis ? `${seconds}.${String(millis).padStart(3, "0").replace(/0+$/, "")}s` : `${seconds}s`;
+  }
+  return `${totalMs}ms`;
+}
+
 function scaffoldSnippetParts(text, limit = 280) {
   const raw = String(text || "").replace(/\s+/g, " ").trim();
   if (!raw) return { preview: "", rest: "" };
@@ -246,10 +263,35 @@ function splitThinkingSectionTextClient(text) {
 function renderThinkingScaffoldHtml(evRow) {
   const payload = normalizeScaffoldJson(evRow?.output_json);
   const sections = Array.isArray(payload?.sections) ? payload.sections : [];
+  const activity = payload?.activity && typeof payload.activity === "object" ? payload.activity : {};
+  const timeline = Array.isArray(payload?.timeline) ? payload.timeline : [];
   if (!sections.length) {
     const bodyText = String(evRow?.body_text || "").trim();
     return bodyText ? renderMarkdown(stripZeit(bodyText)) : "";
   }
+  const activityBits = [];
+  const elapsedText = formatDurationMs(activity?.thinking_elapsed_ms ?? activity?.response_elapsed_ms);
+  if (elapsedText) activityBits.push(`Activity · ${escapeHtml(elapsedText)}`);
+  const startedText = formatDurationMs(activity?.thinking_started_offset_ms);
+  if (startedText) activityBits.push(`started at ${escapeHtml(startedText)}`);
+  const activityHtml = activityBits.length ? `<div class="thinkingActivityMeta">${activityBits.join(" · ")}</div>` : "";
+  const timelineHtml = timeline.length ? `
+    <details class="thinkingTimeline">
+      <summary>Timeline (${timeline.length})</summary>
+      <div class="thinkingTimelineList">${timeline.map((entry, idx) => {
+        const title = escapeHtml(stripThinkingHeadingBold(String(entry?.title || `Step ${idx + 1}`)));
+        const parsed = splitThinkingSectionTextClient(entry?.text || entry?.body || "");
+        const bodyText = String(parsed.body || parsed.text || "").trim();
+        const bodyHtml = bodyText ? renderMarkdown(stripZeit(bodyText)) : "";
+        const offset = formatDurationMs(entry?.last_offset_ms ?? entry?.first_offset_ms);
+        const updates = Number(entry?.updates || 0);
+        const metaBits = [];
+        if (offset) metaBits.push(escapeHtml(offset));
+        if (updates > 1) metaBits.push(`${updates} updates`);
+        const metaHtml = metaBits.length ? `<div class="thinkingTimelineMeta">${metaBits.join(" · ")}</div>` : "";
+        return `<article class="thinkingTimelineItem"><div class="thinkingTimelineTitle">${title}</div>${metaHtml}${bodyHtml ? `<div class="thinkingTimelineBody">${bodyHtml}</div>` : ""}</article>`;
+      }).join("")}</div>
+    </details>` : "";
   const itemsHtml = sections.map((section, idx) => {
     const parsed = splitThinkingSectionTextClient(section?.text || section?.body || "");
     const sectionKey = escapeHtml(String(section?.key || `section-${idx + 1}`));
@@ -276,9 +318,8 @@ function renderThinkingScaffoldHtml(evRow) {
       </article>
     `.trim();
   }).join("");
-  return `<div class="thinkingSections">${itemsHtml}</div>`;
+  return `${activityHtml}${timelineHtml}<div class="thinkingSections">${itemsHtml}</div>`;
 }
-
 function renderWebSearchScaffoldHtml(evRow) {
   const payload = scaffoldToolResultPayload(evRow);
   const results = Array.isArray(payload?.results) ? payload.results : [];
@@ -393,6 +434,98 @@ function buildScaffoldCardShell() {
   return wrap;
 }
 
+function captureThinkingOpenState(bodyEl) {
+  const state = { historyKeys: new Set(), timelineOpen: false };
+  if (!bodyEl) return state;
+  bodyEl.querySelectorAll('.thinkingHistory[open][data-section-key]').forEach((node) => {
+    const key = String(node.getAttribute('data-section-key') || '').trim();
+    if (key) state.historyKeys.add(key);
+  });
+  const timelineNode = bodyEl.querySelector('.thinkingTimeline');
+  state.timelineOpen = !!(timelineNode && timelineNode.open);
+  return state;
+}
+
+function restoreThinkingOpenState(bodyEl, state) {
+  if (!bodyEl || !state) return;
+  const historyKeys = state.historyKeys instanceof Set ? state.historyKeys : new Set();
+  bodyEl.querySelectorAll('.thinkingHistory[data-section-key]').forEach((node) => {
+    const key = String(node.getAttribute('data-section-key') || '').trim();
+    node.open = !!(key && historyKeys.has(key));
+  });
+  const timelineNode = bodyEl.querySelector('.thinkingTimeline');
+  if (timelineNode) timelineNode.open = !!state.timelineOpen;
+}
+function renderScaffoldBodyHtml(evRow) {
+  const eventKind = String(evRow?.event_kind || "").toLowerCase();
+  if (eventKind === "thinking") {
+    const customThinking = renderThinkingScaffoldHtml(evRow);
+    if (customThinking) return customThinking;
+  }
+  const toolName = scaffoldToolName(evRow);
+  if (toolName === "web.search") {
+    const custom = renderWebSearchScaffoldHtml(evRow);
+    if (custom) return custom;
+  }
+  const bodyText = String(evRow?.body_text || "").trim();
+  return bodyText ? renderMarkdown(stripZeit(bodyText)) : "";
+}
+
+function buildScaffoldCardShell() {
+  const wrap = document.createElement("div");
+  wrap.className = "scaffoldCard";
+
+  const header = document.createElement("div");
+  header.className = "scaffoldHeader";
+
+  const badge = document.createElement("span");
+  badge.className = "scaffoldBadge";
+
+  const title = document.createElement("div");
+  title.className = "scaffoldTitle";
+
+  header.appendChild(badge);
+  header.appendChild(title);
+
+  const meta = document.createElement("div");
+  meta.className = "scaffoldMeta";
+
+  const body = document.createElement("div");
+  body.className = "scaffoldBody";
+
+  const detailsWrap = document.createElement("div");
+  detailsWrap.className = "scaffoldDetailsStack";
+
+  const inputDetails = document.createElement("details");
+  inputDetails.className = "scaffoldDetails";
+  const inputSummary = document.createElement("summary");
+  inputSummary.className = "scaffoldDetailsSummary";
+  const inputPre = document.createElement("pre");
+  inputPre.className = "ctxPre";
+  inputDetails.appendChild(inputSummary);
+  inputDetails.appendChild(inputPre);
+
+  const outputDetails = document.createElement("details");
+  outputDetails.className = "scaffoldDetails";
+  const outputSummary = document.createElement("summary");
+  outputSummary.className = "scaffoldDetailsSummary";
+  const outputPre = document.createElement("pre");
+  outputPre.className = "ctxPre";
+  outputDetails.appendChild(outputSummary);
+  outputDetails.appendChild(outputPre);
+
+  detailsWrap.appendChild(inputDetails);
+  detailsWrap.appendChild(outputDetails);
+
+  wrap.appendChild(header);
+  wrap.appendChild(meta);
+  wrap.appendChild(body);
+  wrap.appendChild(detailsWrap);
+
+  wrap._scaffoldEls = { badge, title, meta, body, detailsWrap, inputDetails, inputSummary, inputPre, outputDetails, outputSummary, outputPre };
+  return wrap;
+}
+
 function captureThinkingHistoryOpenState(bodyEl) {
   const openKeys = new Set();
   if (!bodyEl) return openKeys;
@@ -433,11 +566,11 @@ function populateScaffoldCard(wrap, evRow) {
   }
   if (els.body) {
     const preserveThinkingHistory = String(evRow?.event_kind || '').toLowerCase() === 'thinking';
-    const openThinkingHistory = preserveThinkingHistory ? captureThinkingHistoryOpenState(els.body) : null;
+    const openThinkingHistory = preserveThinkingHistory ? captureThinkingOpenState(els.body) : null;
     const bodyHtml = renderScaffoldBodyHtml(evRow);
     els.body.innerHTML = bodyHtml;
     if (preserveThinkingHistory && openThinkingHistory) {
-      restoreThinkingHistoryOpenState(els.body, openThinkingHistory);
+      restoreThinkingOpenState(els.body, openThinkingHistory);
     }
     els.body.style.display = bodyHtml ? "" : "none";
   }

@@ -65,33 +65,164 @@ def extract_output_text(resp) -> str:
 def openai_error_payload(e: APIStatusError) -> dict[str, Any]:
     status = getattr(e, "status_code", None)
     req_id = None
-    err_json = None
+    err_json: Any = None
+    raw_text = None
+    response_headers: dict[str, Any] = {}
+    request_url = None
+    request_method = None
+
+    response = getattr(e, "response", None)
+    if response is not None:
+        headers = getattr(response, "headers", None)
+        if headers is not None:
+            try:
+                response_headers = dict(headers)
+            except Exception:
+                response_headers = {}
+        try:
+            request = getattr(response, "request", None)
+            if request is not None:
+                request_url = str(getattr(request, "url", "") or "") or None
+                request_method = str(getattr(request, "method", "") or "") or None
+        except Exception:
+            request_url = None
+            request_method = None
 
     try:
-        err_json = e.response.json()
-        req_id = err_json.get("error", {}).get("request_id") or err_json.get("request_id")
+        if response is not None:
+            err_json = response.json()
+        if isinstance(err_json, dict):
+            req_id = (
+                err_json.get("error", {}).get("request_id")
+                or err_json.get("request_id")
+                or err_json.get("requestId")
+            )
     except Exception:
+        err_json = None
+
+    if response is not None:
         try:
-            err_json = {"raw": e.response.text}
+            raw_text = response.text
         except Exception:
-            err_json = {"raw": repr(getattr(e, "response", None))}
+            raw_text = None
+
+    if req_id is None and response_headers:
+        req_id = (
+            response_headers.get("x-request-id")
+            or response_headers.get("request-id")
+            or response_headers.get("x-goog-request-id")
+        )
+
+    body: dict[str, Any]
+    if isinstance(err_json, dict):
+        body = dict(err_json)
+        if raw_text and "raw" not in body:
+            body["raw"] = raw_text
+    else:
+        body = {"raw": raw_text or str(e) or repr(response)}
+
+    if request_url:
+        body.setdefault("request_url", request_url)
+    if request_method:
+        body.setdefault("request_method", request_method)
+    if response_headers:
+        header_subset = {
+            k: v
+            for k, v in response_headers.items()
+            if str(k).lower() in {
+                "x-request-id",
+                "request-id",
+                "x-goog-request-id",
+                "content-type",
+                "server",
+            }
+        }
+        if header_subset:
+            body.setdefault("response_headers", header_subset)
 
     return {
         "status_code": status,
         "request_id": req_id,
-        "body": err_json,
+        "body": body,
         "provider_error_type": type(e).__name__,
     }
 
 
+def _iter_candidate_error_messages(value: Any) -> Iterator[str]:
+    if value is None:
+        return
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if cleaned:
+            yield cleaned
+        return
+    if isinstance(value, dict):
+        for key in (
+            "message",
+            "error",
+            "detail",
+            "details",
+            "status",
+            "code",
+            "raw",
+            "error_description",
+            "errorMessage",
+            "description",
+        ):
+            if key not in value:
+                continue
+            raw = value.get(key)
+            if isinstance(raw, str):
+                cleaned = raw.strip()
+                if cleaned:
+                    yield cleaned
+            elif isinstance(raw, dict):
+                yield from _iter_candidate_error_messages(raw)
+            elif isinstance(raw, list):
+                for item in raw:
+                    yield from _iter_candidate_error_messages(item)
+        return
+    if isinstance(value, list):
+        for item in value:
+            yield from _iter_candidate_error_messages(item)
+        return
+
+
 def extract_error_message(payload: dict[str, Any]) -> str:
     body = payload.get("body") or {}
-    if isinstance(body, dict):
-        err = body.get("error")
-        if isinstance(err, dict):
-            return err.get("message") or body.get("message") or "API error"
-        return body.get("message") or "API error"
+    seen: set[str] = set()
+    for candidate in _iter_candidate_error_messages(body):
+        if candidate not in seen:
+            seen.add(candidate)
+            return candidate
     return "API error"
+
+
+def format_error_diagnostics(payload: dict[str, Any], *, max_raw: int = 600) -> str:
+    body = payload.get("body") or {}
+    message = extract_error_message(payload)
+    parts: list[str] = [message]
+    request_id = payload.get("request_id")
+    if request_id:
+        parts.append(f"request_id={request_id}")
+    if isinstance(body, dict):
+        code = body.get("code")
+        status = body.get("status")
+        if code:
+            parts.append(f"code={code}")
+        if status and str(status) not in {"400", "401", "403", "404", "429", "500"}:
+            parts.append(f"status={status}")
+        request_url = body.get("request_url")
+        if request_url:
+            parts.append(f"url={request_url}")
+        raw = body.get("raw")
+        if isinstance(raw, str):
+            raw_clean = " ".join(raw.split())
+            if raw_clean and raw_clean != message:
+                if len(raw_clean) > max_raw:
+                    raw_clean = raw_clean[:max_raw - 1] + "…"
+                parts.append(f"raw={raw_clean}")
+    return " | ".join(parts)
 
 
 def _unsupported_parameter_name(payload: dict[str, Any]) -> str | None:

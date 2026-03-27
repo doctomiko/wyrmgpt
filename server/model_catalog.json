@@ -409,6 +409,37 @@
       "provider:google"
     ]
   },
+  "gemini-3-flash-preview": {
+    "vendor": "Google",
+    "display_name": "Gemini 3 Flash Preview",
+    "description": "Preview Gemini 3 Flash model with thinking support and API free-tier availability.",
+    "input_cost_per_million": 0.5,
+    "output_cost_per_million": 3.0,
+    "context_window": 1048576,
+    "tags": [
+      "fast",
+      "reasoning",
+      "multimodal",
+      "vision",
+      "preview",
+      "provider:google"
+    ]
+  },
+  "gemini-3-pro-preview": {
+    "vendor": "Google",
+    "display_name": "Gemini 3 Pro Preview",
+    "description": "Preview Gemini 3 Pro model for harder reasoning and agentic workloads.",
+    "input_cost_per_million": 2.0,
+    "output_cost_per_million": 12.0,
+    "context_window": 1048576,
+    "tags": [
+      "reasoning",
+      "multimodal",
+      "vision",
+      "preview",
+      "provider:google"
+    ]
+  },
   "claude-sonnet-4-6": {
     "vendor": "Anthropic",
     "display_name": "Claude Sonnet 4.6",

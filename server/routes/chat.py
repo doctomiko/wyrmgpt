@@ -4,6 +4,7 @@ import json
 import traceback
 import uuid
 import re
+import time
 
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -347,6 +348,40 @@ def _openai_supports_thinking(target) -> bool:
     return model.startswith("gpt-5") or model.startswith("o")
 
 
+def _anthropic_supports_thinking(target) -> bool:
+    model = str(getattr(target, "model", "") or "").strip().lower()
+    return (
+        model.startswith("claude-opus-4")
+        or model.startswith("claude-sonnet-4")
+        or model.startswith("claude-haiku-4-5")
+        or model.startswith("claude-3-7-sonnet")
+    )
+
+
+def _anthropic_supports_adaptive(target) -> bool:
+    model = str(getattr(target, "model", "") or "").strip().lower()
+    return model.startswith("claude-sonnet-4-6") or model.startswith("claude-opus-4-6")
+
+
+def _google_supports_thinking(target) -> bool:
+    model = str(getattr(target, "model", "") or "").strip().lower()
+    return model.startswith("gemini-2.5") or model.startswith("gemini-3")
+
+
+def _provider_supports_thinking(target) -> bool:
+    provider_type = str(getattr(target, "provider_type", "") or "").strip().lower()
+    if provider_type == "openai":
+        return _openai_supports_thinking(target)
+    if provider_type == "anthropic":
+        return _anthropic_supports_thinking(target)
+    if provider_type == "google":
+        return _google_supports_thinking(target)
+    return False
+
+
+_DEFAULT_ANTHROPIC_MAX_OUTPUT_TOKENS = 4096
+
+
 def _map_openai_reasoning_effort(level: int) -> str:
     lvl = max(0, min(10, int(level or 0)))
     if lvl <= 0:
@@ -359,13 +394,74 @@ def _map_openai_reasoning_effort(level: int) -> str:
 
 
 def _prefers_streaming_preflight(target, model_settings: dict[str, object] | None, request_options: dict[str, object] | None) -> bool:
-    if not isinstance(request_options, dict) or not request_options.get("reasoning"):
+    if not isinstance(request_options, dict):
         return False
     settings = dict(model_settings or {})
     if not bool(settings.get("show_thinking", True)):
         return False
-    provider_type = str(getattr(target, "provider_type", "") or "").strip().lower()
-    return provider_type == "openai" and _openai_supports_thinking(target)
+    return _provider_supports_thinking(target)
+
+
+def _map_anthropic_thinking_budget(level: int) -> int:
+    lvl = max(1, min(10, int(level or 1)))
+    budget_by_level = {
+        1: 1024,
+        2: 2048,
+        3: 4096,
+        4: 6144,
+        5: 8192,
+        6: 12288,
+        7: 16384,
+        8: 20000,
+        9: 24000,
+        10: 32000,
+    }
+    return int(budget_by_level.get(lvl, 8192))
+
+
+
+def _map_anthropic_effort(target, level: int) -> str:
+    model = str(getattr(target, "model", "") or "").strip().lower()
+    lvl = max(1, min(10, int(level or 1)))
+    if model.startswith("claude-opus-4-6") and lvl >= 10:
+        return "max"
+    if lvl <= 2:
+        return "low"
+    if lvl <= 6:
+        return "medium"
+    return "high"
+
+
+def _map_gemini_thinking_level(target, level: int) -> str:
+    model = str(getattr(target, "model", "") or "").strip().lower()
+    lvl = max(1, min(10, int(level or 1)))
+    if model.startswith("gemini-3") and "flash" in model:
+        if lvl <= 2:
+            return "minimal"
+        if lvl <= 4:
+            return "low"
+        if lvl <= 7:
+            return "medium"
+        return "high"
+    if lvl <= 4:
+        return "low"
+    return "high"
+
+
+def _map_gemini_thinking_budget(target, level: int) -> int:
+    model = str(getattr(target, "model", "") or "").strip().lower()
+    lvl = max(1, min(10, int(level or 1)))
+    if "flash-lite" in model:
+        max_budget = 24576
+        min_budget = 512
+    elif "flash" in model:
+        max_budget = 24576
+        min_budget = 0
+    else:
+        max_budget = 32768
+        min_budget = 128
+    budget = int(round((lvl / 10.0) * max_budget))
+    return max(min_budget, min(max_budget, budget))
 
 
 def _build_request_options(target, model_settings: dict[str, object] | None) -> dict[str, object]:
@@ -375,10 +471,14 @@ def _build_request_options(target, model_settings: dict[str, object] | None) -> 
     if max_output_tokens is not None:
         options["max_output_tokens"] = max_output_tokens
     provider_type = str(getattr(target, "provider_type", "") or "").strip().lower()
+    thinking_level = coerce_optional_int(settings.get("thinking_level")) or 0
+    show_thinking = bool(settings.get("show_thinking", True))
     temp_value = coerce_optional_float(settings.get("temperature"))
     if temp_value is not None:
         if provider_type == "openai" and _openai_supports_thinking(target):
             log_info("Skipping temperature for OpenAI reasoning model %s; API may reject it as unsupported.", getattr(target, "model", ""))
+        elif provider_type == "anthropic" and thinking_level > 0 and _anthropic_supports_thinking(target):
+            log_info("Skipping temperature for Anthropic thinking model %s; extended thinking is incompatible with temperature.", getattr(target, "model", ""))
         else:
             options["temperature"] = temp_value
     top_p = coerce_optional_float(settings.get("top_p"))
@@ -386,10 +486,10 @@ def _build_request_options(target, model_settings: dict[str, object] | None) -> 
         options["top_p"] = top_p
     top_k = coerce_optional_int(settings.get("top_k"))
     if top_k is not None:
-        options["top_k"] = top_k
-
-    thinking_level = coerce_optional_int(settings.get("thinking_level")) or 0
-    show_thinking = bool(settings.get("show_thinking", True))
+        if provider_type == "anthropic" and thinking_level > 0 and _anthropic_supports_thinking(target):
+            log_info("Skipping top_k for Anthropic thinking model %s; extended thinking is incompatible with top_k.", getattr(target, "model", ""))
+        else:
+            options["top_k"] = top_k
 
     if provider_type == "openai":
         if _openai_supports_thinking(target):
@@ -402,6 +502,98 @@ def _build_request_options(target, model_settings: dict[str, object] | None) -> 
                 log_info("Thinking disabled for deployment %s because thinking level is 0.", getattr(target, "id", ""))
         elif thinking_level > 0 or show_thinking:
             log_info("Thinking requested for unsupported OpenAI model %s; ignoring.", getattr(target, "model", ""))
+    elif provider_type == "anthropic":
+        if _anthropic_supports_thinking(target):
+            if thinking_level > 0:
+                display_mode = "summarized" if show_thinking else "omitted"
+                if _anthropic_supports_adaptive(target):
+                    options["thinking"] = {
+                        "type": "adaptive",
+                        "display": display_mode,
+                    }
+                    effort_value = _map_anthropic_effort(target, thinking_level)
+                    output_config = dict(options.get("output_config") or {})
+                    output_config["effort"] = effort_value
+                    options["output_config"] = output_config
+                    log_info(
+                        "Using Anthropic adaptive thinking for deployment %s model %s effort=%s display=%s.",
+                        getattr(target, "id", ""),
+                        getattr(target, "model", ""),
+                        effort_value,
+                        display_mode,
+                    )
+                else:
+                    budget_tokens = _map_anthropic_thinking_budget(thinking_level)
+                    requested_max = coerce_optional_int(options.get("max_output_tokens"))
+                    if requested_max is None:
+                        options["max_output_tokens"] = max(_DEFAULT_ANTHROPIC_MAX_OUTPUT_TOKENS, budget_tokens + 1024)
+                    elif requested_max <= budget_tokens:
+                        if requested_max <= 1024:
+                            log_warn(
+                                "Anthropic thinking disabled for deployment %s model %s because max_output_tokens=%s is too small for minimum thinking budget.",
+                                getattr(target, "id", ""),
+                                getattr(target, "model", ""),
+                                requested_max,
+                            )
+                            budget_tokens = None
+                        else:
+                            adjusted_budget = max(1024, requested_max - 1)
+                            log_info(
+                                "Clamping Anthropic thinking budget for deployment %s model %s from %s to %s to satisfy budget_tokens < max_tokens.",
+                                getattr(target, "id", ""),
+                                getattr(target, "model", ""),
+                                budget_tokens,
+                                adjusted_budget,
+                            )
+                            budget_tokens = adjusted_budget
+                    if budget_tokens is not None:
+                        options["thinking"] = {
+                            "type": "enabled",
+                            "budget_tokens": budget_tokens,
+                            "display": display_mode,
+                        }
+                        log_info(
+                            "Using Anthropic manual thinking for deployment %s model %s budget=%s max_output_tokens=%s display=%s.",
+                            getattr(target, "id", ""),
+                            getattr(target, "model", ""),
+                            budget_tokens,
+                            options.get("max_output_tokens"),
+                            display_mode,
+                        )
+            elif show_thinking:
+                log_info("Thinking disabled for Anthropic deployment %s because thinking level is 0.", getattr(target, "id", ""))
+        elif thinking_level > 0 or show_thinking:
+            log_info("Thinking requested for unsupported Anthropic model %s; ignoring.", getattr(target, "model", ""))
+    elif provider_type == "google":
+        if _google_supports_thinking(target):
+            if thinking_level > 0:
+                model_name = str(getattr(target, "model", "") or "").strip().lower()
+                if show_thinking:
+                    thinking_config: dict[str, object] = {"include_thoughts": True}
+                    if model_name.startswith("gemini-3"):
+                        thinking_config["thinking_level"] = _map_gemini_thinking_level(target, thinking_level)
+                    else:
+                        thinking_config["thinking_budget"] = _map_gemini_thinking_budget(target, thinking_level)
+                    options["extra_body"] = {"google": {"thinking_config": thinking_config}}
+                    log_info(
+                        "Using Google custom thinking_config for deployment %s model %s because Show Thinking is enabled.",
+                        getattr(target, "id", ""),
+                        getattr(target, "model", ""),
+                    )
+                else:
+                    if model_name.startswith("gemini-3"):
+                        options["reasoning_effort"] = _map_gemini_thinking_level(target, thinking_level)
+                    else:
+                        options["reasoning_effort"] = _map_openai_reasoning_effort(thinking_level)
+                    log_info(
+                        "Using Google reasoning_effort for deployment %s model %s because Show Thinking is disabled.",
+                        getattr(target, "id", ""),
+                        getattr(target, "model", ""),
+                    )
+            elif show_thinking:
+                log_info("Thinking disabled for Google deployment %s because thinking level is 0.", getattr(target, "id", ""))
+        elif thinking_level > 0 or show_thinking:
+            log_info("Thinking requested for unsupported Google model %s; ignoring.", getattr(target, "model", ""))
     return options
 
 
@@ -477,7 +669,17 @@ def _split_thinking_section_text(text_value: object) -> tuple[str, str]:
         return first_line, body
     return "", cleaned
 
-def _build_thinking_output_payload(thinking_sections: dict[str, dict[str, object]], thinking_section_order: list[str], current_text: str) -> dict[str, object]:
+def _build_thinking_output_payload(
+    thinking_sections: dict[str, dict[str, object]],
+    thinking_section_order: list[str],
+    current_text: str,
+    *,
+    timeline: list[dict[str, object]] | None = None,
+    response_started_at_ms: int | None = None,
+    first_reasoning_at_ms: int | None = None,
+    last_reasoning_at_ms: int | None = None,
+    completed_at_ms: int | None = None,
+) -> dict[str, object]:
     sections_payload: list[dict[str, object]] = []
     for key in thinking_section_order:
         section = thinking_sections.get(key) or {}
@@ -501,8 +703,48 @@ def _build_thinking_output_payload(thinking_sections: dict[str, dict[str, object
             "text": text_value,
             "history": history_list,
         })
-    return {"text": str(current_text or "").strip(), "sections": sections_payload}
 
+    activity: dict[str, object] = {}
+    if response_started_at_ms is not None:
+        activity["response_started_at_ms"] = int(response_started_at_ms)
+    if first_reasoning_at_ms is not None:
+        activity["first_reasoning_at_ms"] = int(first_reasoning_at_ms)
+    if last_reasoning_at_ms is not None:
+        activity["last_reasoning_at_ms"] = int(last_reasoning_at_ms)
+    if completed_at_ms is not None:
+        activity["completed_at_ms"] = int(completed_at_ms)
+    if response_started_at_ms is not None and completed_at_ms is not None:
+        activity["response_elapsed_ms"] = max(0, int(completed_at_ms) - int(response_started_at_ms))
+    if first_reasoning_at_ms is not None:
+        end_ms = completed_at_ms if completed_at_ms is not None else last_reasoning_at_ms
+        if end_ms is not None:
+            activity["thinking_elapsed_ms"] = max(0, int(end_ms) - int(first_reasoning_at_ms))
+        if response_started_at_ms is not None:
+            activity["thinking_started_offset_ms"] = max(0, int(first_reasoning_at_ms) - int(response_started_at_ms))
+
+    timeline_payload: list[dict[str, object]] = []
+    for idx, entry in enumerate(list(timeline or [])):
+        if not isinstance(entry, dict):
+            continue
+        title = str(entry.get("title") or "").strip()
+        text_value = str(entry.get("text") or "").strip()
+        parsed_title, parsed_body = _split_thinking_section_text(text_value)
+        timeline_payload.append({
+            "key": str(entry.get("key") or f"timeline-{idx + 1}"),
+            "title": title or parsed_title,
+            "text": text_value,
+            "body": parsed_body or text_value,
+            "first_offset_ms": entry.get("first_offset_ms"),
+            "last_offset_ms": entry.get("last_offset_ms"),
+            "updates": entry.get("updates"),
+        })
+
+    out = {"text": str(current_text or "").strip(), "sections": sections_payload}
+    if activity:
+        out["activity"] = activity
+    if timeline_payload:
+        out["timeline"] = timeline_payload
+    return out
 
 def _update_thinking_event(*, event_id: int | None, row: dict[str, object], text_value: str, output_payload: dict[str, object] | None = None, done: bool = False) -> dict[str, object]:
     row["status"] = "ok" if done else "running"
@@ -601,6 +843,11 @@ def chat(
         thinking_section_fallback_counter = 0
         thinking_section_aliases: dict[str, str] = {}
         live_text_parts: list[str] = []
+        response_started_at_ms = int(time.time() * 1000)
+        first_reasoning_at_ms: int | None = None
+        last_reasoning_at_ms: int | None = None
+        completed_reasoning_at_ms: int | None = None
+        thinking_timeline: list[dict[str, object]] = []
 
         def _emit_assistant_delta(delta_text: str):
             if not delta_text:
@@ -609,8 +856,10 @@ def chat(
             return _sse("assistant.delta", {"slot": None, "text": delta_text})
 
         def _emit_stream_item(item, parts: list[str]):
-            nonlocal thinking_event_id, thinking_row, thinking_section_fallback_counter
+            nonlocal thinking_event_id, thinking_row, thinking_section_fallback_counter, first_reasoning_at_ms, last_reasoning_at_ms, completed_reasoning_at_ms
             if isinstance(item, dict) and str(item.get("type") or "").startswith("reasoning_"):
+                if not bool(model_settings.get("show_thinking", True)):
+                    return
                 event_type = str(item.get("event_type") or "")
                 delta_text = str(item.get("delta") or "")
                 part_text = str(item.get("part_text") or "")
@@ -708,6 +957,32 @@ def chat(
                 if body_value:
                     section["body"] = body_value
 
+                now_ms = int(time.time() * 1000)
+                if first_reasoning_at_ms is None:
+                    first_reasoning_at_ms = now_ms
+                last_reasoning_at_ms = now_ms
+                if done_flag:
+                    completed_reasoning_at_ms = now_ms
+
+                timeline_title = title_value or str(section.get("title") or "").strip() or f"Thought {len(thinking_timeline) + 1}"
+                timeline_text = updated_section
+                timeline_entry = next((entry for entry in thinking_timeline if str(entry.get("key") or "") == canonical_key), None)
+                offset_ms = max(0, now_ms - int(response_started_at_ms))
+                if timeline_entry is None:
+                    thinking_timeline.append({
+                        "key": canonical_key,
+                        "title": timeline_title,
+                        "text": timeline_text,
+                        "first_offset_ms": offset_ms,
+                        "last_offset_ms": offset_ms,
+                        "updates": 1,
+                    })
+                else:
+                    timeline_entry["title"] = timeline_title
+                    timeline_entry["text"] = timeline_text
+                    timeline_entry["last_offset_ms"] = offset_ms
+                    timeline_entry["updates"] = int(timeline_entry.get("updates") or 0) + 1
+
                 current_text = "\n\n".join(
                     text_value
                     for text_value in (str((thinking_sections.get(key) or {}).get("text") or "").strip() for key in thinking_section_order)
@@ -729,7 +1004,16 @@ def chat(
                         event_id=thinking_event_id,
                         row=thinking_row,
                         text_value=current_text,
-                        output_payload=_build_thinking_output_payload(thinking_sections, thinking_section_order, current_text),
+                        output_payload=_build_thinking_output_payload(
+                            thinking_sections,
+                            thinking_section_order,
+                            current_text,
+                            timeline=thinking_timeline,
+                            response_started_at_ms=response_started_at_ms,
+                            first_reasoning_at_ms=first_reasoning_at_ms,
+                            last_reasoning_at_ms=last_reasoning_at_ms,
+                            completed_at_ms=completed_reasoning_at_ms if done_flag else None,
+                        ),
                         done=done_flag,
                     )
                     yield _sse("scaffold", row)

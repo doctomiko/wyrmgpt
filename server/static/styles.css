@@ -1585,3 +1585,50 @@ button.libraryGroupHeader {
   display: flex;
   gap: 8px;
 }
+.thinkingActivityMeta {
+  font-size: 12px;
+  color: #f0dd9a;
+  margin-bottom: 8px;
+}
+
+.thinkingTimeline {
+  margin: 0 0 12px 0;
+  border: 1px solid rgba(214, 171, 64, 0.35);
+  border-radius: 10px;
+  background: rgba(64, 48, 18, 0.28);
+}
+
+.thinkingTimeline > summary {
+  cursor: pointer;
+  padding: 8px 10px;
+  color: #f0dd9a;
+}
+
+.thinkingTimelineList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 10px 10px 10px;
+}
+
+.thinkingTimelineItem {
+  border-left: 3px solid rgba(214, 171, 64, 0.55);
+  padding-left: 10px;
+}
+
+.thinkingTimelineTitle {
+  color: #fff0b8;
+  font-weight: 700;
+  margin-bottom: 3px;
+}
+
+.thinkingTimelineMeta {
+  font-size: 11px;
+  color: #d8c58a;
+  margin-bottom: 4px;
+}
+
+.thinkingTimelineBody {
+  color: #f7f2dc;
+  font-size: 13px;
+}

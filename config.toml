@@ -201,6 +201,22 @@ capabilities = ["chat", "stream", "catalog"]
 enabled = true
 tags = ["remote", "reasoning", "vision"]
 
+[deployments.chat_google_3_flash]
+provider = "google"
+model = "gemini-3-flash-preview"
+display_name = "Google Gemini 3 Flash Preview"
+capabilities = ["chat", "stream", "catalog"]
+enabled = true
+tags = ["remote", "fast", "reasoning", "vision", "preview"]
+
+[deployments.chat_google_3_pro]
+provider = "google"
+model = "gemini-3-pro-preview"
+display_name = "Google Gemini 3 Pro Preview"
+capabilities = ["chat", "stream", "catalog"]
+enabled = true
+tags = ["remote", "reasoning", "vision", "preview"]
+
 [deployments.chat_claude_sonnet]
 provider = "anthropic"
 model = "claude-sonnet-4-6"
@@ -208,6 +224,14 @@ display_name = "Anthropic Claude Sonnet 4.6"
 capabilities = ["chat", "stream", "catalog"]
 enabled = true
 tags = ["remote", "general", "writing"]
+
+[deployments.chat_claude_opus]
+provider = "anthropic"
+model = "claude-opus-4-6"
+display_name = "Anthropic Claude Opus 4.6"
+capabilities = ["chat", "stream", "catalog"]
+enabled = true
+tags = ["remote", "reasoning", "premium"]
 
 [deployments.chat_claude_haiku]
 provider = "anthropic"
