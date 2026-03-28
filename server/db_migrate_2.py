@@ -239,9 +239,7 @@ def _apply_schema_v8(conn: sqlite3.Connection) -> None:
 
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
 
-            FOREIGN KEY (project_id) REFERENCES projects(id),
-            -- instructed by Callie to leave this out.. for now. Makes sense to me if it refers to multiple types of sources, not just files. We can always add specific foreign keys for different source_kinds if we want later.
-            --FOREIGN KEY (source_id) REFERENCES files(id)
+            FOREIGN KEY (project_id) REFERENCES projects(id)
         );
 
         -- v8 mutual exclusivity: content_text XOR sidecar_path
@@ -358,6 +356,11 @@ def _apply_schema_v8(conn: sqlite3.Connection) -> None:
         "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('schema_version', ?)",
         (str(SCHEMA_VERSION),),
     )
+
+    # above FOREIGN KEY (project_id) REFERENCES projects(id)
+    #   -- instructed by Callie to leave this out.. for now. Makes sense to me if it refers to multiple types of sources, not just files. We can always add specific foreign keys for different source_kinds if we want later.
+    #   --FOREIGN KEY (source_id) REFERENCES files(id)
+
 
 # endregion
 
