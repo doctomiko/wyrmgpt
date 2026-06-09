@@ -8,8 +8,8 @@ services:
     ports:
       - "18080:8000"
     volumes:
-      - /opt/openclaw-data/wyrmgpt/config.toml:/app/config.toml
-      - /opt/openclaw-data/wyrmgpt/config.secrets.toml:/app/config.secrets.toml
+      - /opt/openclaw-data/wyrmgpt/config/config.toml:/app/config.toml
+      - /opt/openclaw-data/wyrmgpt/config/config.secrets.toml:/app/config.secrets.toml
       - /opt/openclaw-data/wyrmgpt/prompts:/app/prompts
       - /opt/openclaw-data/wyrmgpt/data:/app/data
     environment:

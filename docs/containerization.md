@@ -8,8 +8,9 @@ Recommended host runtime root:
 - `/opt/openclaw-data/wyrmgpt/`
 
 Suggested host contents:
-- `config.toml`
-- `config.secrets.toml`
+- `config/`
+  - `config.toml`
+  - `config.secrets.toml`
 - `prompts/`
 - `data/`
 
@@ -30,7 +31,9 @@ The current Dockerfile runs:
 The repo includes `docker-compose.host.yml` which:
 - builds from `/opt/openclaw-data/workspace/wyrmgpt`
 - exposes the app on host port `18080`
-- mounts persistent config, prompts, and data from `/opt/openclaw-data/wyrmgpt/`
+- mounts persistent config from `/opt/openclaw-data/wyrmgpt/config/`
+- mounts persistent prompts from `/opt/openclaw-data/wyrmgpt/prompts/`
+- mounts persistent data from `/opt/openclaw-data/wyrmgpt/data/`
 
 ## Notes
 - Python dependencies are installed at image build time, not container startup time.
