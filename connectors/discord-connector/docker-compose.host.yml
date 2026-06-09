@@ -1,0 +1,18 @@
+services:
+  discord-connector:
+    build:
+      context: /opt/openclaw-data/workspace/wyrmgpt/connectors/discord-connector
+      dockerfile: Dockerfile
+    container_name: wyrmgpt-discord-connector
+    restart: unless-stopped
+    env_file:
+      - /opt/openclaw-data/discord-connector/config/.env
+    environment:
+      SQLITE_PATH: /runtime/data/default_tenant/callie.sqlite3
+      SYSTEM_PROMPT_PATH: /runtime/prompts/system_prompt.txt
+    volumes:
+      - /opt/openclaw-data/discord-connector/data:/runtime/data
+      - /opt/openclaw-data/discord-connector/prompts:/runtime/prompts
+      - /opt/openclaw-data/discord-connector/config:/runtime/config
+      - /opt/openclaw-data/discord-connector/logs:/runtime/logs
+      - /opt/openclaw-data/discord-connector/backups:/runtime/backups
