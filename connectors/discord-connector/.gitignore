@@ -1,0 +1,31 @@
+# Secrets and local env
+.env
+.env.local
+.env.*.local
+
+# Keep safe examples/redacted variants only
+!.env.example
+!.env.sample
+!.env.template
+!.env.redacted
+
+# Runtime data and local databases
+data/
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
+*.db
+
+# Python local env and caches
+.venv/
+__pycache__/
+*.py[cod]
+
+# Historical local backups and archives
+Backups/
+*.zip
+
+# OS/editor cruft
+Desktop.ini
+desktop.ini
