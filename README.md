@@ -60,6 +60,13 @@ Transparency:
 
 Initial setup and optional steps have been updated and moved to the `_First_Time_Setup_All_Platforms.md` file in `./docs/` folder.
 
+## Operational docs
+
+Useful host/runtime docs now live here:
+- `docs/host-rebuild-and-storage.md` - how to rebuild the WyrmGPT and Discord connector containers from the host, plus current persistent storage layout
+- `docs/containerization.md` - notes about the WyrmGPT container model and mounted runtime paths
+- `connectors/discord-connector/docs-rebuild.md` - how to rebuild the Discord connector container and where its persistent runtime lives
+
 ## How it works (high level)
 
 - `server/main.py` is the FastAPI backend.
