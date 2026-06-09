@@ -77,6 +77,7 @@ Initial setup and optional steps have been updated and moved to the `_First_Time
   - conversation history (with non-canonical A/B answers filtered out)
 
 - `server/static/` contains the UI (`index.html`, `app.js`, `styles.css`).
+- `connectors/webui-connector/` contains the imported browser extension connector for ChatGPT DOM capture/export, including unpacked extension source, docs, and a preserved ZIP artifact.
 
 ## Using the UI
 

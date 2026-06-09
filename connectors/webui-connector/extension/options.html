@@ -1,0 +1,93 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Callie DOM Adapter Settings</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      padding: 20px;
+      max-width: 800px;
+    }
+    fieldset {
+      margin-bottom: 20px;
+    }
+    label {
+      display: block;
+      margin: 6px 0;
+    }
+    input[type="number"] {
+      width: 80px;
+    }
+    code {
+      background: #eee;
+      padding: 2px 4px;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+
+<h1>Callie DOM Adapter</h1>
+
+<fieldset>
+  <legend><strong>Auto Backup</strong></legend>
+
+  <label>
+    <input type="checkbox" id="autoBackupEnabled" />
+    Enable auto-backup
+  </label>
+
+  <label>
+    Backup every
+    <input type="number" id="autoBackupEvery" min="1" />
+    messages
+  </label>
+
+  <label>
+    Formats:
+    <label><input type="checkbox" class="autoFormat" value="json"> JSON</label>
+    <label><input type="checkbox" class="autoFormat" value="md"> Markdown</label>
+    <label><input type="checkbox" class="autoFormat" value="html"> HTML</label>
+  </label>
+</fieldset>
+
+<fieldset>
+  <legend><strong>Backup on Load</strong></legend>
+
+  <label>
+    <input type="checkbox" id="backupOnLoadEnabled" />
+    Enable backup when opening an existing conversation
+  </label>
+
+  <label>
+    Formats:
+    <label><input type="checkbox" class="loadFormat" value="json"> JSON</label>
+    <label><input type="checkbox" class="loadFormat" value="md"> Markdown</label>
+    <label><input type="checkbox" class="loadFormat" value="html"> HTML</label>
+  </label>
+</fieldset>
+
+<fieldset>
+  <legend><strong>UX</strong></legend>
+
+  <label>
+    <input type="checkbox" id="toastOnExport" />
+    Show toast notifications after export
+  </label>
+</fieldset>
+
+<fieldset>
+  <legend><strong>Hotkeys</strong></legend>
+  <div id="hotkeys"></div>
+</fieldset>
+
+<p>All actions are local, user-initiated, and limited to the current page.</p>
+
+<button id="save">Save Settings</button>
+<button id="reset">Reset to Defaults</button>
+<span id="status"></span>
+
+<script src="options.js"></script>
+</body>
+</html>

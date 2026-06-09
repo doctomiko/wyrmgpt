@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "ChatGPT DOM Extension",
+  "version": "0.1.0",
+  "homepage_url": "https://doctorwyrm.com/",
+  "description": "Local tooling for ChatGPT conversations. Backup your chats to JSON, MarkDown, or HTML. Integrate with other services. #save4o",
+  "icons": {
+    "128": "chatgpt-dom-icon-128.png"
+  },
+  "permissions": ["storage"],
+  "content_scripts": [
+    {
+      "matches": ["https://chatgpt.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "chatgpt-dom-extension@doctorwyrm.com"
+    }
+  }
+}
