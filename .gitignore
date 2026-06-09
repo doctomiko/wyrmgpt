@@ -36,3 +36,4 @@ data/
 # TOML versions of secure configuration
 config.secrets.toml
 !config.secrets.toml.example
+!connectors/webui-connector/release/*.zip
