@@ -5,6 +5,8 @@
 (function () {
   const $ = (id) => document.getElementById(id);
   let managedAboutUserId = null;
+  let userListObserver = null;
+  let toastTimer = null;
 
   function identityState() {
     return window.wyrmgptIdentity?.state || {};
@@ -19,14 +21,12 @@
   }
 
   function activeUser() {
-    const state = identityState();
     const identity = activeIdentity();
-    const pool = state.allUsers?.length ? state.allUsers : state.users || [];
-    return pool.find((u) => Number(u.id) === Number(identity.user_id));
+    return userPool().find((u) => Number(u.id) === Number(identity.user_id));
   }
 
   function currentEditingUserId() {
-    return identityState().editingUserId || null;
+    return identityState().editingUserId || managedAboutUserId || null;
   }
 
   function userPool() {
@@ -54,22 +54,59 @@
     return u.tenant_name || `tenant ${u.tenant_id || "?"}`;
   }
 
+  function userDisplayName(u) {
+    return u?.display_name || u?.slug || u?.handle || (u?.id ? `User ${u.id}` : "New User");
+  }
+
   function userListLabel(u) {
     return `${u.display_name || `User ${u.id}`} · ${u.slug || u.handle || "user"} · ${userScopeLabel(u)}${u.is_enabled === 0 ? " · disabled" : ""}${u.reference_count ? ` · refs=${u.reference_count}` : ""}`;
   }
 
-  function identifyClickedUserFromEditButton(button) {
-    const row = button?.closest?.("#identityUserList .identityListItem");
-    if (!row) return null;
-    const label = row.querySelector(".identityListLabel")?.textContent || "";
+  function baseLabelText(row) {
+    const label = row?.querySelector?.(".identityListLabel");
+    if (!label) return "";
+    return (label.childNodes[0]?.nodeValue || label.textContent || "").trim();
+  }
+
+  function identifyUserFromRow(row) {
+    const fromData = Number(row?.dataset?.userId || 0);
+    if (fromData) return userPool().find((u) => Number(u.id) === fromData) || null;
+    const label = baseLabelText(row);
     const byLabel = usersForCurrentTenant().find((u) => userListLabel(u) === label);
     if (byLabel) return byLabel;
-
     const items = [...document.querySelectorAll("#identityUserList .identityListItem")];
     const idx = items.indexOf(row);
     const rows = usersForCurrentTenant();
     if (idx >= 0 && idx < rows.length) return rows[idx];
     return null;
+  }
+
+  function identifyClickedUserFromEditButton(button) {
+    const row = button?.closest?.("#identityUserList .identityListItem");
+    return identifyUserFromRow(row);
+  }
+
+  function showToast(message, tone = "ok") {
+    let toast = $("identityToast");
+    if (!toast) {
+      toast = document.createElement("div");
+      toast.id = "identityToast";
+      document.body.appendChild(toast);
+      const style = document.createElement("style");
+      style.id = "identityToastStyle";
+      style.textContent = `
+        #identityToast { position: fixed; right: 18px; bottom: 18px; z-index: 9999; padding: 10px 14px; border-radius: 10px; background: rgba(22, 90, 42, .94); color: #fff; box-shadow: 0 4px 18px rgba(0,0,0,.35); opacity: 0; transform: translateY(8px); transition: opacity .16s ease, transform .16s ease; pointer-events: none; max-width: 360px; }
+        #identityToast.visible { opacity: 1; transform: translateY(0); }
+        #identityToast.warn { background: rgba(122, 73, 16, .96); }
+        #identityToast.error { background: rgba(130, 35, 35, .96); }
+      `;
+      document.head.appendChild(style);
+    }
+    toast.textContent = message;
+    toast.className = tone;
+    requestAnimationFrame(() => toast.classList.add("visible"));
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.remove("visible"), 2600);
   }
 
   function updateAboutYouTitle(user) {
@@ -90,9 +127,7 @@
   }
 
   async function fetchUserAboutYou(userId, actingUserId) {
-    if (!userId) {
-      return { nickname: "", age: "", occupation: "", more_about_you: "", text: "" };
-    }
+    if (!userId) return { nickname: "", age: "", occupation: "", more_about_you: "", text: "" };
     const qs = new URLSearchParams();
     if (actingUserId) qs.set("acting_user_id", String(actingUserId));
     return await fetchJsonDebug(`/api/user_profiles/${encodeURIComponent(userId)}/about_you?${qs.toString()}`);
@@ -106,7 +141,6 @@
     });
   }
 
-  // Override the legacy global About You functions used by app.manage.js.
   window.fetchAboutYou = async function fetchAboutYouForActiveUser() {
     const ident = activeIdentity();
     const user = activeUser();
@@ -122,6 +156,7 @@
     }
     const payload = readPersonalizationAboutFields();
     await saveUserAboutYou(ident.user_id, ident.user_id, payload);
+    showToast("About You saved.");
     if (typeof window.loadPersonalization === "function") await window.loadPersonalization();
     if (typeof window.refreshContext === "function") await window.refreshContext();
   };
@@ -148,23 +183,19 @@
     return !!(payload?.nickname || payload?.age || payload?.occupation || payload?.more_about_you);
   }
 
+  function setManagedAboutTitle(user) {
+    const title = $("identityAboutTitle");
+    if (!title) return;
+    title.textContent = `About This User - ${user ? userDisplayName(user) : (($("identityUserName")?.value || "").trim() || "New User")}`;
+  }
+
   function clearManagedAboutFields() {
     managedAboutUserId = null;
     if ($("identityAboutNickname")) $("identityAboutNickname").value = "";
     if ($("identityAboutAge")) $("identityAboutAge").value = "";
     if ($("identityAboutOccupation")) $("identityAboutOccupation").value = "";
     if ($("identityAboutMore")) $("identityAboutMore").value = "";
-    updateManagedAboutNote(null);
-  }
-
-  function updateManagedAboutNote(user) {
-    const note = $("identityAboutNote");
-    if (!note) return;
-    if (user) {
-      note.textContent = `Editing About You for ${user.display_name || user.slug || user.id}.`;
-    } else {
-      note.textContent = "For a new user, these fields will be saved after the user record is created.";
-    }
+    setManagedAboutTitle(null);
   }
 
   function ensureManageUserAboutPanel() {
@@ -176,7 +207,7 @@
     panel.id = "identityManageUserAboutPanel";
     panel.className = "identityManagerCol";
     panel.innerHTML = `
-      <h3>About This User</h3>
+      <h3 id="identityAboutTitle">About This User - New User</h3>
       <div class="identityAboutGrid">
         <label>
           Nickname
@@ -196,7 +227,6 @@
         </label>
         <div class="span2">
           <button id="identitySaveUserBottom">Create User</button>
-          <div id="identityAboutNote" class="identityScopeNote"></div>
         </div>
       </div>
     `;
@@ -212,11 +242,18 @@
         .identityAboutGrid label { display: grid; gap: 4px; }
         .identityAboutGrid .span2 { grid-column: 1 / -1; }
         .identityAboutGrid input, .identityAboutGrid textarea { width: 100%; box-sizing: border-box; }
+        .identityRefDetails { grid-column: 1 / -1; margin-top: 4px; opacity: .82; }
+        .identityRefDetails summary { cursor: pointer; }
+        .identityRefDetails ul { margin: 4px 0 0 18px; padding: 0; }
+        .identityForceDelete { padding: 2px 6px; font-size: .75rem; line-height: 1.4; }
         @media (max-width: 800px) { .identityAboutGrid { grid-template-columns: 1fr; } .identityAboutGrid .span2 { grid-column: auto; } }
       `;
       document.head.appendChild(style);
     }
     $("identitySaveUserBottom")?.addEventListener("click", interceptUserSave, true);
+    $("identityUserName")?.addEventListener("input", () => {
+      if (!currentEditingUserId()) setManagedAboutTitle(null);
+    });
   }
 
   async function loadManagedAboutForUser(userId) {
@@ -233,7 +270,7 @@
     if ($("identityAboutOccupation")) $("identityAboutOccupation").value = data.occupation || "";
     if ($("identityAboutMore")) $("identityAboutMore").value = data.more_about_you || "";
     const user = userPool().find((u) => Number(u.id) === Number(userId));
-    updateManagedAboutNote(user || { id: userId });
+    setManagedAboutTitle(user || { id: userId });
   }
 
   function buildUserPayloadFromForm() {
@@ -257,13 +294,6 @@
   function setUserSaveButtonLabels() {
     const isEdit = !!currentEditingUserId();
     if ($("identitySaveUserBottom")) $("identitySaveUserBottom").textContent = isEdit ? "Update User" : "Create User";
-  }
-
-  function clearUserFormFieldsAfterCreate() {
-    if ($("identityUserName")) $("identityUserName").value = "";
-    if ($("identityUserSlug")) $("identityUserSlug").value = "";
-    if ($("identityUserTenantAdmin")) $("identityUserTenantAdmin").checked = false;
-    if ($("identityUserGlobalAdmin")) $("identityUserGlobalAdmin").checked = false;
   }
 
   async function interceptUserSave(event) {
@@ -290,13 +320,73 @@
       await saveUserAboutYou(savedUser.id, activeIdentity().user_id, aboutPayload);
     }
 
-    if (window.wyrmgptIdentity?.loadIdentity) await window.wyrmgptIdentity.loadIdentity();
-    if (!editingUserId) {
-      clearUserFormFieldsAfterCreate();
-      clearManagedAboutFields();
+    const state = identityState();
+    if (savedUser?.id) {
+      state.editingUserId = savedUser.id;
+      managedAboutUserId = Number(savedUser.id);
     }
+    if (window.wyrmgptIdentity?.loadIdentity) await window.wyrmgptIdentity.loadIdentity();
+    if (savedUser?.id) await loadManagedAboutForUser(savedUser.id);
     setUserSaveButtonLabels();
+    showToast(`User ${editingUserId ? "updated" : "created"}: ${savedUser?.display_name || payload.display_name}`);
     if (typeof window.refreshContext === "function") await window.refreshContext();
+  }
+
+  async function forceDeleteUser(user) {
+    const refs = Number(user.reference_count || 0);
+    const lines = (user.reference_details || []).map((r) => `${r.table}.${r.column}: ${r.count}`).join("\n");
+    const ok = confirm(
+      `Force delete ${userDisplayName(user)}?\n\n` +
+      `This will reassign user-owned references to @global-admin, delete tenant membership rows, then delete the user.\n\n` +
+      `References (${refs}):\n${lines || "none"}`
+    );
+    if (!ok) return;
+    await fetchJsonDebug(`/api/identity/scope/users/${encodeURIComponent(user.id)}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ acting_user_id: activeIdentity().user_id, tenant_id: user.tenant_id, force: true }),
+    });
+    showToast(`Force deleted ${userDisplayName(user)}.`, "warn");
+    if (window.wyrmgptIdentity?.loadIdentity) await window.wyrmgptIdentity.loadIdentity();
+    if (Number(currentEditingUserId()) === Number(user.id)) clearManagedAboutFields();
+    if (typeof window.refreshContext === "function") await window.refreshContext();
+  }
+
+  function enhanceUserList() {
+    const list = $("identityUserList");
+    if (!list) return;
+    const caps = identityState().capabilities || {};
+    [...list.querySelectorAll(".identityListItem")].forEach((row) => {
+      if (row.dataset.profileEnhanced === "1") return;
+      const user = identifyUserFromRow(row);
+      if (!user) return;
+      row.dataset.profileEnhanced = "1";
+      row.dataset.userId = String(user.id);
+      const label = row.querySelector(".identityListLabel");
+      const actions = row.querySelector(".identityListActions");
+      if (label && Number(user.reference_count || 0) > 0) {
+        const details = document.createElement("details");
+        details.className = "identityRefDetails";
+        const summary = document.createElement("summary");
+        summary.textContent = `refs=${user.reference_count}`;
+        details.appendChild(summary);
+        const ul = document.createElement("ul");
+        (user.reference_details || []).forEach((ref) => {
+          const li = document.createElement("li");
+          li.textContent = `${ref.table}.${ref.column}: ${ref.count}`;
+          ul.appendChild(li);
+        });
+        details.appendChild(ul);
+        label.appendChild(details);
+      }
+      if (actions && Number(user.reference_count || 0) > 0 && user.can_force_delete && caps.can_force_delete_identity) {
+        const btn = document.createElement("button");
+        btn.className = "identityForceDelete danger";
+        btn.textContent = "Force Delete";
+        btn.addEventListener("click", () => forceDeleteUser(user).catch((e) => alert(`Force delete failed: ${e?.message || e}`)));
+        actions.appendChild(btn);
+      }
+    });
   }
 
   function installProfileUiHooks() {
@@ -308,6 +398,7 @@
     manageUsers?.addEventListener("click", () => {
       setTimeout(() => {
         setUserSaveButtonLabels();
+        enhanceUserList();
         if (currentEditingUserId()) loadManagedAboutForUser(currentEditingUserId()).catch(console.warn);
         else clearManagedAboutFields();
       }, 0);
@@ -331,6 +422,13 @@
         loadManagedAboutForUser(clickedUser.id).catch((e) => console.warn("load edited user's About You failed", e));
       }, 0);
     }, true);
+
+    const list = $("identityUserList");
+    if (list && !userListObserver) {
+      userListObserver = new MutationObserver(() => enhanceUserList());
+      userListObserver.observe(list, { childList: true, subtree: true });
+    }
+    setTimeout(enhanceUserList, 0);
   }
 
   window.wyrmgptUserProfiles = {
@@ -338,6 +436,7 @@
     saveUserAboutYou,
     loadManageUserAbout: loadManagedAboutForUser,
     clearManagedAboutFields,
+    enhanceUserList,
   };
 
   installProfileUiHooks();
