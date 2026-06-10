@@ -20,6 +20,7 @@ _REFERENCE_MAP: dict[str, list[tuple[str, str]]] = {
     "user": [
         ("tenant_users", "user_id"),
         ("user_profiles", "user_id"),
+        ("chat_personas", "owner_user_id"),
         ("conversations", "active_user_id"),
         ("messages", "user_id"),
     ],
