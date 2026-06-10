@@ -2,6 +2,7 @@ from server.routes.base import app
 from server.api_helpers import promote_targets_for_scope
 from server.db import db_update_conversation_scaffold_event
 from server.logging_helper import log_warn
+from server.audit_events import ensure_audit_events_schema
 from server.identity_seed_guard import install_identity_seed_patch
 from server.identity_db import install_identity_message_patch
 from server.identity_context_patch import install_persona_context_patch
@@ -12,6 +13,7 @@ install_identity_seed_patch()
 # Identity patch must be installed before chat routes import db_add_message.
 install_identity_message_patch()
 install_persona_context_patch()
+ensure_audit_events_schema()
 
 
 def attach_scaffold_events_to_message(event_ids: list[int], message_id: int | None) -> None:
