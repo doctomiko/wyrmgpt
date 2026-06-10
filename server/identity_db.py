@@ -6,6 +6,7 @@ import contextvars
 import json
 import re
 import sqlite3
+from pathlib import Path
 from typing import Any
 
 from .db_helpers import db_session, new_uuid, _utc_now_iso, _add_column_if_missing
@@ -13,6 +14,7 @@ from .db_helpers import db_session, new_uuid, _utc_now_iso, _add_column_if_missi
 _ACTIVE_IDENTITY: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar("wyrmgpt_active_identity", default=None)
 _PATCH_INSTALLED = False
 _SLUG_RE = re.compile(r"[^a-z0-9._-]+")
+_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _slug(value: Any, default: str = "item") -> str:
@@ -54,6 +56,27 @@ def _bool_int(value: Any) -> int:
     if isinstance(value, str):
         return 1 if value.strip().lower() in {"1", "true", "yes", "on", "global_admin"} else 0
     return 1 if value else 0
+
+
+def _read_prompt_file(path_value: str | None) -> str:
+    raw_value = _txt(path_value)
+    if not raw_value:
+        return ""
+    raw = Path(raw_value)
+    candidates: list[Path] = []
+    if raw.is_absolute():
+        candidates.append(raw)
+    else:
+        candidates.append(_ROOT / raw)
+        candidates.append(Path.cwd() / raw)
+        candidates.append(raw)
+    for p in candidates:
+        try:
+            if p.exists() and p.is_file():
+                return p.read_text(encoding="utf-8").strip()
+        except Exception:
+            continue
+    return ""
 
 
 def ensure_identity_schema() -> None:
@@ -258,6 +281,38 @@ def get_persona_by_slug(slug: str, tenant_id: int | None = None) -> dict[str, An
             (slug, tenant_id, tenant_id, tenant_id),
         ).fetchone()
     return _row(row)
+
+
+def get_persona_prompt_for_conversation(conversation_id: str) -> dict[str, Any] | None:
+    ensure_identity_schema()
+    active = get_active_identity() or {}
+    persona_id = _int(active.get("persona_id"))
+    with db_session() as conn:
+        if persona_id is None:
+            conv = conn.execute("SELECT default_persona_id FROM conversations WHERE id=?", (conversation_id,)).fetchone()
+            if conv:
+                persona_id = _int(conv["default_persona_id"])
+        if persona_id is None:
+            return None
+        row = conn.execute("SELECT * FROM chat_personas WHERE id=? AND is_enabled=1", (persona_id,)).fetchone()
+    persona = _row(row)
+    if not persona:
+        return None
+    prompt_file = _txt(persona.get("prompt_file"))
+    prompt_text = _read_prompt_file(prompt_file)
+    source = "file" if prompt_text else "custom"
+    if not prompt_text:
+        prompt_text = _txt(persona.get("system_prompt"))
+    if not prompt_text:
+        return None
+    return {
+        "persona_id": persona.get("id"),
+        "name": persona.get("name"),
+        "slug": persona.get("slug"),
+        "prompt_file": prompt_file,
+        "source": source,
+        "text": prompt_text,
+    }
 
 
 def normalize_identity_payload(payload: dict[str, Any]) -> dict[str, Any]:
