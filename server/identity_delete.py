@@ -66,6 +66,13 @@ def _exec_if_column(conn, table: str, column: str, sql: str, params: tuple[Any, 
     return int(cur.rowcount or 0)
 
 
+def _delete_if_column(conn, table: str, column: str, row_id: int) -> int:
+    if not _column_exists(conn, table, column):
+        return 0
+    cur = conn.execute(f"DELETE FROM {table} WHERE {column}=?", (int(row_id),))
+    return int(cur.rowcount or 0)
+
+
 def _json_dict(raw: Any) -> dict[str, Any]:
     if not raw:
         return {}
@@ -76,6 +83,20 @@ def _json_dict(raw: Any) -> dict[str, Any]:
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
+
+
+def _force_action_for_reference(entity_type: str, table: str, column: str) -> str:
+    if entity_type == "user":
+        if (table, column) in {("tenant_users", "user_id"), ("user_profiles", "user_id")}:
+            return "cascade_delete"
+        return "assign_global_admin"
+    if entity_type == "tenant":
+        if table == "tenant_users":
+            return "cascade_delete"
+        return "clear_tenant_scope"
+    if entity_type == "persona":
+        return "assign_fallback_persona"
+    return "unknown"
 
 
 def _is_protected_identity(conn, entity_type: str, row_id: int) -> bool:
@@ -134,7 +155,12 @@ def identity_reference_report(entity_type: str, row_id: int) -> dict[str, Any]:
         for table, column in _REFERENCE_MAP[entity_type]:
             count = _count_refs(conn, table, column, int(row_id))
             if count:
-                details.append({"table": table, "column": column, "count": count})
+                details.append({
+                    "table": table,
+                    "column": column,
+                    "count": count,
+                    "force_action": _force_action_for_reference(entity_type, table, column),
+                })
                 total += count
     return {
         "entity_type": entity_type,
@@ -203,8 +229,10 @@ def force_delete_identity(entity_type: str, row_id: int) -> dict[str, Any]:
             reassignments.append({"target": "global_admin_user", "id": fallback_user_id})
             if _table_exists(conn, "tenant_users"):
                 cur = conn.execute("DELETE FROM tenant_users WHERE user_id=?", (int(row_id),))
-                reassignments.append({"table": "tenant_users", "action": "delete", "count": int(cur.rowcount or 0)})
-            for table, column in (("user_profiles", "user_id"), ("chat_personas", "owner_user_id"), ("conversations", "active_user_id"), ("messages", "user_id")):
+                reassignments.append({"table": "tenant_users", "column": "user_id", "action": "cascade_delete", "count": int(cur.rowcount or 0)})
+            count = _delete_if_column(conn, "user_profiles", "user_id", int(row_id))
+            reassignments.append({"table": "user_profiles", "column": "user_id", "action": "cascade_delete", "count": count})
+            for table, column in (("chat_personas", "owner_user_id"), ("conversations", "active_user_id"), ("messages", "user_id")):
                 count = _exec_if_column(conn, table, column, f"UPDATE {table} SET {column}=? WHERE {column}=?", (fallback_user_id, int(row_id)))
                 reassignments.append({"table": table, "column": column, "action": "assign_global_admin", "count": count})
         elif entity_type == "persona":
@@ -216,13 +244,12 @@ def force_delete_identity(entity_type: str, row_id: int) -> dict[str, Any]:
                 count = _exec_if_column(conn, table, column, f"UPDATE {table} SET {column}=? WHERE {column}=?", (fallback_persona_id, int(row_id)))
                 reassignments.append({"table": table, "column": column, "action": "assign_fallback_persona", "count": count})
         elif entity_type == "tenant":
-            # Tenant force-delete makes rows global/unscoped rather than inventing a tenant.
             for table, column in (("users", "tenant_id"), ("user_profiles", "tenant_id"), ("chat_personas", "tenant_id"), ("conversations", "tenant_id"), ("messages", "tenant_id")):
                 count = _exec_if_column(conn, table, column, f"UPDATE {table} SET {column}=NULL WHERE {column}=?", (int(row_id),))
                 reassignments.append({"table": table, "column": column, "action": "clear_tenant_scope", "count": count})
             if _table_exists(conn, "tenant_users"):
                 cur = conn.execute("DELETE FROM tenant_users WHERE tenant_id=?", (int(row_id),))
-                reassignments.append({"table": "tenant_users", "action": "delete", "count": int(cur.rowcount or 0)})
+                reassignments.append({"table": "tenant_users", "column": "tenant_id", "action": "cascade_delete", "count": int(cur.rowcount or 0)})
         cur = conn.execute(f"DELETE FROM {table} WHERE id=?", (int(row_id),))
         deleted = int(cur.rowcount or 0)
 
