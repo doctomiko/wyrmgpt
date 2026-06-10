@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from fastapi import Body, HTTPException, Request
@@ -27,6 +28,7 @@ from server.identity_db import (
     update_persona,
     update_tenant,
     update_user,
+    user_is_global_admin,
 )
 
 
@@ -45,6 +47,8 @@ _IDENTITY_STYLE = """
 .identityList { display: grid; gap: 5px; margin-top: 8px; max-height: 260px; overflow: auto; }
 .identityListItem, .identityEmpty { padding: 6px 8px; border-radius: 6px; background: rgba(128,128,128,.10); font-size: .85rem; }
 .identityEmpty { opacity: .65; font-style: italic; }
+.identityCheckboxRow { display: flex; gap: 6px; align-items: center; }
+.identityCheckboxRow input { width: auto; }
 @media (max-width: 1100px) { .identityManagerGrid { grid-template-columns: 1fr; } }
 </style>
 """.strip()
@@ -99,9 +103,12 @@ _IDENTITY_MODAL = """
             <h3>Users</h3>
             <div class="identityFormStack">
               <select id="identityNewUserTenant"></select>
+              <label class="identityCheckboxRow"><input id="identityNewUserGlobal" type="checkbox" /> Global user</label>
+              <label class="identityCheckboxRow"><input id="identityNewUserGlobalAdmin" type="checkbox" /> Global admin</label>
               <input id="identityNewUserName" placeholder="Display name" />
-              <input id="identityNewUserHandle" placeholder="handle / short name" />
+              <input id="identityNewUserSlug" placeholder="slug / short name" />
               <button id="identityCreateUser">Create User</button>
+              <button id="identityCancelUserEdit" class="hidden">Cancel Update</button>
             </div>
             <div id="identityUserList" class="identityList"></div>
           </section>
@@ -112,8 +119,10 @@ _IDENTITY_MODAL = """
               <input id="identityNewPersonaName" placeholder="Persona name" />
               <input id="identityNewPersonaSlug" placeholder="slug, e.g. callie" />
               <input id="identityNewPersonaDescription" placeholder="Short description" />
-              <textarea id="identityNewPersonaPrompt" rows="5" placeholder="Optional persona system prompt"></textarea>
+              <select id="identityNewPersonaPromptFile"></select>
+              <textarea id="identityNewPersonaPrompt" rows="5" placeholder="Optional custom persona system prompt"></textarea>
               <button id="identityCreatePersona">Create Persona</button>
+              <button id="identityCancelPersonaEdit" class="hidden">Cancel Update</button>
             </div>
             <div id="identityPersonaList" class="identityList"></div>
           </section>
@@ -156,15 +165,35 @@ def _headers_identity_payload(request: Request) -> dict[str, Any]:
     return payload
 
 
+def _prompt_files_payload() -> list[dict[str, str]]:
+    root = STATIC_DIR.parent.parent
+    prompt_dir = root / "prompts"
+    out: list[dict[str, str]] = []
+    try:
+        if prompt_dir.exists() and prompt_dir.is_dir():
+            for p in sorted(prompt_dir.glob("*.txt"), key=lambda x: x.name.lower()):
+                out.append({"name": p.name, "path": str(Path("prompts") / p.name)})
+    except Exception:
+        return []
+    return out
+
+
+def _require_admin_for_user_scope_change(payload: dict[str, Any]) -> None:
+    guarded = {"tenant_id", "is_global", "is_global_admin", "role"}
+    if not any(k in payload for k in guarded):
+        return
+    acting_user_id = payload.get("acting_user_id")
+    if not user_is_global_admin(acting_user_id):
+        raise HTTPException(status_code=403, detail="Only a global admin can change user tenant/global/admin status.")
+
+
 @app.middleware("http")
 async def identity_context_middleware(request: Request, call_next):
-    """Inject identity UI and capture active identity for chat requests."""
     token = None
     try:
         if request.method.upper() == "GET" and request.url.path == "/":
             raw = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
             return HTMLResponse(_inject_identity_ui(raw))
-
         if request.method.upper() == "POST" and request.url.path in {"/api/chat", "/api/chat_ab"}:
             payload = _headers_identity_payload(request)
             if not payload:
@@ -189,12 +218,19 @@ async def identity_context_middleware(request: Request, call_next):
 
 @app.get("/api/identity/bootstrap")
 def api_identity_bootstrap():
-    return JSONResponse(bootstrap_identity())
+    data = bootstrap_identity()
+    data["prompt_files"] = _prompt_files_payload()
+    return JSONResponse(data)
 
 
 @app.get("/api/identity/defaults")
 def api_identity_defaults():
     return JSONResponse(get_identity_defaults())
+
+
+@app.get("/api/identity/prompt_files")
+def api_identity_prompt_files():
+    return JSONResponse({"prompt_files": _prompt_files_payload()})
 
 
 @app.get("/api/tenants")
@@ -219,14 +255,14 @@ def api_update_tenant(tenant_id: int, payload: dict[str, Any] = Body(default_fac
 
 
 @app.get("/api/users")
-def api_list_users(tenant_id: int | None = None):
-    return JSONResponse({"users": list_users(tenant_id)})
+def api_list_users(tenant_id: int | None = None, include_disabled: bool = True):
+    return JSONResponse({"users": list_users(tenant_id, include_disabled=include_disabled)})
 
 
 @app.post("/api/users")
 def api_create_user(payload: dict[str, Any] = Body(default_factory=dict)):
     try:
-        return JSONResponse(create_user(display_name=str(payload.get("display_name") or payload.get("name") or "").strip(), handle=payload.get("handle"), tenant_id=payload.get("tenant_id"), role=str(payload.get("role") or "member"), meta_json=payload.get("meta_json")))
+        return JSONResponse(create_user(display_name=str(payload.get("display_name") or payload.get("name") or "").strip(), handle=payload.get("slug") or payload.get("handle"), slug=payload.get("slug"), tenant_id=payload.get("tenant_id"), is_global=bool(payload.get("is_global")), is_global_admin=bool(payload.get("is_global_admin")), role=str(payload.get("role") or "member"), meta_json=payload.get("meta_json")))
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -234,7 +270,10 @@ def api_create_user(payload: dict[str, Any] = Body(default_factory=dict)):
 @app.put("/api/users/{user_id}")
 def api_update_user(user_id: int, payload: dict[str, Any] = Body(default_factory=dict)):
     try:
+        _require_admin_for_user_scope_change(payload)
         return JSONResponse(update_user(user_id, payload))
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -242,8 +281,12 @@ def api_update_user(user_id: int, payload: dict[str, Any] = Body(default_factory
 @app.post("/api/tenants/{tenant_id}/users/{user_id}")
 def api_add_user_to_tenant(tenant_id: int, user_id: int, payload: dict[str, Any] = Body(default_factory=dict)):
     try:
+        if not user_is_global_admin(payload.get("acting_user_id")):
+            raise HTTPException(status_code=403, detail="Only a global admin can reassign users to tenants.")
         add_user_to_tenant(user_id=user_id, tenant_id=tenant_id, role=str(payload.get("role") or "member"))
         return JSONResponse({"ok": True})
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -256,7 +299,7 @@ def api_list_personas(tenant_id: int | None = None, include_disabled: bool = Tru
 @app.post("/api/personas")
 def api_create_persona(payload: dict[str, Any] = Body(default_factory=dict)):
     try:
-        return JSONResponse(create_persona(name=str(payload.get("name") or "").strip(), slug=payload.get("slug"), tenant_id=payload.get("tenant_id"), description=payload.get("description"), system_prompt=payload.get("system_prompt"), default_model_deployment_id=payload.get("default_model_deployment_id"), meta_json=payload.get("meta_json")))
+        return JSONResponse(create_persona(name=str(payload.get("name") or "").strip(), slug=payload.get("slug"), tenant_id=payload.get("tenant_id"), description=payload.get("description"), system_prompt=payload.get("system_prompt"), prompt_file=payload.get("prompt_file"), default_model_deployment_id=payload.get("default_model_deployment_id"), meta_json=payload.get("meta_json")))
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
