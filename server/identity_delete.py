@@ -59,6 +59,13 @@ def _count_refs(conn, table: str, column: str, row_id: int) -> int:
     return int(row["n"] or 0) if row else 0
 
 
+def _exec_if_column(conn, table: str, column: str, sql: str, params: tuple[Any, ...]) -> int:
+    if not _column_exists(conn, table, column):
+        return 0
+    cur = conn.execute(sql, params)
+    return int(cur.rowcount or 0)
+
+
 def _json_dict(raw: Any) -> dict[str, Any]:
     if not raw:
         return {}
@@ -87,6 +94,33 @@ def _is_protected_identity(conn, entity_type: str, row_id: int) -> bool:
     return False
 
 
+def _global_admin_user_id(conn) -> int:
+    row = conn.execute(
+        """
+        SELECT id FROM users
+        WHERE is_enabled=1 AND is_global_admin=1
+        ORDER BY CASE WHEN slug='@global-admin' THEN 0 WHEN slug='global-admin' THEN 1 ELSE 2 END, id
+        LIMIT 1
+        """
+    ).fetchone()
+    if not row:
+        raise ValueError("No enabled global admin user exists to receive reassigned references.")
+    return int(row["id"])
+
+
+def _default_persona_id(conn, deleted_persona_id: int) -> int | None:
+    row = conn.execute(
+        """
+        SELECT id FROM chat_personas
+        WHERE id<>? AND is_enabled=1
+        ORDER BY CASE WHEN slug='callie' THEN 0 ELSE 1 END, id
+        LIMIT 1
+        """,
+        (int(deleted_persona_id),),
+    ).fetchone()
+    return int(row["id"]) if row else None
+
+
 def identity_reference_report(entity_type: str, row_id: int) -> dict[str, Any]:
     entity_type = str(entity_type or "").strip().lower()
     if entity_type not in _REFERENCE_MAP:
@@ -109,6 +143,7 @@ def identity_reference_report(entity_type: str, row_id: int) -> dict[str, Any]:
         "reference_details": details,
         "protected": protected,
         "can_delete": total == 0 and not protected,
+        "can_force_delete": total > 0 and not protected,
     }
 
 
@@ -120,12 +155,13 @@ def annotate_delete_flags(entity_type: str, rows: list[dict[str, Any]]) -> list[
             report = identity_reference_report(entity_type, int(item.get("id")))
             item.update({
                 "can_delete": bool(report["can_delete"]),
+                "can_force_delete": bool(report.get("can_force_delete")),
                 "reference_count": int(report["reference_count"]),
                 "reference_details": report["reference_details"],
                 "protected": bool(report.get("protected")),
             })
         except Exception:
-            item.update({"can_delete": False, "reference_count": None, "reference_details": [], "protected": False})
+            item.update({"can_delete": False, "can_force_delete": False, "reference_count": None, "reference_details": [], "protected": False})
         out.append(item)
     return out
 
@@ -146,3 +182,49 @@ def hard_delete_identity(entity_type: str, row_id: int) -> dict[str, Any]:
         cur = conn.execute(f"DELETE FROM {table} WHERE id=?", (int(row_id),))
         deleted = int(cur.rowcount or 0)
     return {**report, "deleted": deleted}
+
+
+def force_delete_identity(entity_type: str, row_id: int) -> dict[str, Any]:
+    entity_type = str(entity_type or "").strip().lower()
+    table = _TABLES.get(entity_type)
+    if not table:
+        raise ValueError(f"Unsupported identity entity type: {entity_type}")
+
+    before = identity_reference_report(entity_type, int(row_id))
+    if before.get("protected"):
+        raise ValueError(f"Cannot force-delete protected {entity_type} {row_id}.")
+
+    reassignments: list[dict[str, Any]] = []
+    with db_session() as conn:
+        if entity_type == "user":
+            fallback_user_id = _global_admin_user_id(conn)
+            if int(fallback_user_id) == int(row_id):
+                raise ValueError("Cannot force-delete the fallback global admin user.")
+            reassignments.append({"target": "global_admin_user", "id": fallback_user_id})
+            if _table_exists(conn, "tenant_users"):
+                cur = conn.execute("DELETE FROM tenant_users WHERE user_id=?", (int(row_id),))
+                reassignments.append({"table": "tenant_users", "action": "delete", "count": int(cur.rowcount or 0)})
+            for table, column in (("user_profiles", "user_id"), ("chat_personas", "owner_user_id"), ("conversations", "active_user_id"), ("messages", "user_id")):
+                count = _exec_if_column(conn, table, column, f"UPDATE {table} SET {column}=? WHERE {column}=?", (fallback_user_id, int(row_id)))
+                reassignments.append({"table": table, "column": column, "action": "assign_global_admin", "count": count})
+        elif entity_type == "persona":
+            fallback_persona_id = _default_persona_id(conn, int(row_id))
+            if fallback_persona_id is None:
+                raise ValueError("No fallback persona exists to receive reassigned persona references.")
+            reassignments.append({"target": "fallback_persona", "id": fallback_persona_id})
+            for table, column in (("conversations", "default_persona_id"), ("messages", "persona_id")):
+                count = _exec_if_column(conn, table, column, f"UPDATE {table} SET {column}=? WHERE {column}=?", (fallback_persona_id, int(row_id)))
+                reassignments.append({"table": table, "column": column, "action": "assign_fallback_persona", "count": count})
+        elif entity_type == "tenant":
+            # Tenant force-delete makes rows global/unscoped rather than inventing a tenant.
+            for table, column in (("users", "tenant_id"), ("user_profiles", "tenant_id"), ("chat_personas", "tenant_id"), ("conversations", "tenant_id"), ("messages", "tenant_id")):
+                count = _exec_if_column(conn, table, column, f"UPDATE {table} SET {column}=NULL WHERE {column}=?", (int(row_id),))
+                reassignments.append({"table": table, "column": column, "action": "clear_tenant_scope", "count": count})
+            if _table_exists(conn, "tenant_users"):
+                cur = conn.execute("DELETE FROM tenant_users WHERE tenant_id=?", (int(row_id),))
+                reassignments.append({"table": "tenant_users", "action": "delete", "count": int(cur.rowcount or 0)})
+        cur = conn.execute(f"DELETE FROM {table} WHERE id=?", (int(row_id),))
+        deleted = int(cur.rowcount or 0)
+
+    after = identity_reference_report(entity_type, int(row_id))
+    return {**before, "deleted": deleted, "forced": True, "reassignments": reassignments, "after": after}
