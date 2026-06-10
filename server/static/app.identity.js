@@ -85,8 +85,6 @@
     return Number.isFinite(n) ? Math.trunc(n) : null;
   }
 
-  function boolInt(value) { return value ? 1 : 0; }
-
   function loadStoredSelection() {
     try {
       const raw = localStorage.getItem(STORE_KEY);
@@ -400,6 +398,11 @@
       payload.is_global = isGlobal;
       payload.tenant_id = isGlobal ? null : asInt($("identityNewUserTenant")?.value);
       payload.role = isGlobalAdmin ? "global_admin" : "member";
+    } else if (!state.editingUserId) {
+      payload.is_global_admin = false;
+      payload.is_global = false;
+      payload.tenant_id = selectedTenantId();
+      payload.role = "member";
     }
     return payload;
   }
