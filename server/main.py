@@ -27,6 +27,7 @@ def attach_scaffold_events_to_message(event_ids: list[int], message_id: int | No
 # Import route modules for side effects so their @app decorators register endpoints.
 import server.routes.artifacts  # noqa: F401
 import server.routes.identity  # noqa: F401
+import server.routes.identity_scope_ext  # noqa: F401
 import server.routes.chat  # noqa: F401
 import server.routes.conversations  # noqa: F401
 import server.routes.deployments  # noqa: F401
