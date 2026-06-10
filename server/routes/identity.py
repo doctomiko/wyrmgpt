@@ -157,7 +157,7 @@ def _inject_identity_ui(html: str) -> str:
     html = html.replace(advanced_block, advanced_block + "\n" + _PERSONA_PICKER)
     html = html.replace('    <aside id="rightSidePanel">\n', '    <aside id="rightSidePanel">\n' + _IDENTITY_SIDE_PANEL + "\n")
     html = html.replace('  <div id="memoryModal" class="modal hidden">', _IDENTITY_MODAL + '\n  <div id="memoryModal" class="modal hidden">')
-    html = html.replace('  <script src="/static/app.events.js"></script>', '  <script src="/static/app.identity.js"></script>\n  <script src="/static/app.events.js"></script>')
+    html = html.replace('  <script src="/static/app.events.js"></script>', '  <script src="/static/app.identity.js"></script>\n  <script src="/static/app.user_profiles.js"></script>\n  <script src="/static/app.events.js"></script>')
     return html
 
 
