@@ -15,8 +15,9 @@ from .db_helpers import new_uuid, _utc_now_iso
 _DEFAULT_ADMIN_SLUG = "@global-admin"
 _DEFAULT_ADMIN_NAME = "Admin"
 _DEFAULT_TENANT_NAME = "Local"
-_DEFAULT_PERSONA_NAME = "Admin"
-_DEFAULT_PERSONA_SLUG = "@global-admin"
+_DEFAULT_PERSONA_NAME = "Callie"
+_DEFAULT_PERSONA_SLUG = "callie"
+_DEFAULT_PERSONA_PROMPT_FILE = "prompts/Callie3rd.txt"
 
 _INSTALLED = False
 
@@ -62,15 +63,16 @@ def guarded_seed_defaults(conn: sqlite3.Connection) -> None:
     if int(persona_count or 0) == 0:
         conn.execute(
             """
-            INSERT INTO chat_personas(uuid,tenant_id,name,slug,description,created_at,updated_at,meta_json)
-            VALUES(?,?,?,?,?,?,?,?)
+            INSERT INTO chat_personas(uuid,tenant_id,name,slug,description,prompt_file,created_at,updated_at,meta_json)
+            VALUES(?,?,?,?,?,?,?,?,?)
             """,
             (
                 new_uuid(),
                 tenant_id,
                 _DEFAULT_PERSONA_NAME,
                 _DEFAULT_PERSONA_SLUG,
-                "Default WyrmGPT administrative persona.",
+                "Default WyrmGPT assistant persona.",
+                _DEFAULT_PERSONA_PROMPT_FILE,
                 now,
                 now,
                 '{"system_default":true,"protected":true}',
