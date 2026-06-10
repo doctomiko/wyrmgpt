@@ -332,13 +332,41 @@
     if (typeof window.refreshContext === "function") await window.refreshContext();
   }
 
+  function effectiveForceAction(ref) {
+    if (ref.force_action) return ref.force_action;
+    if (ref.table === "tenant_users" && ref.column === "user_id") return "cascade_delete";
+    if (ref.table === "user_profiles" && ref.column === "user_id") return "cascade_delete";
+    return "assign_global_admin";
+  }
+
+  function forceActionLabel(ref) {
+    const action = effectiveForceAction(ref);
+    if (action === "cascade_delete") return "delete row";
+    if (action === "assign_global_admin") return "reassign to @global-admin";
+    if (action === "assign_fallback_persona") return "reassign to fallback persona";
+    if (action === "clear_tenant_scope") return "clear tenant scope";
+    return action || "force-handle";
+  }
+
+  function formatRef(ref) {
+    return `${ref.table}.${ref.column}: ${ref.count}`;
+  }
+
   async function forceDeleteUser(user) {
     const refs = Number(user.reference_count || 0);
-    const lines = (user.reference_details || []).map((r) => `${r.table}.${r.column}: ${r.count}`).join("\n");
+    const details = user.reference_details || [];
+    const deleteRefs = details.filter((r) => effectiveForceAction(r) === "cascade_delete");
+    const reassignRefs = details.filter((r) => effectiveForceAction(r) !== "cascade_delete");
+
+    const deleteLines = deleteRefs.map((r) => `- ${formatRef(r)}`).join("\n") || "- none";
+    const reassignLines = reassignRefs.map((r) => `- ${formatRef(r)} → ${forceActionLabel(r)}`).join("\n") || "- none";
+
     const ok = confirm(
       `Force delete ${userDisplayName(user)}?\n\n` +
-      `This will reassign user-owned references to @global-admin, delete tenant membership rows, then delete the user.\n\n` +
-      `References (${refs}):\n${lines || "none"}`
+      `This will permanently delete the user record.\n\n` +
+      `Cascade-deleted user-owned rows:\n${deleteLines}\n\n` +
+      `Reassigned historical/shared references:\n${reassignLines}\n\n` +
+      `Total refs: ${refs}\n\nContinue?`
     );
     if (!ok) return;
     await fetchJsonDebug(`/api/identity/scope/users/${encodeURIComponent(user.id)}`, {
@@ -373,7 +401,7 @@
         const ul = document.createElement("ul");
         (user.reference_details || []).forEach((ref) => {
           const li = document.createElement("li");
-          li.textContent = `${ref.table}.${ref.column}: ${ref.count}`;
+          li.textContent = `${formatRef(ref)} — ${forceActionLabel(ref)}`;
           ul.appendChild(li);
         });
         details.appendChild(ul);
