@@ -30,6 +30,7 @@ from server.identity_db import (
     update_user,
     user_is_global_admin,
 )
+from server.identity_delete import annotate_delete_flags, hard_delete_identity
 
 
 _IDENTITY_STYLE = """
@@ -96,6 +97,7 @@ _IDENTITY_MODAL = """
               <input id="identityNewTenantName" placeholder="Tenant name" />
               <input id="identityNewTenantKind" placeholder="kind: local, household, discord_guild…" value="local" />
               <button id="identityCreateTenant">Create Tenant</button>
+              <button id="identityCancelTenantEdit" class="hidden">Cancel Update</button>
             </div>
             <div id="identityTenantList" class="identityList"></div>
           </section>
@@ -103,7 +105,6 @@ _IDENTITY_MODAL = """
             <h3>Users</h3>
             <div class="identityFormStack">
               <select id="identityNewUserTenant"></select>
-              <label class="identityCheckboxRow"><input id="identityNewUserGlobal" type="checkbox" /> Global user</label>
               <label class="identityCheckboxRow"><input id="identityNewUserGlobalAdmin" type="checkbox" /> Global admin</label>
               <input id="identityNewUserName" placeholder="Display name" />
               <input id="identityNewUserSlug" placeholder="slug / short name" />
@@ -132,6 +133,15 @@ _IDENTITY_MODAL = """
     </div>
   </div>
 """.rstrip()
+
+
+def _annotated_payload(data: dict[str, Any]) -> dict[str, Any]:
+    out = dict(data or {})
+    out["tenants"] = annotate_delete_flags("tenant", out.get("tenants") or [])
+    out["users"] = annotate_delete_flags("user", out.get("users") or [])
+    out["all_users"] = annotate_delete_flags("user", out.get("all_users") or [])
+    out["personas"] = annotate_delete_flags("persona", out.get("personas") or [])
+    return out
 
 
 def _inject_identity_ui(html: str) -> str:
@@ -187,6 +197,11 @@ def _require_admin_for_user_scope_change(payload: dict[str, Any]) -> None:
         raise HTTPException(status_code=403, detail="Only a global admin can change user tenant/global/admin status.")
 
 
+def _require_global_admin(payload: dict[str, Any]) -> None:
+    if not user_is_global_admin((payload or {}).get("acting_user_id")):
+        raise HTTPException(status_code=403, detail="Only a global admin can perform this action.")
+
+
 @app.middleware("http")
 async def identity_context_middleware(request: Request, call_next):
     token = None
@@ -218,7 +233,7 @@ async def identity_context_middleware(request: Request, call_next):
 
 @app.get("/api/identity/bootstrap")
 def api_identity_bootstrap():
-    data = bootstrap_identity()
+    data = _annotated_payload(bootstrap_identity())
     data["prompt_files"] = _prompt_files_payload()
     return JSONResponse(data)
 
@@ -235,7 +250,7 @@ def api_identity_prompt_files():
 
 @app.get("/api/tenants")
 def api_list_tenants():
-    return JSONResponse({"tenants": list_tenants()})
+    return JSONResponse({"tenants": annotate_delete_flags("tenant", list_tenants())})
 
 
 @app.post("/api/tenants")
@@ -254,9 +269,20 @@ def api_update_tenant(tenant_id: int, payload: dict[str, Any] = Body(default_fac
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@app.delete("/api/tenants/{tenant_id}")
+def api_delete_tenant(tenant_id: int, payload: dict[str, Any] = Body(default_factory=dict)):
+    try:
+        _require_global_admin(payload)
+        return JSONResponse(hard_delete_identity("tenant", tenant_id))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @app.get("/api/users")
 def api_list_users(tenant_id: int | None = None, include_disabled: bool = True):
-    return JSONResponse({"users": list_users(tenant_id, include_disabled=include_disabled)})
+    return JSONResponse({"users": annotate_delete_flags("user", list_users(tenant_id, include_disabled=include_disabled))})
 
 
 @app.post("/api/users")
@@ -285,6 +311,17 @@ def api_update_user(user_id: int, payload: dict[str, Any] = Body(default_factory
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@app.delete("/api/users/{user_id}")
+def api_delete_user(user_id: int, payload: dict[str, Any] = Body(default_factory=dict)):
+    try:
+        _require_global_admin(payload)
+        return JSONResponse(hard_delete_identity("user", user_id))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @app.post("/api/tenants/{tenant_id}/users/{user_id}")
 def api_add_user_to_tenant(tenant_id: int, user_id: int, payload: dict[str, Any] = Body(default_factory=dict)):
     try:
@@ -300,7 +337,7 @@ def api_add_user_to_tenant(tenant_id: int, user_id: int, payload: dict[str, Any]
 
 @app.get("/api/personas")
 def api_list_personas(tenant_id: int | None = None, include_disabled: bool = True):
-    return JSONResponse({"personas": list_personas(tenant_id, include_disabled=include_disabled)})
+    return JSONResponse({"personas": annotate_delete_flags("persona", list_personas(tenant_id, include_disabled=include_disabled))})
 
 
 @app.post("/api/personas")
@@ -315,5 +352,13 @@ def api_create_persona(payload: dict[str, Any] = Body(default_factory=dict)):
 def api_update_persona(persona_id: int, payload: dict[str, Any] = Body(default_factory=dict)):
     try:
         return JSONResponse(update_persona(persona_id, payload))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.delete("/api/personas/{persona_id}")
+def api_delete_persona(persona_id: int, payload: dict[str, Any] = Body(default_factory=dict)):
+    try:
+        return JSONResponse(hard_delete_identity("persona", persona_id))
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
