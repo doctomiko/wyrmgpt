@@ -84,12 +84,20 @@ class TitleRequest(BaseModel):
 class ChatRequest(BaseModel):
     conversation_id: Optional[str] = None
     model: Optional[str] = None
+    tenant_id: int | None = None
+    user_id: int | None = None
+    persona_id: int | None = None
+    persona_slug: str | None = None
     message: str
 
 class ABChatRequest(BaseModel):
     conversation_id: Optional[str] = None
     model_a: Optional[str] = None
     model_b: Optional[str] = None
+    tenant_id: int | None = None
+    user_id: int | None = None
+    persona_id: int | None = None
+    persona_slug: str | None = None
     message: str
 
 class ABCanonicalRequest(BaseModel):
