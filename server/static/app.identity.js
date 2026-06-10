@@ -4,7 +4,17 @@
 
 (function () {
   const STORE_KEY = "wyrmgpt.identity.selection";
-  const state = { tenants: [], users: [], allUsers: [], personas: [], selection: {} };
+  const CUSTOM_PROMPT_VALUE = "__custom__";
+  const state = {
+    tenants: [],
+    users: [],
+    allUsers: [],
+    personas: [],
+    promptFiles: [],
+    selection: {},
+    editingUserId: null,
+    editingPersonaId: null,
+  };
   const $ = (id) => document.getElementById(id);
 
   function installIdentityRuntimeStyle() {
@@ -59,6 +69,12 @@
         font-size: 0.75rem;
         line-height: 1.4;
       }
+      .identityScopeNote {
+        font-size: 0.72rem;
+        opacity: 0.7;
+        line-height: 1.25;
+      }
+      .identityFormStack button.hidden { display: none; }
     `;
     document.head.appendChild(style);
   }
@@ -68,6 +84,8 @@
     const n = Number(value);
     return Number.isFinite(n) ? Math.trunc(n) : null;
   }
+
+  function boolInt(value) { return value ? 1 : 0; }
 
   function loadStoredSelection() {
     try {
@@ -89,12 +107,12 @@
     return opt;
   }
 
-  function fillSelect(el, rows, labelFn, { blank = false, blankLabel = "—" } = {}) {
+  function fillSelect(el, rows, labelFn, { blank = false, blankLabel = "—", blankValue = "" } = {}) {
     if (!el) return;
     const prev = el.value;
     el.innerHTML = "";
-    if (blank) el.appendChild(option(blankLabel, ""));
-    rows.forEach((row) => el.appendChild(option(labelFn(row), row.id)));
+    if (blank) el.appendChild(option(blankLabel, blankValue));
+    rows.forEach((row) => el.appendChild(option(labelFn(row), row.id ?? row.path ?? row.value)));
     if ([...el.options].some((opt) => opt.value === prev)) el.value = prev;
   }
 
@@ -102,9 +120,31 @@
   function selectedUserId() { return asInt($("identityUserSelect")?.value ?? state.selection.user_id); }
   function selectedPersonaId() { return asInt($("identityPersonaSelect")?.value ?? state.selection.persona_id); }
 
+  function userPool() { return state.allUsers.length ? state.allUsers : state.users; }
+  function activeUser() { return userPool().find((u) => Number(u.id) === Number(selectedUserId())); }
+  function activeUserIsGlobalAdmin() { return Number(activeUser()?.is_global_admin || 0) === 1; }
+
+  function safeRefreshContext() {
+    try {
+      if (typeof window.refreshContext === "function") window.refreshContext().catch?.(() => {});
+      else if (typeof refreshContext === "function") refreshContext().catch?.(() => {});
+    } catch {}
+  }
+
+  function safeCloseTopMenu() {
+    try {
+      if (typeof window.toggleTopMenu === "function") window.toggleTopMenu(false);
+      else if (typeof toggleTopMenu === "function") toggleTopMenu(false);
+    } catch {}
+  }
+
   function usersForTenant(tenantId) {
-    const scoped = tenantId == null ? [] : state.users.filter((u) => Number(u.tenant_id || tenantId) === Number(tenantId));
-    return scoped.length ? scoped : (state.allUsers.length ? state.allUsers : state.users);
+    const pool = userPool();
+    return pool.filter((u) => {
+      if (Number(u.is_global || 0) === 1 || Number(u.is_global_admin || 0) === 1) return true;
+      if (tenantId == null) return false;
+      return Number(u.tenant_id) === Number(tenantId);
+    });
   }
 
   function personasForTenant(tenantId) {
@@ -123,12 +163,11 @@
     const badge = $("identityBadge");
     if (!badge) return;
     const tenant = state.tenants.find((t) => Number(t.id) === Number(selectedTenantId()));
-    const userPool = state.allUsers.length ? state.allUsers : state.users;
-    const user = userPool.find((u) => Number(u.id) === Number(selectedUserId()));
+    const user = userPool().find((u) => Number(u.id) === Number(selectedUserId()));
     const persona = state.personas.find((p) => Number(p.id) === Number(selectedPersonaId()));
     badge.textContent = [
       tenant?.name ? `Tenant: ${tenant.name}` : null,
-      user?.display_name ? `User: ${user.display_name}` : null,
+      user?.display_name ? `User: ${user.display_name}${Number(user.is_global_admin || 0) === 1 ? " (global admin)" : Number(user.is_global || 0) === 1 ? " (global)" : ""}` : null,
       persona?.name ? `Persona: ${persona.name}` : null,
     ].filter(Boolean).join(" · ");
   }
@@ -137,6 +176,7 @@
     state.selection = activeIdentityPayload();
     saveSelection();
     updateBadge();
+    renderManagerButtons();
   }
 
   function renderSelectors() {
@@ -150,12 +190,15 @@
 
     const tenantId = selectedTenantId();
     const users = usersForTenant(tenantId).filter((u) => u.is_enabled !== 0);
-    fillSelect(userSelect, users, (u) => u.display_name || u.handle || `User ${u.id}`);
+    fillSelect(userSelect, users, (u) => {
+      const scope = Number(u.is_global_admin || 0) === 1 ? " · global admin" : Number(u.is_global || 0) === 1 ? " · global" : "";
+      return `${u.display_name || u.slug || u.handle || `User ${u.id}`}${scope}`;
+    });
     if (userSelect && state.selection.user_id != null) userSelect.value = String(state.selection.user_id);
     if (userSelect && !userSelect.value && users[0]) userSelect.value = String(users[0].id);
 
     const personas = personasForTenant(tenantId);
-    fillSelect(personaSelect, personas, (p) => p.tenant_name ? `${p.name} · ${p.tenant_name}` : p.name);
+    fillSelect(personaSelect, personas, (p) => p.tenant_name ? `${p.name} · ${p.tenant_name}` : `${p.name} · global`);
     if (personaSelect && state.selection.persona_id != null) personaSelect.value = String(state.selection.persona_id);
     if (personaSelect && !personaSelect.value && personas[0]) personaSelect.value = String(personas[0].id);
     syncSelectionFromControls();
@@ -164,6 +207,14 @@
   async function putJson(url, payload) {
     return await fetchJsonDebug(url, {
       method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload || {}),
+    });
+  }
+
+  async function postJson(url, payload) {
+    return await fetchJsonDebug(url, {
+      method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload || {}),
     });
@@ -183,12 +234,10 @@
     rows.forEach((row) => {
       const item = document.createElement("div");
       item.className = "identityListItem";
-
       const label = document.createElement("div");
       label.className = "identityListLabel";
       label.textContent = labelFn(row);
       item.appendChild(label);
-
       const actionWrap = document.createElement("div");
       actionWrap.className = "identityListActions";
       if (actions.edit) {
@@ -210,7 +259,67 @@
     });
   }
 
+  function fillPromptFileSelect(selectedValue = CUSTOM_PROMPT_VALUE) {
+    const el = $("identityNewPersonaPromptFile");
+    if (!el) return;
+    el.innerHTML = "";
+    el.appendChild(option("Provide Custom Prompt", CUSTOM_PROMPT_VALUE));
+    (state.promptFiles || []).forEach((p) => el.appendChild(option(p.name || p.path, p.path)));
+    el.value = selectedValue || CUSTOM_PROMPT_VALUE;
+    updatePromptTextareaState();
+  }
+
+  function updatePromptTextareaState() {
+    const choice = $("identityNewPersonaPromptFile")?.value || CUSTOM_PROMPT_VALUE;
+    const textarea = $("identityNewPersonaPrompt");
+    if (!textarea) return;
+    const custom = choice === CUSTOM_PROMPT_VALUE;
+    textarea.disabled = !custom;
+    textarea.placeholder = custom ? "Optional custom persona system prompt" : "Using selected prompt file from ./prompts";
+    if (!custom) textarea.value = "";
+  }
+
+  function resetUserForm() {
+    state.editingUserId = null;
+    if ($("identityNewUserTenant") && selectedTenantId() != null) $("identityNewUserTenant").value = String(selectedTenantId());
+    if ($("identityNewUserGlobal")) $("identityNewUserGlobal").checked = false;
+    if ($("identityNewUserGlobalAdmin")) $("identityNewUserGlobalAdmin").checked = false;
+    if ($("identityNewUserName")) $("identityNewUserName").value = "";
+    if ($("identityNewUserSlug")) $("identityNewUserSlug").value = "";
+    renderManagerButtons();
+  }
+
+  function resetPersonaForm() {
+    state.editingPersonaId = null;
+    if ($("identityNewPersonaTenant") && selectedTenantId() != null) $("identityNewPersonaTenant").value = String(selectedTenantId());
+    if ($("identityNewPersonaName")) $("identityNewPersonaName").value = "";
+    if ($("identityNewPersonaSlug")) $("identityNewPersonaSlug").value = "";
+    if ($("identityNewPersonaDescription")) $("identityNewPersonaDescription").value = "";
+    if ($("identityNewPersonaPrompt")) $("identityNewPersonaPrompt").value = "";
+    fillPromptFileSelect(CUSTOM_PROMPT_VALUE);
+    renderManagerButtons();
+  }
+
+  function renderManagerButtons() {
+    const isAdmin = activeUserIsGlobalAdmin();
+    const userScopeControls = [$("identityNewUserTenant"), $("identityNewUserGlobal"), $("identityNewUserGlobalAdmin")];
+    userScopeControls.forEach((el) => { if (el) el.disabled = !isAdmin; });
+    if ($("identityCreateUser")) $("identityCreateUser").textContent = state.editingUserId ? "Update User" : "Create User";
+    if ($("identityCancelUserEdit")) $("identityCancelUserEdit").classList.toggle("hidden", !state.editingUserId);
+    if ($("identityCreatePersona")) $("identityCreatePersona").textContent = state.editingPersonaId ? "Update Persona" : "Create Persona";
+    if ($("identityCancelPersonaEdit")) $("identityCancelPersonaEdit").classList.toggle("hidden", !state.editingPersonaId);
+    let note = $("identityUserScopeNote");
+    if (!note && $("identityNewUserTenant")?.parentElement) {
+      note = document.createElement("div");
+      note.id = "identityUserScopeNote";
+      note.className = "identityScopeNote";
+      $("identityNewUserTenant").parentElement.appendChild(note);
+    }
+    if (note) note.textContent = isAdmin ? "Global admin mode: user tenant/global/admin status may be changed." : "User scope controls are locked unless the selected user is a global admin.";
+  }
+
   function renderManager() {
+    const tenantId = selectedTenantId();
     renderList(
       "identityTenantList",
       state.tenants,
@@ -219,20 +328,25 @@
     );
     renderList(
       "identityUserList",
-      state.allUsers.length ? state.allUsers : state.users,
-      (u) => `${u.display_name || `User ${u.id}`}${u.handle ? ` · @${u.handle}` : ""}${u.tenant_role ? ` · ${u.tenant_role}` : ""}${u.is_enabled === 0 ? " · disabled" : ""}`,
+      usersForTenant(tenantId),
+      (u) => {
+        const scope = Number(u.is_global_admin || 0) === 1 ? "global admin" : Number(u.is_global || 0) === 1 ? "global" : (u.tenant_name || `tenant ${u.tenant_id || "?"}`);
+        return `${u.display_name || `User ${u.id}`} · ${u.slug || u.handle || "user"} · ${scope}${u.is_enabled === 0 ? " · disabled" : ""}`;
+      },
       { edit: editUser, toggle: toggleUser }
     );
     renderList(
       "identityPersonaList",
       state.personas,
-      (p) => `${p.name || `Persona ${p.id}`} · ${p.slug || "persona"}${p.tenant_name ? ` · ${p.tenant_name}` : " · global"}${p.is_enabled === 0 ? " · disabled" : ""}`,
+      (p) => `${p.name || `Persona ${p.id}`} · ${p.slug || "persona"}${p.tenant_name ? ` · ${p.tenant_name}` : " · global"}${p.prompt_file ? ` · ${p.prompt_file}` : ""}${p.is_enabled === 0 ? " · disabled" : ""}`,
       { edit: editPersona, toggle: togglePersona }
     );
     fillSelect($("identityNewUserTenant"), state.tenants.filter((t) => t.is_enabled !== 0), (t) => t.name || `Tenant ${t.id}`);
     fillSelect($("identityNewPersonaTenant"), state.tenants.filter((t) => t.is_enabled !== 0), (t) => t.name || `Tenant ${t.id}`, { blank: true, blankLabel: "Global persona" });
-    if ($("identityNewUserTenant") && selectedTenantId() != null) $("identityNewUserTenant").value = String(selectedTenantId());
-    if ($("identityNewPersonaTenant") && selectedTenantId() != null) $("identityNewPersonaTenant").value = String(selectedTenantId());
+    fillPromptFileSelect($("identityNewPersonaPromptFile")?.value || CUSTOM_PROMPT_VALUE);
+    if (!state.editingUserId && $("identityNewUserTenant") && selectedTenantId() != null) $("identityNewUserTenant").value = String(selectedTenantId());
+    if (!state.editingPersonaId && $("identityNewPersonaTenant") && selectedTenantId() != null) $("identityNewPersonaTenant").value = String(selectedTenantId());
+    renderManagerButtons();
   }
 
   async function loadIdentity() {
@@ -242,6 +356,7 @@
     state.users = data.users || [];
     state.allUsers = data.all_users || data.users || [];
     state.personas = data.personas || [];
+    state.promptFiles = data.prompt_files || [];
     state.selection = {
       tenant_id: asInt(stored.tenant_id ?? data.defaults?.tenant_id),
       user_id: asInt(stored.user_id ?? data.defaults?.user_id),
@@ -266,31 +381,96 @@
     const name = ($("identityNewTenantName")?.value || "").trim();
     const kind = ($("identityNewTenantKind")?.value || "local").trim();
     if (!name) return alert("Tenant name required.");
-    await fetchJsonDebug("/api/tenants", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, kind }) });
+    await postJson("/api/tenants", { name, kind });
     $("identityNewTenantName").value = "";
     await loadIdentity();
   }
 
-  async function createUser() {
-    const display_name = ($("identityNewUserName")?.value || "").trim();
-    const handle = ($("identityNewUserHandle")?.value || "").trim();
-    const tenant_id = asInt($("identityNewUserTenant")?.value);
-    if (!display_name) return alert("User display name required.");
-    await fetchJsonDebug("/api/users", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ display_name, handle, tenant_id }) });
-    $("identityNewUserName").value = "";
-    $("identityNewUserHandle").value = "";
+  function buildUserPayload() {
+    const isAdmin = activeUserIsGlobalAdmin();
+    const payload = {
+      display_name: ($("identityNewUserName")?.value || "").trim(),
+      slug: ($("identityNewUserSlug")?.value || "").trim(),
+      acting_user_id: selectedUserId(),
+    };
+    if (isAdmin) {
+      const isGlobalAdmin = !!$("identityNewUserGlobalAdmin")?.checked;
+      const isGlobal = isGlobalAdmin || !!$("identityNewUserGlobal")?.checked;
+      payload.is_global_admin = isGlobalAdmin;
+      payload.is_global = isGlobal;
+      payload.tenant_id = isGlobal ? null : asInt($("identityNewUserTenant")?.value);
+      payload.role = isGlobalAdmin ? "global_admin" : "member";
+    }
+    return payload;
+  }
+
+  async function saveUser() {
+    const payload = buildUserPayload();
+    if (!payload.display_name) return alert("User display name required.");
+    if (state.editingUserId) await putJson(`/api/users/${encodeURIComponent(state.editingUserId)}`, payload);
+    else await postJson("/api/users", payload);
+    resetUserForm();
     await loadIdentity();
   }
 
-  async function createPersona() {
-    const name = ($("identityNewPersonaName")?.value || "").trim();
-    const slug = ($("identityNewPersonaSlug")?.value || "").trim();
-    const tenant_id = asInt($("identityNewPersonaTenant")?.value);
-    const description = ($("identityNewPersonaDescription")?.value || "").trim();
-    const system_prompt = ($("identityNewPersonaPrompt")?.value || "").trim();
-    if (!name) return alert("Persona name required.");
-    await fetchJsonDebug("/api/personas", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, slug, tenant_id, description, system_prompt }) });
-    ["identityNewPersonaName", "identityNewPersonaSlug", "identityNewPersonaDescription", "identityNewPersonaPrompt"].forEach((fieldId) => { if ($(fieldId)) $(fieldId).value = ""; });
+  function editUser(row) {
+    state.editingUserId = row.id;
+    if ($("identityNewUserName")) $("identityNewUserName").value = row.display_name || "";
+    if ($("identityNewUserSlug")) $("identityNewUserSlug").value = row.slug || row.handle || "";
+    if ($("identityNewUserTenant")) $("identityNewUserTenant").value = row.tenant_id == null ? "" : String(row.tenant_id);
+    if ($("identityNewUserGlobal")) $("identityNewUserGlobal").checked = Number(row.is_global || 0) === 1;
+    if ($("identityNewUserGlobalAdmin")) $("identityNewUserGlobalAdmin").checked = Number(row.is_global_admin || 0) === 1;
+    renderManagerButtons();
+  }
+
+  async function toggleUser(row) {
+    const next = row.is_enabled === 0;
+    if (!next && !confirm(`Disable user “${row.display_name || row.id}”? Existing messages will keep their identity history.`)) return;
+    await putJson(`/api/users/${encodeURIComponent(row.id)}`, { is_enabled: next, acting_user_id: selectedUserId() });
+    await loadIdentity();
+  }
+
+  function buildPersonaPayload() {
+    const promptChoice = $("identityNewPersonaPromptFile")?.value || CUSTOM_PROMPT_VALUE;
+    const custom = promptChoice === CUSTOM_PROMPT_VALUE;
+    return {
+      tenant_id: asInt($("identityNewPersonaTenant")?.value),
+      name: ($("identityNewPersonaName")?.value || "").trim(),
+      slug: ($("identityNewPersonaSlug")?.value || "").trim(),
+      description: ($("identityNewPersonaDescription")?.value || "").trim(),
+      prompt_file: custom ? null : promptChoice,
+      system_prompt: custom ? ($("identityNewPersonaPrompt")?.value || "").trim() : "",
+    };
+  }
+
+  async function savePersona() {
+    const payload = buildPersonaPayload();
+    if (!payload.name) return alert("Persona name required.");
+    if (state.editingPersonaId) await putJson(`/api/personas/${encodeURIComponent(state.editingPersonaId)}`, payload);
+    else await postJson("/api/personas", payload);
+    resetPersonaForm();
+    await loadIdentity();
+  }
+
+  function editPersona(row) {
+    state.editingPersonaId = row.id;
+    if ($("identityNewPersonaTenant")) $("identityNewPersonaTenant").value = row.tenant_id == null ? "" : String(row.tenant_id);
+    if ($("identityNewPersonaName")) $("identityNewPersonaName").value = row.name || "";
+    if ($("identityNewPersonaSlug")) $("identityNewPersonaSlug").value = row.slug || "";
+    if ($("identityNewPersonaDescription")) $("identityNewPersonaDescription").value = row.description || "";
+    if (row.prompt_file) {
+      fillPromptFileSelect(row.prompt_file);
+    } else {
+      fillPromptFileSelect(CUSTOM_PROMPT_VALUE);
+      if ($("identityNewPersonaPrompt")) $("identityNewPersonaPrompt").value = row.system_prompt || "";
+    }
+    renderManagerButtons();
+  }
+
+  async function togglePersona(row) {
+    const next = row.is_enabled === 0;
+    if (!next && !confirm(`Disable persona “${row.name || row.id}”? Existing messages will keep their persona history.`)) return;
+    await putJson(`/api/personas/${encodeURIComponent(row.id)}`, { is_enabled: next });
     await loadIdentity();
   }
 
@@ -307,47 +487,6 @@
     const next = row.is_enabled === 0;
     if (!next && !confirm(`Disable tenant “${row.name || row.id}”? Existing messages will keep their identity history.`)) return;
     await putJson(`/api/tenants/${encodeURIComponent(row.id)}`, { is_enabled: next });
-    await loadIdentity();
-  }
-
-  async function editUser(row) {
-    const display_name = prompt("User display name:", row.display_name || "");
-    if (display_name === null) return;
-    const handle = prompt("User handle:", row.handle || "");
-    if (handle === null) return;
-    await putJson(`/api/users/${encodeURIComponent(row.id)}`, { display_name: display_name.trim(), handle: handle.trim() });
-    await loadIdentity();
-  }
-
-  async function toggleUser(row) {
-    const next = row.is_enabled === 0;
-    if (!next && !confirm(`Disable user “${row.display_name || row.id}”? Existing messages will keep their identity history.`)) return;
-    await putJson(`/api/users/${encodeURIComponent(row.id)}`, { is_enabled: next });
-    await loadIdentity();
-  }
-
-  async function editPersona(row) {
-    const name = prompt("Persona name:", row.name || "");
-    if (name === null) return;
-    const slug = prompt("Persona slug:", row.slug || "");
-    if (slug === null) return;
-    const description = prompt("Persona description:", row.description || "");
-    if (description === null) return;
-    const system_prompt = prompt("Persona system prompt:", row.system_prompt || "");
-    if (system_prompt === null) return;
-    await putJson(`/api/personas/${encodeURIComponent(row.id)}`, {
-      name: name.trim(),
-      slug: slug.trim(),
-      description: description.trim(),
-      system_prompt: system_prompt.trim(),
-    });
-    await loadIdentity();
-  }
-
-  async function togglePersona(row) {
-    const next = row.is_enabled === 0;
-    if (!next && !confirm(`Disable persona “${row.name || row.id}”? Existing messages will keep their persona history.`)) return;
-    await putJson(`/api/personas/${encodeURIComponent(row.id)}`, { is_enabled: next });
     await loadIdentity();
   }
 
@@ -381,16 +520,22 @@
   }
 
   function bind() {
-    $("identityTenantSelect")?.addEventListener("change", () => { state.selection.tenant_id = selectedTenantId(); state.selection.user_id = null; state.selection.persona_id = null; renderSelectors(); refreshContext?.().catch?.(() => {}); });
-    $("identityUserSelect")?.addEventListener("change", () => { syncSelectionFromControls(); refreshContext?.().catch?.(() => {}); });
-    $("identityPersonaSelect")?.addEventListener("change", () => { syncSelectionFromControls(); refreshContext?.().catch?.(() => {}); });
-    $("manageIdentityTop")?.addEventListener("click", () => { openIdentityModal(); toggleTopMenu?.(false); });
+    $("identityTenantSelect")?.addEventListener("change", () => { state.selection.tenant_id = selectedTenantId(); state.selection.user_id = null; state.selection.persona_id = null; renderSelectors(); renderManager(); safeRefreshContext(); });
+    $("identityUserSelect")?.addEventListener("change", () => { syncSelectionFromControls(); renderManager(); safeRefreshContext(); });
+    $("identityPersonaSelect")?.addEventListener("change", () => { syncSelectionFromControls(); safeRefreshContext(); });
+    $("manageIdentityTop")?.addEventListener("click", () => { openIdentityModal(); safeCloseTopMenu(); });
     $("identityClose")?.addEventListener("click", closeIdentityModal);
     $("identityCloseBottom")?.addEventListener("click", closeIdentityModal);
     $("identityModal")?.querySelector(".modalBackdrop")?.addEventListener("click", closeIdentityModal);
     $("identityCreateTenant")?.addEventListener("click", () => createTenant().catch((e) => alert(`Failed to create tenant: ${e?.message || e}`)));
-    $("identityCreateUser")?.addEventListener("click", () => createUser().catch((e) => alert(`Failed to create user: ${e?.message || e}`)));
-    $("identityCreatePersona")?.addEventListener("click", () => createPersona().catch((e) => alert(`Failed to create persona: ${e?.message || e}`)));
+    $("identityCreateUser")?.addEventListener("click", () => saveUser().catch((e) => alert(`Failed to save user: ${e?.message || e}`)));
+    $("identityCancelUserEdit")?.addEventListener("click", resetUserForm);
+    $("identityCreatePersona")?.addEventListener("click", () => savePersona().catch((e) => alert(`Failed to save persona: ${e?.message || e}`)));
+    $("identityCancelPersonaEdit")?.addEventListener("click", resetPersonaForm);
+    $("identityNewPersonaPromptFile")?.addEventListener("change", updatePromptTextareaState);
+    $("identityNewUserGlobalAdmin")?.addEventListener("change", () => {
+      if ($("identityNewUserGlobalAdmin")?.checked && $("identityNewUserGlobal")) $("identityNewUserGlobal").checked = true;
+    });
   }
 
   window.wyrmgptIdentity = { state, loadIdentity, activeIdentityPayload, openIdentityModal };
