@@ -2,10 +2,13 @@ from server.routes.base import app
 from server.api_helpers import promote_targets_for_scope
 from server.db import db_update_conversation_scaffold_event
 from server.logging_helper import log_warn
+from server.identity_seed_guard import install_identity_seed_patch
 from server.identity_db import install_identity_message_patch
 from server.identity_context_patch import install_persona_context_patch
 
 
+# Identity defaults must be patched before any identity schema bootstrap runs.
+install_identity_seed_patch()
 # Identity patch must be installed before chat routes import db_add_message.
 install_identity_message_patch()
 install_persona_context_patch()
