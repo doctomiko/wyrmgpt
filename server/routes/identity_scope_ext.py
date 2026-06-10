@@ -25,7 +25,7 @@ from server.identity_db import (
     update_tenant,
     update_user,
 )
-from server.identity_delete import annotate_delete_flags, hard_delete_identity
+from server.identity_delete import annotate_delete_flags, force_delete_identity, hard_delete_identity
 from server.identity_scope import (
     ensure_identity_scope_schema,
     filter_personas_for_user,
@@ -64,6 +64,7 @@ def _capabilities(user_id: int | None, tenant_id: int | None) -> dict[str, bool]
         "can_set_persona_user": user_id is not None,
         "can_set_persona_tenant": bool(is_global_admin or is_tenant_admin),
         "can_set_persona_global": bool(is_global_admin),
+        "can_force_delete_identity": bool(is_global_admin),
     }
 
 
@@ -79,6 +80,13 @@ def _require_user_manager(payload: dict[str, Any], tenant_id: int | None) -> int
     if not user_can_manage_users(acting_user_id, tenant_id):
         raise HTTPException(status_code=403, detail="Only a global admin or tenant admin can manage users here.")
     return int(acting_user_id)
+
+
+def _delete_or_force(entity_type: str, row_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+    if bool((payload or {}).get("force")):
+        _require_global_admin(payload)
+        return force_delete_identity(entity_type, row_id)
+    return hard_delete_identity(entity_type, row_id)
 
 
 def _persona_rows(tenant_id: int | None, user_id: int | None, include_disabled: bool = True) -> list[dict[str, Any]]:
@@ -139,7 +147,7 @@ def api_scope_update_tenant(tenant_id: int, payload: dict[str, Any] = Body(defau
 def api_scope_delete_tenant(tenant_id: int, payload: dict[str, Any] = Body(default_factory=dict)):
     try:
         _require_global_admin(payload)
-        return JSONResponse(hard_delete_identity("tenant", tenant_id))
+        return JSONResponse(_delete_or_force("tenant", tenant_id, payload))
     except HTTPException:
         raise
     except Exception as exc:
@@ -212,8 +220,11 @@ def api_scope_update_user(user_id: int, payload: dict[str, Any] = Body(default_f
 @app.delete("/api/identity/scope/users/{user_id}")
 def api_scope_delete_user(user_id: int, payload: dict[str, Any] = Body(default_factory=dict)):
     try:
-        _require_user_manager(payload, None)
-        return JSONResponse(hard_delete_identity("user", user_id))
+        if bool((payload or {}).get("force")):
+            _require_global_admin(payload)
+        else:
+            _require_user_manager(payload, None)
+        return JSONResponse(_delete_or_force("user", user_id, payload))
     except HTTPException:
         raise
     except Exception as exc:
@@ -295,9 +306,11 @@ def api_scope_update_persona(persona_id: int, payload: dict[str, Any] = Body(def
 def api_scope_delete_persona(persona_id: int, payload: dict[str, Any] = Body(default_factory=dict)):
     try:
         acting_user_id = _int_or_none(payload.get("acting_user_id"))
-        if not user_can_manage_persona(acting_user_id, persona_id):
+        if bool((payload or {}).get("force")):
+            _require_global_admin(payload)
+        elif not user_can_manage_persona(acting_user_id, persona_id):
             raise HTTPException(status_code=403, detail="You cannot delete this persona.")
-        return JSONResponse(hard_delete_identity("persona", persona_id))
+        return JSONResponse(_delete_or_force("persona", persona_id, payload))
     except HTTPException:
         raise
     except Exception as exc:
