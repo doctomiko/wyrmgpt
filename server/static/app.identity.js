@@ -87,23 +87,19 @@
     const tenantSelect = $("identityTenantSelect");
     const userSelect = $("identityUserSelect");
     const personaSelect = $("identityPersonaSelect");
-
     const tenants = state.tenants.filter((t) => t.is_enabled !== 0);
     fillSelect(tenantSelect, tenants, (t) => t.name || `Tenant ${t.id}`);
     if (tenantSelect && state.selection.tenant_id != null) tenantSelect.value = String(state.selection.tenant_id);
     if (tenantSelect && !tenantSelect.value && tenants[0]) tenantSelect.value = String(tenants[0].id);
-
     const tenantId = selectedTenantId();
     const users = usersForTenant(tenantId).filter((u) => u.is_enabled !== 0);
     fillSelect(userSelect, users, (u) => u.display_name || u.handle || `User ${u.id}`);
     if (userSelect && state.selection.user_id != null) userSelect.value = String(state.selection.user_id);
     if (userSelect && !userSelect.value && users[0]) userSelect.value = String(users[0].id);
-
     const personas = personasForTenant(tenantId);
     fillSelect(personaSelect, personas, (p) => p.tenant_name ? `${p.name} · ${p.tenant_name}` : p.name);
     if (personaSelect && state.selection.persona_id != null) personaSelect.value = String(state.selection.persona_id);
     if (personaSelect && !personaSelect.value && personas[0]) personaSelect.value = String(personas[0].id);
-
     syncSelectionFromControls();
   }
 
@@ -203,11 +199,18 @@
         const url = typeof input === "string" ? input : input?.url || "";
         const path = new URL(url, window.location.origin).pathname;
         const method = String(init?.method || input?.method || "GET").toUpperCase();
-        if (method === "POST" && (path === "/api/chat" || path === "/api/chat_ab") && init && typeof init.body === "string") {
-          const body = JSON.parse(init.body || "{}");
-          if (body && typeof body === "object" && !Array.isArray(body)) {
-            init = { ...init, body: JSON.stringify({ ...activeIdentityPayload(), ...body }) };
+        if (method === "POST" && (path === "/api/chat" || path === "/api/chat_ab") && init) {
+          const identity = activeIdentityPayload();
+          const headers = new Headers(init.headers || {});
+          if (identity.tenant_id != null) headers.set("X-WyrmGPT-Tenant-Id", String(identity.tenant_id));
+          if (identity.user_id != null) headers.set("X-WyrmGPT-User-Id", String(identity.user_id));
+          if (identity.persona_id != null) headers.set("X-WyrmGPT-Persona-Id", String(identity.persona_id));
+          if (identity.persona_slug) headers.set("X-WyrmGPT-Persona-Slug", String(identity.persona_slug));
+          if (typeof init.body === "string") {
+            const body = JSON.parse(init.body || "{}");
+            if (body && typeof body === "object" && !Array.isArray(body)) init.body = JSON.stringify({ ...identity, ...body });
           }
+          init = { ...init, headers };
         }
       } catch (e) {
         console.warn("identity fetch patch skipped", e);
