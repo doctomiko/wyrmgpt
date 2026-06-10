@@ -29,6 +29,49 @@
     return identityState().editingUserId || null;
   }
 
+  function userPool() {
+    const state = identityState();
+    return state.allUsers?.length ? state.allUsers : state.users || [];
+  }
+
+  function selectedTenantId() {
+    return activeIdentity().tenant_id;
+  }
+
+  function usersForCurrentTenant() {
+    const tenantId = selectedTenantId();
+    return userPool().filter((u) => {
+      if (Number(u.is_global || 0) === 1 || Number(u.is_global_admin || 0) === 1) return true;
+      if (tenantId == null) return false;
+      return Number(u.tenant_id) === Number(tenantId);
+    });
+  }
+
+  function userScopeLabel(u) {
+    if (Number(u.is_global_admin || 0) === 1) return "global admin";
+    if (Number(u.is_tenant_admin || 0) === 1) return "tenant admin";
+    if (Number(u.is_global || 0) === 1) return "global";
+    return u.tenant_name || `tenant ${u.tenant_id || "?"}`;
+  }
+
+  function userListLabel(u) {
+    return `${u.display_name || `User ${u.id}`} · ${u.slug || u.handle || "user"} · ${userScopeLabel(u)}${u.is_enabled === 0 ? " · disabled" : ""}${u.reference_count ? ` · refs=${u.reference_count}` : ""}`;
+  }
+
+  function identifyClickedUserFromEditButton(button) {
+    const row = button?.closest?.("#identityUserList .identityListItem");
+    if (!row) return null;
+    const label = row.querySelector(".identityListLabel")?.textContent || "";
+    const byLabel = usersForCurrentTenant().find((u) => userListLabel(u) === label);
+    if (byLabel) return byLabel;
+
+    const items = [...document.querySelectorAll("#identityUserList .identityListItem")];
+    const idx = items.indexOf(row);
+    const rows = usersForCurrentTenant();
+    if (idx >= 0 && idx < rows.length) return rows[idx];
+    return null;
+  }
+
   function updateAboutYouTitle(user) {
     const section = document.getElementById("aboutYouNickname")?.closest(".memSection");
     if (!section) return;
@@ -189,8 +232,7 @@
     if ($("identityAboutAge")) $("identityAboutAge").value = data.age || "";
     if ($("identityAboutOccupation")) $("identityAboutOccupation").value = data.occupation || "";
     if ($("identityAboutMore")) $("identityAboutMore").value = data.more_about_you || "";
-    const pool = identityState().allUsers?.length ? identityState().allUsers : identityState().users || [];
-    const user = pool.find((u) => Number(u.id) === Number(userId));
+    const user = userPool().find((u) => Number(u.id) === Number(userId));
     updateManagedAboutNote(user || { id: userId });
   }
 
@@ -281,14 +323,14 @@
     document.addEventListener("click", (event) => {
       const target = event.target;
       if (!(target instanceof HTMLElement)) return;
-      if (target.textContent === "Edit" && target.closest("#identityUserList")) {
-        setTimeout(() => {
-          const editing = currentEditingUserId();
-          setUserSaveButtonLabels();
-          if (editing) loadManagedAboutForUser(editing).catch((e) => console.warn("load edited user's About You failed", e));
-        }, 0);
-      }
-    });
+      if (target.textContent !== "Edit" || !target.closest("#identityUserList")) return;
+      const clickedUser = identifyClickedUserFromEditButton(target);
+      if (!clickedUser) return;
+      setTimeout(() => {
+        setUserSaveButtonLabels();
+        loadManagedAboutForUser(clickedUser.id).catch((e) => console.warn("load edited user's About You failed", e));
+      }, 0);
+    }, true);
   }
 
   window.wyrmgptUserProfiles = {
