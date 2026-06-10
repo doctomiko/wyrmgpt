@@ -17,7 +17,7 @@ _DEFAULT_ADMIN_NAME = "Admin"
 _DEFAULT_TENANT_NAME = "Local"
 _DEFAULT_PERSONA_NAME = "Callie"
 _DEFAULT_PERSONA_SLUG = "callie"
-_DEFAULT_PERSONA_PROMPT_FILE = "prompts/Callie3rd.txt"
+_DEFAULT_PERSONA_PROMPT_FILE = "prompts/callie3rd_prompt.txt"
 
 _INSTALLED = False
 
