@@ -142,6 +142,20 @@ def _inject_identity_ui(html: str) -> str:
     return html
 
 
+def _headers_identity_payload(request: Request) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for header_name, key in (
+        ("x-wyrmgpt-tenant-id", "tenant_id"),
+        ("x-wyrmgpt-user-id", "user_id"),
+        ("x-wyrmgpt-persona-id", "persona_id"),
+        ("x-wyrmgpt-persona-slug", "persona_slug"),
+    ):
+        value = request.headers.get(header_name)
+        if value is not None and str(value).strip() != "":
+            payload[key] = value
+    return payload
+
+
 @app.middleware("http")
 async def identity_context_middleware(request: Request, call_next):
     """Inject identity UI and capture active identity for chat requests."""
@@ -152,15 +166,16 @@ async def identity_context_middleware(request: Request, call_next):
             return HTMLResponse(_inject_identity_ui(raw))
 
         if request.method.upper() == "POST" and request.url.path in {"/api/chat", "/api/chat_ab"}:
-            payload: dict[str, Any] = {}
-            try:
-                raw = await request.body()
-                if raw:
-                    parsed = json.loads(raw.decode("utf-8"))
-                    if isinstance(parsed, dict):
-                        payload = parsed
-            except Exception:
-                payload = {}
+            payload = _headers_identity_payload(request)
+            if not payload:
+                try:
+                    raw = await request.body()
+                    if raw:
+                        parsed = json.loads(raw.decode("utf-8"))
+                        if isinstance(parsed, dict):
+                            payload = parsed
+                except Exception:
+                    payload = {}
             token = set_active_identity(normalize_identity_payload(payload))
         response = await call_next(request)
         return response
