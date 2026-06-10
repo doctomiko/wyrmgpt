@@ -4,6 +4,7 @@
 
 (function () {
   const $ = (id) => document.getElementById(id);
+  let managedAboutUserId = null;
 
   function identityState() {
     return window.wyrmgptIdentity?.state || {};
@@ -24,15 +25,12 @@
     return pool.find((u) => Number(u.id) === Number(identity.user_id));
   }
 
-  function usersManageableFromUserModal() {
-    const state = identityState();
-    const caps = state.capabilities || {};
-    if (caps.is_global_admin) return state.allUsers?.length ? state.allUsers : state.users || [];
-    return state.users || [];
+  function currentEditingUserId() {
+    return identityState().editingUserId || null;
   }
 
   function updateAboutYouTitle(user) {
-    const section = window.aboutYouSectionEl || document.getElementById("aboutYouNickname")?.closest(".memSection");
+    const section = document.getElementById("aboutYouNickname")?.closest(".memSection");
     if (!section) return;
     const title = section.querySelector(".memTitle");
     if (title) title.textContent = `About You — ${user?.display_name || "selected user"}`;
@@ -79,16 +77,52 @@
       alert("Pick an active user before saving About You.");
       return;
     }
-    const payload = {
-      nickname: (window.aboutYouNicknameEl?.value || $("aboutYouNickname")?.value || "").trim(),
-      age: (window.aboutYouAgeEl?.value || $("aboutYouAge")?.value || "").trim(),
-      occupation: (window.aboutYouOccupationEl?.value || $("aboutYouOccupation")?.value || "").trim(),
-      more_about_you: (window.aboutYouMoreEl?.value || $("aboutYouMore")?.value || "").trim(),
-    };
+    const payload = readPersonalizationAboutFields();
     await saveUserAboutYou(ident.user_id, ident.user_id, payload);
     if (typeof window.loadPersonalization === "function") await window.loadPersonalization();
     if (typeof window.refreshContext === "function") await window.refreshContext();
   };
+
+  function readPersonalizationAboutFields() {
+    return {
+      nickname: ($("aboutYouNickname")?.value || "").trim(),
+      age: ($("aboutYouAge")?.value || "").trim(),
+      occupation: ($("aboutYouOccupation")?.value || "").trim(),
+      more_about_you: ($("aboutYouMore")?.value || "").trim(),
+    };
+  }
+
+  function readManagedAboutFields() {
+    return {
+      nickname: ($("identityAboutNickname")?.value || "").trim(),
+      age: ($("identityAboutAge")?.value || "").trim(),
+      occupation: ($("identityAboutOccupation")?.value || "").trim(),
+      more_about_you: ($("identityAboutMore")?.value || "").trim(),
+    };
+  }
+
+  function hasAnyAboutFields(payload) {
+    return !!(payload?.nickname || payload?.age || payload?.occupation || payload?.more_about_you);
+  }
+
+  function clearManagedAboutFields() {
+    managedAboutUserId = null;
+    if ($("identityAboutNickname")) $("identityAboutNickname").value = "";
+    if ($("identityAboutAge")) $("identityAboutAge").value = "";
+    if ($("identityAboutOccupation")) $("identityAboutOccupation").value = "";
+    if ($("identityAboutMore")) $("identityAboutMore").value = "";
+    updateManagedAboutNote(null);
+  }
+
+  function updateManagedAboutNote(user) {
+    const note = $("identityAboutNote");
+    if (!note) return;
+    if (user) {
+      note.textContent = `Editing About You for ${user.display_name || user.slug || user.id}.`;
+    } else {
+      note.textContent = "For a new user, these fields will be saved after the user record is created.";
+    }
+  }
 
   function ensureManageUserAboutPanel() {
     const modal = $("identityUserModal");
@@ -100,81 +134,158 @@
     panel.className = "identityManagerCol";
     panel.innerHTML = `
       <h3>About This User</h3>
-      <div class="identityFormStack">
-        <select id="identityAboutUserSelect"></select>
-        <input id="identityAboutNickname" placeholder="Nickname" />
-        <input id="identityAboutAge" placeholder="Approximate age" />
-        <textarea id="identityAboutOccupation" rows="2" placeholder="Occupation"></textarea>
-        <textarea id="identityAboutMore" rows="5" placeholder="More about this user"></textarea>
-        <button id="identityAboutSave">Save About This User</button>
-        <div id="identityAboutNote" class="identityScopeNote"></div>
+      <div class="identityAboutGrid">
+        <label>
+          Nickname
+          <input id="identityAboutNickname" placeholder="Nickname" />
+        </label>
+        <label>
+          Approximate Age
+          <input id="identityAboutAge" placeholder="Approximate age" />
+        </label>
+        <label class="span2">
+          Occupation
+          <textarea id="identityAboutOccupation" rows="4" placeholder="Occupation"></textarea>
+        </label>
+        <label class="span2">
+          More About This User
+          <textarea id="identityAboutMore" rows="8" placeholder="Anything enduring, useful, or identity-shaping about this user."></textarea>
+        </label>
+        <div class="span2">
+          <button id="identitySaveUserBottom">Create User</button>
+          <div id="identityAboutNote" class="identityScopeNote"></div>
+        </div>
       </div>
     `;
     bodyGrid.appendChild(panel);
-    $("identityAboutUserSelect")?.addEventListener("change", () => loadManageUserAbout().catch((e) => alert(`Failed to load About You: ${e?.message || e}`)));
-    $("identityAboutSave")?.addEventListener("click", () => saveManageUserAbout().catch((e) => alert(`Failed to save About You: ${e?.message || e}`)));
+
+    const styleId = "identityAboutUserStyle";
+    if (!document.getElementById(styleId)) {
+      const style = document.createElement("style");
+      style.id = styleId;
+      style.textContent = `
+        #identityManageUserAboutPanel { grid-column: 1 / -1; }
+        .identityAboutGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+        .identityAboutGrid label { display: grid; gap: 4px; }
+        .identityAboutGrid .span2 { grid-column: 1 / -1; }
+        .identityAboutGrid input, .identityAboutGrid textarea { width: 100%; box-sizing: border-box; }
+        @media (max-width: 800px) { .identityAboutGrid { grid-template-columns: 1fr; } .identityAboutGrid .span2 { grid-column: auto; } }
+      `;
+      document.head.appendChild(style);
+    }
+    $("identitySaveUserBottom")?.addEventListener("click", interceptUserSave, true);
   }
 
-  function fillManageAboutUserSelect(preferUserId = null) {
+  async function loadManagedAboutForUser(userId) {
     ensureManageUserAboutPanel();
-    const select = $("identityAboutUserSelect");
-    if (!select) return;
-    const prev = preferUserId || select.value || activeIdentity().user_id;
-    const users = usersManageableFromUserModal();
-    select.innerHTML = "";
-    users.forEach((u) => {
-      const opt = document.createElement("option");
-      opt.value = String(u.id);
-      const role = Number(u.is_global_admin || 0) === 1 ? "global admin" : Number(u.is_tenant_admin || 0) === 1 ? "tenant admin" : Number(u.is_global || 0) === 1 ? "global" : u.tenant_name || "tenant user";
-      opt.textContent = `${u.display_name || u.slug || `User ${u.id}`} · ${role}`;
-      select.appendChild(opt);
-    });
-    if ([...select.options].some((opt) => opt.value === String(prev))) select.value = String(prev);
-  }
-
-  async function loadManageUserAbout(preferUserId = null) {
-    fillManageAboutUserSelect(preferUserId);
-    const targetUserId = Number($("identityAboutUserSelect")?.value || 0);
     const actorUserId = activeIdentity().user_id;
-    if (!targetUserId) return;
-    const data = await fetchUserAboutYou(targetUserId, actorUserId);
+    if (!userId) {
+      clearManagedAboutFields();
+      return;
+    }
+    managedAboutUserId = Number(userId);
+    const data = await fetchUserAboutYou(userId, actorUserId);
     if ($("identityAboutNickname")) $("identityAboutNickname").value = data.nickname || "";
     if ($("identityAboutAge")) $("identityAboutAge").value = data.age || "";
     if ($("identityAboutOccupation")) $("identityAboutOccupation").value = data.occupation || "";
     if ($("identityAboutMore")) $("identityAboutMore").value = data.more_about_you || "";
-    const user = usersManageableFromUserModal().find((u) => Number(u.id) === Number(targetUserId));
-    if ($("identityAboutNote")) $("identityAboutNote").textContent = `Editing About You for ${user?.display_name || targetUserId}.`;
+    const pool = identityState().allUsers?.length ? identityState().allUsers : identityState().users || [];
+    const user = pool.find((u) => Number(u.id) === Number(userId));
+    updateManagedAboutNote(user || { id: userId });
   }
 
-  async function saveManageUserAbout() {
-    const targetUserId = Number($("identityAboutUserSelect")?.value || 0);
-    const actorUserId = activeIdentity().user_id;
-    if (!targetUserId) return;
-    await saveUserAboutYou(targetUserId, actorUserId, {
-      nickname: ($("identityAboutNickname")?.value || "").trim(),
-      age: ($("identityAboutAge")?.value || "").trim(),
-      occupation: ($("identityAboutOccupation")?.value || "").trim(),
-      more_about_you: ($("identityAboutMore")?.value || "").trim(),
-    });
-    if (Number(targetUserId) === Number(activeIdentity().user_id) && typeof window.loadPersonalization === "function") {
-      await window.loadPersonalization();
+  function buildUserPayloadFromForm() {
+    const scopeValue = $("identityUserScope")?.value || "";
+    const globalValue = "__global__";
+    const isGlobal = scopeValue === globalValue;
+    const isGlobalAdmin = isGlobal && !!$("identityUserGlobalAdmin")?.checked;
+    const isTenantAdmin = !isGlobal && !!$("identityUserTenantAdmin")?.checked;
+    return {
+      display_name: ($("identityUserName")?.value || "").trim(),
+      slug: ($("identityUserSlug")?.value || "").trim(),
+      acting_user_id: activeIdentity().user_id,
+      is_global: isGlobal,
+      is_global_admin: isGlobalAdmin,
+      is_tenant_admin: isTenantAdmin,
+      tenant_id: isGlobal ? null : Number(scopeValue || activeIdentity().tenant_id || 0) || null,
+      role: isGlobalAdmin ? "global_admin" : isTenantAdmin ? "tenant_admin" : "member",
+    };
+  }
+
+  function setUserSaveButtonLabels() {
+    const isEdit = !!currentEditingUserId();
+    if ($("identitySaveUserBottom")) $("identitySaveUserBottom").textContent = isEdit ? "Update User" : "Create User";
+  }
+
+  function clearUserFormFieldsAfterCreate() {
+    if ($("identityUserName")) $("identityUserName").value = "";
+    if ($("identityUserSlug")) $("identityUserSlug").value = "";
+    if ($("identityUserTenantAdmin")) $("identityUserTenantAdmin").checked = false;
+    if ($("identityUserGlobalAdmin")) $("identityUserGlobalAdmin").checked = false;
+  }
+
+  async function interceptUserSave(event) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    const editingUserId = currentEditingUserId();
+    const payload = buildUserPayloadFromForm();
+    if (!payload.display_name) {
+      alert("User display name required.");
+      return;
     }
+    const url = editingUserId
+      ? `/api/identity/scope/users/${encodeURIComponent(editingUserId)}`
+      : "/api/identity/scope/users";
+    const method = editingUserId ? "PUT" : "POST";
+    const savedUser = await fetchJsonDebug(url, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    const aboutPayload = readManagedAboutFields();
+    if (savedUser?.id && hasAnyAboutFields(aboutPayload)) {
+      await saveUserAboutYou(savedUser.id, activeIdentity().user_id, aboutPayload);
+    }
+
+    if (window.wyrmgptIdentity?.loadIdentity) await window.wyrmgptIdentity.loadIdentity();
+    if (!editingUserId) {
+      clearUserFormFieldsAfterCreate();
+      clearManagedAboutFields();
+    }
+    setUserSaveButtonLabels();
     if (typeof window.refreshContext === "function") await window.refreshContext();
   }
 
   function installProfileUiHooks() {
     ensureManageUserAboutPanel();
+    $("identitySaveUser")?.addEventListener("click", interceptUserSave, true);
+    $("identitySaveUserBottom")?.addEventListener("click", interceptUserSave, true);
+
     const manageUsers = $("manageUsersTop");
     manageUsers?.addEventListener("click", () => {
-      setTimeout(() => loadManageUserAbout().catch((e) => console.warn("load managed About You failed", e)), 0);
+      setTimeout(() => {
+        setUserSaveButtonLabels();
+        if (currentEditingUserId()) loadManagedAboutForUser(currentEditingUserId()).catch(console.warn);
+        else clearManagedAboutFields();
+      }, 0);
     });
+
+    $("identityCancelUserEdit")?.addEventListener("click", () => {
+      setTimeout(() => {
+        clearManagedAboutFields();
+        setUserSaveButtonLabels();
+      }, 0);
+    });
+
     document.addEventListener("click", (event) => {
       const target = event.target;
       if (!(target instanceof HTMLElement)) return;
       if (target.textContent === "Edit" && target.closest("#identityUserList")) {
         setTimeout(() => {
-          const editing = window.wyrmgptIdentity?.state?.editingUserId;
-          if (editing) loadManageUserAbout(editing).catch((e) => console.warn("load edited user's About You failed", e));
+          const editing = currentEditingUserId();
+          setUserSaveButtonLabels();
+          if (editing) loadManagedAboutForUser(editing).catch((e) => console.warn("load edited user's About You failed", e));
         }, 0);
       }
     });
@@ -183,7 +294,8 @@
   window.wyrmgptUserProfiles = {
     fetchUserAboutYou,
     saveUserAboutYou,
-    loadManageUserAbout,
+    loadManageUserAbout: loadManagedAboutForUser,
+    clearManagedAboutFields,
   };
 
   installProfileUiHooks();
