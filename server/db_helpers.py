@@ -9,7 +9,7 @@ from typing import Any, Callable, Iterable, Iterator
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
@@ -25,6 +25,129 @@ def _utc_now_iso() -> str:
 
 def _sha256_hex(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", errors="strict")).hexdigest()
+
+def _audit_metadata_json(metadata: Any | None) -> str | None:
+    if metadata is None:
+        return None
+    if isinstance(metadata, str):
+        value = metadata.strip()
+        return value or None
+    return json.dumps(metadata, ensure_ascii=False, sort_keys=True)
+
+def ensure_audit_events_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS audit_events (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            event_type TEXT NOT NULL,
+            actor_principal_type TEXT,
+            actor_principal_id TEXT,
+            resource_type TEXT,
+            resource_id TEXT,
+            action TEXT,
+            decision TEXT,
+            reason TEXT,
+            request_id TEXT,
+            source_ip TEXT,
+            user_agent TEXT,
+            metadata_json TEXT,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_audit_events_tenant_created
+            ON audit_events(tenant_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_audit_events_resource
+            ON audit_events(resource_type, resource_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_audit_events_actor
+            ON audit_events(actor_principal_type, actor_principal_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_audit_events_event_type
+            ON audit_events(event_type, created_at);
+        CREATE INDEX IF NOT EXISTS idx_audit_events_request_id
+            ON audit_events(request_id);
+        """
+    )
+
+def log_audit_event(
+    *,
+    event_type: str,
+    tenant_id: str = "default",
+    actor_principal_type: str | None = None,
+    actor_principal_id: str | None = None,
+    resource_type: str | None = None,
+    resource_id: str | None = None,
+    action: str | None = None,
+    decision: str | None = None,
+    reason: str | None = None,
+    request_id: str | None = None,
+    source_ip: str | None = None,
+    user_agent: str | None = None,
+    metadata: Any | None = None,
+    conn: sqlite3.Connection | None = None,
+    raise_on_error: bool = False,
+) -> str | None:
+    event_type = (event_type or "").strip()
+    if not event_type:
+        raise ValueError("event_type is required")
+
+    audit_id = new_uuid()
+    values = (
+        audit_id,
+        (tenant_id or "default").strip() or "default",
+        event_type,
+        (actor_principal_type or "").strip() or None,
+        (actor_principal_id or "").strip() or None,
+        (resource_type or "").strip() or None,
+        (resource_id or "").strip() or None,
+        (action or "").strip() or None,
+        (decision or "").strip() or None,
+        (reason or "").strip() or None,
+        (request_id or "").strip() or None,
+        (source_ip or "").strip() or None,
+        (user_agent or "").strip() or None,
+        _audit_metadata_json(metadata),
+        _utc_now_iso(),
+    )
+
+    def _insert(target: sqlite3.Connection) -> None:
+        target.execute(
+            """
+            INSERT INTO audit_events (
+                id, tenant_id, event_type, actor_principal_type, actor_principal_id,
+                resource_type, resource_id, action, decision, reason, request_id,
+                source_ip, user_agent, metadata_json, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            values,
+        )
+
+    try:
+        if conn is not None:
+            _insert(conn)
+        else:
+            with db_session() as sconn:
+                _insert(sconn)
+    except sqlite3.Error:
+        if raise_on_error:
+            raise
+        return None
+
+    return audit_id
+
+def get_audit_event(audit_id: str, conn: sqlite3.Connection | None = None) -> dict | None:
+    audit_id = (audit_id or "").strip()
+    if not audit_id:
+        return None
+
+    def _fetch(target: sqlite3.Connection) -> dict | None:
+        row = target.execute("SELECT * FROM audit_events WHERE id = ?", (audit_id,)).fetchone()
+        return dict(row) if row else None
+
+    if conn is not None:
+        return _fetch(conn)
+    with db_session() as sconn:
+        return _fetch(sconn)
 
 def ensure_parent_dir(p: Path) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)

@@ -28,7 +28,8 @@ from .db_helpers import (
     _SAFE_ID_RE, DATA_DIR, SCHEMA_VERSION, DB_PATH, 
     _normalize_tags, new_uuid, _sha256_hex, _utc_now_iso, 
     db_session, db_debug_info, _start_schema_init, _end_schema_init, 
-    ensure_parent_dir, _table_exists, _add_column_if_missing, 
+    ensure_parent_dir, _table_exists, _add_column_if_missing,
+    ensure_audit_events_schema,
 )
 # Support legacy migrations from v1-v7. You can remove this after a few releases once most users have migrated or started fresh.
 from .db_migrate import _migrate_schema_legacy
@@ -66,6 +67,9 @@ class FileScope:
 def _migrate_schema_v23(conn) -> None:
     _add_column_if_missing(conn, "files", "meta_json", "TEXT")
 
+def _migrate_schema_v24(conn) -> None:
+    ensure_audit_events_schema(conn)
+
 
 MIGRATIONS: list[tuple[int, Callable]] = [
     (8, _migrate_schema_v8),
@@ -84,6 +88,7 @@ MIGRATIONS: list[tuple[int, Callable]] = [
     (21, _migrate_schema_v21),
     (22, _migrate_schema_v22),
     (23, _migrate_schema_v23),
+    (24, _migrate_schema_v24),
 ]
 
 # endregion
