@@ -438,13 +438,136 @@ def get_global_project_id() -> int:
         now = _utc_now_iso()
         cur = conn.execute(
             """
-            INSERT INTO projects (name, description, is_global, is_hidden, created_at, updated_at)
-            VALUES (?, ?, 1, 1, ?, ?)
+            INSERT INTO projects (
+                name, description, is_global, is_hidden, created_at, updated_at,
+                tenant_id, owner_principal_type, owner_principal_id,
+                created_by_principal_type, created_by_principal_id,
+                source_principal_type, source_principal_id, visibility, sharing_mode
+            )
+            VALUES (?, ?, 1, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            ("Global", "Global shared resources", now, now),
+            ("Global", "Global shared resources", now, now, "default", "user", "local", "user", "local", "user", "local", "private", "owner"),
         )
         newid: int = cur.lastrowid # type: ignore[union-attr]
         return newid
+
+def _default_resource_owner(tenant_id: str | None = None) -> dict:
+    policy = resolve_tenant_policy(tenant_id)
+    return {
+        "tenant_id": (tenant_id or policy.tenant_id or "default").strip() or "default",
+        "owner_principal_type": "user",
+        "owner_principal_id": "local",
+        "created_by_principal_type": "user",
+        "created_by_principal_id": "local",
+        "source_principal_type": "user",
+        "source_principal_id": "local",
+        "visibility": "private",
+        "sharing_mode": "owner",
+    }
+
+def _scope_access_defaults_conn(
+    conn: sqlite3.Connection,
+    *,
+    scope_type: str | None = None,
+    scope_id: int | str | None = None,
+    scope_uuid: str | None = None,
+    tenant_id: str | None = None,
+) -> dict:
+    scope_type = (scope_type or "").strip().lower()
+    defaults = _default_resource_owner(tenant_id)
+
+    if scope_type == "project" and scope_id is not None:
+        row = conn.execute(
+            """
+            SELECT tenant_id, owner_principal_type, owner_principal_id, visibility
+            FROM projects
+            WHERE id = ?
+            """,
+            (int(scope_id),),
+        ).fetchone()
+        if row:
+            defaults.update({
+                "tenant_id": row["tenant_id"] or defaults["tenant_id"],
+                "owner_principal_type": row["owner_principal_type"] or defaults["owner_principal_type"],
+                "owner_principal_id": row["owner_principal_id"] or defaults["owner_principal_id"],
+                "visibility": row["visibility"] or defaults["visibility"],
+                "sharing_mode": "inherit",
+            })
+    elif scope_type in ("conversation", "chat") and scope_uuid:
+        row = conn.execute(
+            """
+            SELECT tenant_id, owner_principal_type, owner_principal_id, visibility
+            FROM conversations
+            WHERE id = ?
+            """,
+            (scope_uuid,),
+        ).fetchone()
+        if row:
+            defaults.update({
+                "tenant_id": row["tenant_id"] or defaults["tenant_id"],
+                "owner_principal_type": row["owner_principal_type"] or defaults["owner_principal_type"],
+                "owner_principal_id": row["owner_principal_id"] or defaults["owner_principal_id"],
+                "visibility": row["visibility"] or defaults["visibility"],
+                "sharing_mode": "inherit",
+            })
+    return defaults
+
+def _access_resource_from_owned_row(resource_type: str, row: sqlite3.Row | dict, inherited_from: list[dict] | None = None) -> dict:
+    return {
+        "resource_type": resource_type,
+        "resource_id": str(row["id"]),
+        "tenant_id": row["tenant_id"] or "default",
+        "owner_principal_type": row["owner_principal_type"],
+        "owner_principal_id": row["owner_principal_id"],
+        "visibility": row["visibility"],
+        "inherited_from": inherited_from or [],
+    }
+
+def db_get_project_access_resource(project_id: int) -> dict | None:
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT id, tenant_id, owner_principal_type, owner_principal_id, visibility FROM projects WHERE id = ?",
+            (int(project_id),),
+        ).fetchone()
+        return _access_resource_from_owned_row("project", row) if row else None
+
+def db_get_file_access_resource(file_id: str) -> dict | None:
+    file_id = (file_id or "").strip()
+    if not file_id:
+        return None
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT * FROM files WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0)",
+            (file_id,),
+        ).fetchone()
+        if not row:
+            return None
+        inherited = []
+        if row["scope_type"] == "project" and row["scope_id"] is not None:
+            inherited.append({"resource_type": "project", "resource_id": str(row["scope_id"])})
+        if row["scope_type"] in ("conversation", "chat") and row["scope_uuid"]:
+            inherited.append({"resource_type": "conversation", "resource_id": row["scope_uuid"]})
+        return _access_resource_from_owned_row("file", row, inherited)
+
+def db_get_artifact_access_resource(artifact_id: str) -> dict | None:
+    artifact_id = (artifact_id or "").strip()
+    if not artifact_id:
+        return None
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT * FROM artifacts WHERE id = ? AND (is_deleted IS NULL OR is_deleted = 0)",
+            (artifact_id,),
+        ).fetchone()
+        if not row:
+            return None
+        inherited = []
+        if (row["source_kind"] or "").startswith("file") and row["source_id"]:
+            inherited.append({"resource_type": "file", "resource_id": row["source_id"]})
+        elif row["scope_type"] == "project" and row["scope_id"] is not None:
+            inherited.append({"resource_type": "project", "resource_id": str(row["scope_id"])})
+        elif row["scope_type"] in ("conversation", "chat") and row["scope_uuid"]:
+            inherited.append({"resource_type": "conversation", "resource_id": row["scope_uuid"]})
+        return _access_resource_from_owned_row("artifact", row, inherited)
 
 def db_get_conversation_project_id(conn, conversation_id: str) -> int | None:
     row = conn.execute(
@@ -465,7 +588,7 @@ def db_get_or_create_project(name: str, visibility: str = "private") -> dict:
 
     with db_session() as conn:
         row = conn.execute(
-            "SELECT id, name, visibility, created_at, updated_at FROM projects WHERE name = ?",
+            "SELECT * FROM projects WHERE name = ?",
             (name,),
         ).fetchone()
         if row:
@@ -475,19 +598,28 @@ def db_get_or_create_project(name: str, visibility: str = "private") -> dict:
                 "visibility": row["visibility"],
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
+                "tenant_id": row["tenant_id"] or "default",
+                "owner_principal_type": row["owner_principal_type"],
+                "owner_principal_id": row["owner_principal_id"],
+                "sharing_mode": row["sharing_mode"],
             }
 
         puuid = str(uuid.uuid4())
         now = _utc_now_iso()
         conn.execute(
             """
-            INSERT INTO projects (uuid, name, visibility, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO projects (
+                uuid, name, visibility, created_at, updated_at, tenant_id,
+                owner_principal_type, owner_principal_id,
+                created_by_principal_type, created_by_principal_id,
+                source_principal_type, source_principal_id, sharing_mode
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (puuid, name, visibility, now, now),
+            (puuid, name, visibility, now, now, "default", "user", "local", "user", "local", "user", "local", "owner"),
         )
         row2 = conn.execute(
-            "SELECT id, name, visibility, created_at, updated_at FROM projects WHERE name = ?",
+            "SELECT * FROM projects WHERE name = ?",
             (name,),
         ).fetchone()
         return {
@@ -496,6 +628,10 @@ def db_get_or_create_project(name: str, visibility: str = "private") -> dict:
             "visibility": row2["visibility"],
             "created_at": row2["created_at"],
             "updated_at": row2["updated_at"],
+            "tenant_id": row2["tenant_id"] or "default",
+            "owner_principal_type": row2["owner_principal_type"],
+            "owner_principal_id": row2["owner_principal_id"],
+            "sharing_mode": row2["sharing_mode"],
         }
 
 def db_project_add_conversation(project_id: int, conversation_id: str, set_primary: bool = True) -> None:
@@ -6780,10 +6916,15 @@ def db_register_file(name: str, path: str, mime_type: str | None = None) -> dict
     with db_session() as conn:
         conn.execute(
             """
-            INSERT INTO files (id, name, path, mime_type, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO files (
+                id, name, path, mime_type, created_at, updated_at, tenant_id,
+                owner_principal_type, owner_principal_id,
+                created_by_principal_type, created_by_principal_id,
+                source_principal_type, source_principal_id, visibility, sharing_mode
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (fid, name, path, mime_type, now, now),
+            (fid, name, path, mime_type, now, now, "default", "user", "local", "user", "local", "user", "local", "private", "owner"),
         )
     return {"id": fid}
 
@@ -6801,6 +6942,22 @@ def db_project_add_file(project_id: int, file_id: str) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO project_files (project_id, file_id) VALUES (?, ?)",
             (int(project_id), file_id),
+        )
+        access = _scope_access_defaults_conn(conn, scope_type="project", scope_id=int(project_id))
+        conn.execute(
+            """
+            UPDATE files
+            SET scope_type = COALESCE(scope_type, 'project'),
+                scope_id = COALESCE(scope_id, ?),
+                tenant_id = ?,
+                owner_principal_type = COALESCE(owner_principal_type, ?),
+                owner_principal_id = COALESCE(owner_principal_id, ?),
+                visibility = COALESCE(visibility, ?),
+                sharing_mode = 'inherit',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (int(project_id), access["tenant_id"], access["owner_principal_type"], access["owner_principal_id"], access["visibility"], _utc_now_iso(), file_id),
         )
 
 def db_conversation_link_file(conversation_id: str, file_id: str) -> None:
@@ -6824,6 +6981,22 @@ def db_conversation_link_file(conversation_id: str, file_id: str) -> None:
             VALUES (?, ?)
             """,
             (conversation_id, file_id),
+        )
+        access = _scope_access_defaults_conn(conn, scope_type="conversation", scope_uuid=conversation_id)
+        conn.execute(
+            """
+            UPDATE files
+            SET scope_type = COALESCE(scope_type, 'conversation'),
+                scope_uuid = COALESCE(scope_uuid, ?),
+                tenant_id = ?,
+                owner_principal_type = COALESCE(owner_principal_type, ?),
+                owner_principal_id = COALESCE(owner_principal_id, ?),
+                visibility = COALESCE(visibility, ?),
+                sharing_mode = 'inherit',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (conversation_id, access["tenant_id"], access["owner_principal_type"], access["owner_principal_id"], access["visibility"], _utc_now_iso(), file_id),
         )
 
 def db_list_files_for_conversation(
@@ -6993,6 +7166,7 @@ def db_register_scoped_file(
     now = _utc_now_iso()
 
     with db_session() as conn:
+        access = _scope_access_defaults_conn(conn, scope_type=scope_type, scope_id=scope_id, scope_uuid=scope_uuid)
         conn.execute(
             """
             INSERT INTO files (
@@ -7009,10 +7183,20 @@ def db_register_scoped_file(
                 provenance,
                 description,
                 is_deleted,
+                tenant_id,
+                owner_principal_type,
+                owner_principal_id,
+                created_by_principal_type,
+                created_by_principal_id,
+                source_principal_type,
+                source_principal_id,
+                visibility,
+                sharing_mode,
+                provenance_json,
                 created_at,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 fid,
@@ -7027,6 +7211,16 @@ def db_register_scoped_file(
                 url,
                 provenance,
                 description,
+                access["tenant_id"],
+                access["owner_principal_type"],
+                access["owner_principal_id"],
+                access["created_by_principal_type"],
+                access["created_by_principal_id"],
+                access["source_principal_type"],
+                access["source_principal_id"],
+                access["visibility"],
+                access["sharing_mode"],
+                json.dumps({"provenance": provenance, "url": url}, ensure_ascii=False, sort_keys=True),
                 now,
                 now,
             ),
@@ -8840,12 +9034,42 @@ def upsert_artifact_text(
         source_kind=source_kind,
         source_id=source_id,
     )
+    access = None
+    if (source_kind or "").startswith("file") and source_id:
+        file_row = conn.execute(
+            "SELECT tenant_id, owner_principal_type, owner_principal_id, visibility FROM files WHERE id = ?",
+            (source_id,),
+        ).fetchone()
+        if file_row:
+            access = {
+                "tenant_id": file_row["tenant_id"] or "default",
+                "owner_principal_type": file_row["owner_principal_type"] or "user",
+                "owner_principal_id": file_row["owner_principal_id"] or "local",
+                "visibility": file_row["visibility"] or "private",
+                "sharing_mode": "inherit",
+            }
+    if access is None:
+        access = _scope_access_defaults_conn(conn, scope_type=scope_type, scope_id=scope_id)
     conn.execute(
         """
-        INSERT OR REPLACE INTO artifacts (id, source_kind, source_id, title, scope_type, scope_id, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO artifacts (
+            id, source_kind, source_id, title, scope_type, scope_id, updated_at,
+            tenant_id, owner_principal_type, owner_principal_id,
+            created_by_principal_type, created_by_principal_id,
+            source_principal_type, source_principal_id, visibility, sharing_mode, provenance_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (artifact_id, source_kind, source_id, title, scope_type, scope_id, _utc_now_iso()),
+        (
+            artifact_id, source_kind, source_id, title, scope_type, scope_id, _utc_now_iso(),
+            access["tenant_id"], access["owner_principal_type"], access["owner_principal_id"],
+            access.get("source_principal_type", access["owner_principal_type"]),
+            access.get("source_principal_id", access["owner_principal_id"]),
+            access.get("source_principal_type", access["owner_principal_type"]),
+            access.get("source_principal_id", access["owner_principal_id"]),
+            access["visibility"], access["sharing_mode"],
+            json.dumps({"source_kind": source_kind, "source_id": source_id}, ensure_ascii=False, sort_keys=True),
+        ),
     )
     # Hopefully that worked and now we have...
     row = conn.execute(
