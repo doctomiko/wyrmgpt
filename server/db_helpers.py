@@ -9,7 +9,7 @@ from typing import Any, Callable, Iterable, Iterator
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
@@ -349,6 +349,82 @@ def list_access_control_entries(
         return _fetch(conn)
     with db_session() as sconn:
         return _fetch(sconn)
+
+def ensure_identity_group_role_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS identity_groups (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            name TEXT NOT NULL,
+            display_name TEXT,
+            description TEXT,
+            created_by_principal_type TEXT,
+            created_by_principal_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            is_deleted INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(tenant_id, name)
+        );
+
+        CREATE TABLE IF NOT EXISTS identity_group_members (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            group_id TEXT NOT NULL,
+            member_principal_type TEXT NOT NULL,
+            member_principal_id TEXT NOT NULL,
+            added_by_principal_type TEXT,
+            added_by_principal_id TEXT,
+            created_at TEXT NOT NULL,
+            expires_at TEXT,
+            is_deleted INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY(group_id) REFERENCES identity_groups(id) ON DELETE CASCADE,
+            UNIQUE(tenant_id, group_id, member_principal_type, member_principal_id, is_deleted)
+        );
+
+        CREATE TABLE IF NOT EXISTS identity_roles (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            name TEXT NOT NULL,
+            display_name TEXT,
+            description TEXT,
+            created_by_principal_type TEXT,
+            created_by_principal_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            is_deleted INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(tenant_id, name)
+        );
+
+        CREATE TABLE IF NOT EXISTS identity_role_assignments (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            role_id TEXT NOT NULL,
+            principal_type TEXT NOT NULL,
+            principal_id TEXT NOT NULL,
+            granted_by_principal_type TEXT,
+            granted_by_principal_id TEXT,
+            created_at TEXT NOT NULL,
+            expires_at TEXT,
+            is_deleted INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY(role_id) REFERENCES identity_roles(id) ON DELETE CASCADE,
+            UNIQUE(tenant_id, role_id, principal_type, principal_id, is_deleted)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_identity_groups_tenant
+            ON identity_groups(tenant_id, is_deleted);
+        CREATE INDEX IF NOT EXISTS idx_identity_group_members_group
+            ON identity_group_members(tenant_id, group_id, is_deleted);
+        CREATE INDEX IF NOT EXISTS idx_identity_group_members_member
+            ON identity_group_members(tenant_id, member_principal_type, member_principal_id, is_deleted);
+        CREATE INDEX IF NOT EXISTS idx_identity_roles_tenant
+            ON identity_roles(tenant_id, is_deleted);
+        CREATE INDEX IF NOT EXISTS idx_identity_role_assignments_role
+            ON identity_role_assignments(tenant_id, role_id, is_deleted);
+        CREATE INDEX IF NOT EXISTS idx_identity_role_assignments_principal
+            ON identity_role_assignments(tenant_id, principal_type, principal_id, is_deleted);
+        """
+    )
 
 def ensure_parent_dir(p: Path) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)

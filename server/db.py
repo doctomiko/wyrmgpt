@@ -30,7 +30,7 @@ from .db_helpers import (
     db_session, db_debug_info, _start_schema_init, _end_schema_init, 
     ensure_parent_dir, _table_exists, _add_column_if_missing,
     ensure_audit_events_schema, ensure_resource_ownership_columns,
-    ensure_access_control_schema,
+    ensure_access_control_schema, ensure_identity_group_role_schema,
 )
 # Support legacy migrations from v1-v7. You can remove this after a few releases once most users have migrated or started fresh.
 from .db_migrate import _migrate_schema_legacy
@@ -77,6 +77,9 @@ def _migrate_schema_v25(conn) -> None:
 def _migrate_schema_v26(conn) -> None:
     ensure_access_control_schema(conn)
 
+def _migrate_schema_v27(conn) -> None:
+    ensure_identity_group_role_schema(conn)
+
 
 MIGRATIONS: list[tuple[int, Callable]] = [
     (8, _migrate_schema_v8),
@@ -98,6 +101,7 @@ MIGRATIONS: list[tuple[int, Callable]] = [
     (24, _migrate_schema_v24),
     (25, _migrate_schema_v25),
     (26, _migrate_schema_v26),
+    (27, _migrate_schema_v27),
 ]
 
 # endregion
