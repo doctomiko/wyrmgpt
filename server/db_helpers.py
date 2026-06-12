@@ -469,11 +469,55 @@ def ensure_access_control_schema(conn: sqlite3.Connection) -> None:
         """
     )
 
+_VALID_ACE_EFFECTS = {"allow", "deny"}
+_VALID_ACE_PRINCIPAL_TYPES = {
+    "user",
+    "group",
+    "role",
+    "persona",
+    "tenant_users",
+    "tenant_personas",
+    "public",
+    "service",
+}
+_VALID_ACE_ACTIONS = {
+    "view",
+    "edit",
+    "archive",
+    "soft_remove",
+    "permanent_remove",
+    "restore",
+    "share",
+    "manage",
+    "use_in_context",
+    # Compatibility aliases used by the first resolver implementation.
+    "read",
+    "write",
+    "delete",
+    "admin",
+    "audit",
+}
+
+
 def _required_acl_value(name: str, value: str | None) -> str:
     cleaned = (value or "").strip()
     if not cleaned:
         raise ValueError(f"{name} is required")
     return cleaned
+
+
+def _validate_ace_principal_type(value: str) -> str:
+    principal_type = _required_acl_value("principal_type", value).lower()
+    if principal_type not in _VALID_ACE_PRINCIPAL_TYPES:
+        raise ValueError(f"principal_type must be one of {sorted(_VALID_ACE_PRINCIPAL_TYPES)}")
+    return principal_type
+
+
+def _validate_ace_action(value: str) -> str:
+    action = _required_acl_value("action", value).lower()
+    if action not in _VALID_ACE_ACTIONS:
+        raise ValueError(f"action must be one of {sorted(_VALID_ACE_ACTIONS)}")
+    return action
 
 def create_access_control_entry(
     *,
@@ -494,8 +538,10 @@ def create_access_control_entry(
     conn: sqlite3.Connection | None = None,
 ) -> str:
     normalized_effect = _required_acl_value("effect", effect).lower()
-    if normalized_effect not in {"allow", "deny"}:
+    if normalized_effect not in _VALID_ACE_EFFECTS:
         raise ValueError("effect must be 'allow' or 'deny'")
+    normalized_principal_type = _validate_ace_principal_type(principal_type)
+    normalized_action = _validate_ace_action(action)
 
     ace_id = new_uuid()
     values = (
@@ -503,10 +549,10 @@ def create_access_control_entry(
         (tenant_id or "default").strip() or "default",
         _required_acl_value("resource_type", resource_type),
         _required_acl_value("resource_id", resource_id),
-        _required_acl_value("principal_type", principal_type),
+        normalized_principal_type,
         _required_acl_value("principal_id", principal_id),
         normalized_effect,
-        _required_acl_value("action", action),
+        normalized_action,
         (scope or "resource").strip() or "resource",
         (inherited_from_type or "").strip() or None,
         (inherited_from_id or "").strip() or None,
@@ -529,6 +575,24 @@ def create_access_control_entry(
             """,
             values,
         )
+        row = target.execute("SELECT * FROM access_control_entries WHERE id = ?", (ace_id,)).fetchone()
+        ensure_audit_events_schema(target)
+        log_audit_event(
+            event_type="access_control_entry.create",
+            tenant_id=values[1],
+            actor_principal_type=values[12],
+            actor_principal_id=values[13],
+            resource_type=values[2],
+            resource_id=values[3],
+            target_principal_type=values[4],
+            target_principal_id=values[5],
+            action=values[7],
+            decision=values[6],
+            summary=f"Created {values[6]} ACE for {values[4]}:{values[5]}",
+            after=dict(row) if row else None,
+            conn=target,
+            raise_on_error=True,
+        )
 
     if conn is not None:
         _insert(conn)
@@ -536,6 +600,61 @@ def create_access_control_entry(
         with db_session() as sconn:
             _insert(sconn)
     return ace_id
+
+def remove_access_control_entry(
+    ace_id: str,
+    *,
+    deleted_by_principal_type: str | None = None,
+    deleted_by_principal_id: str | None = None,
+    conn: sqlite3.Connection | None = None,
+) -> bool:
+    ace_id = _required_acl_value("ace_id", ace_id)
+    actor_type = (deleted_by_principal_type or "user").strip() or "user"
+    actor_id = (deleted_by_principal_id or "local").strip() or "local"
+
+    def _remove(target: sqlite3.Connection) -> bool:
+        row = target.execute(
+            "SELECT * FROM access_control_entries WHERE id = ?",
+            (ace_id,),
+        ).fetchone()
+        if not row:
+            return False
+        before = dict(row)
+        if int(row["is_deleted"] or 0):
+            return True
+        target.execute(
+            "UPDATE access_control_entries SET is_deleted = 1 WHERE id = ?",
+            (ace_id,),
+        )
+        after = target.execute(
+            "SELECT * FROM access_control_entries WHERE id = ?",
+            (ace_id,),
+        ).fetchone()
+        ensure_audit_events_schema(target)
+        log_audit_event(
+            event_type="access_control_entry.remove",
+            tenant_id=row["tenant_id"] or "default",
+            actor_principal_type=actor_type,
+            actor_principal_id=actor_id,
+            resource_type=row["resource_type"],
+            resource_id=row["resource_id"],
+            target_principal_type=row["principal_type"],
+            target_principal_id=row["principal_id"],
+            action=row["action"],
+            decision=row["effect"],
+            summary=f"Removed ACE {ace_id}",
+            before=before,
+            after=dict(after) if after else None,
+            conn=target,
+            raise_on_error=True,
+        )
+        return True
+
+    if conn is not None:
+        return _remove(conn)
+    with db_session() as active_conn:
+        return _remove(active_conn)
+
 
 def list_access_control_entries(
     *,
