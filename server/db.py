@@ -7464,9 +7464,7 @@ def db_delete_file_cascade(
             if p.exists() and p.is_file():
                 backup_root = DATA_DIR / "deleted_files"
                 backup_root.mkdir(parents=True, exist_ok=True)
-
-                # TODO fix deprecated function call
-                stamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+                stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
                 target = backup_root / f"{stamp}__{file_id}__{p.name}"
 
                 p.replace(target)
