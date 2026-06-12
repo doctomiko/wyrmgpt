@@ -9,7 +9,7 @@ from typing import Any, Callable, Iterable, Iterator
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 26
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
@@ -202,6 +202,153 @@ def ensure_resource_ownership_columns(
         conn.execute(
             f"CREATE INDEX IF NOT EXISTS idx_{table}_visibility ON {table}(visibility)"
         )
+
+def ensure_access_control_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS access_control_entries (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            resource_type TEXT NOT NULL,
+            resource_id TEXT NOT NULL,
+            principal_type TEXT NOT NULL,
+            principal_id TEXT NOT NULL,
+            effect TEXT NOT NULL CHECK(effect IN ('allow', 'deny')),
+            action TEXT NOT NULL,
+            scope TEXT NOT NULL DEFAULT 'resource',
+            inherited_from_type TEXT,
+            inherited_from_id TEXT,
+            reason TEXT,
+            created_by_principal_type TEXT,
+            created_by_principal_id TEXT,
+            created_at TEXT NOT NULL,
+            expires_at TEXT,
+            is_deleted INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_ace_resource_action
+            ON access_control_entries(tenant_id, resource_type, resource_id, action, is_deleted);
+        CREATE INDEX IF NOT EXISTS idx_ace_principal_action
+            ON access_control_entries(tenant_id, principal_type, principal_id, action, is_deleted);
+        CREATE INDEX IF NOT EXISTS idx_ace_effect
+            ON access_control_entries(effect, is_deleted);
+        CREATE INDEX IF NOT EXISTS idx_ace_inherited_from
+            ON access_control_entries(inherited_from_type, inherited_from_id);
+        CREATE INDEX IF NOT EXISTS idx_ace_expires_at
+            ON access_control_entries(expires_at);
+        """
+    )
+
+def _required_acl_value(name: str, value: str | None) -> str:
+    cleaned = (value or "").strip()
+    if not cleaned:
+        raise ValueError(f"{name} is required")
+    return cleaned
+
+def create_access_control_entry(
+    *,
+    resource_type: str,
+    resource_id: str,
+    principal_type: str,
+    principal_id: str,
+    effect: str,
+    action: str,
+    tenant_id: str = "default",
+    scope: str = "resource",
+    inherited_from_type: str | None = None,
+    inherited_from_id: str | None = None,
+    reason: str | None = None,
+    created_by_principal_type: str | None = None,
+    created_by_principal_id: str | None = None,
+    expires_at: str | None = None,
+    conn: sqlite3.Connection | None = None,
+) -> str:
+    normalized_effect = _required_acl_value("effect", effect).lower()
+    if normalized_effect not in {"allow", "deny"}:
+        raise ValueError("effect must be 'allow' or 'deny'")
+
+    ace_id = new_uuid()
+    values = (
+        ace_id,
+        (tenant_id or "default").strip() or "default",
+        _required_acl_value("resource_type", resource_type),
+        _required_acl_value("resource_id", resource_id),
+        _required_acl_value("principal_type", principal_type),
+        _required_acl_value("principal_id", principal_id),
+        normalized_effect,
+        _required_acl_value("action", action),
+        (scope or "resource").strip() or "resource",
+        (inherited_from_type or "").strip() or None,
+        (inherited_from_id or "").strip() or None,
+        (reason or "").strip() or None,
+        (created_by_principal_type or "").strip() or None,
+        (created_by_principal_id or "").strip() or None,
+        _utc_now_iso(),
+        (expires_at or "").strip() or None,
+    )
+
+    def _insert(target: sqlite3.Connection) -> None:
+        target.execute(
+            """
+            INSERT INTO access_control_entries (
+                id, tenant_id, resource_type, resource_id, principal_type, principal_id,
+                effect, action, scope, inherited_from_type, inherited_from_id, reason,
+                created_by_principal_type, created_by_principal_id, created_at, expires_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            values,
+        )
+
+    if conn is not None:
+        _insert(conn)
+    else:
+        with db_session() as sconn:
+            _insert(sconn)
+    return ace_id
+
+def list_access_control_entries(
+    *,
+    tenant_id: str | None = None,
+    resource_type: str | None = None,
+    resource_id: str | None = None,
+    principal_type: str | None = None,
+    principal_id: str | None = None,
+    action: str | None = None,
+    include_deleted: bool = False,
+    conn: sqlite3.Connection | None = None,
+) -> list[dict]:
+    where: list[str] = []
+    params: list[Any] = []
+
+    for column, value in (
+        ("tenant_id", tenant_id),
+        ("resource_type", resource_type),
+        ("resource_id", resource_id),
+        ("principal_type", principal_type),
+        ("principal_id", principal_id),
+        ("action", action),
+    ):
+        cleaned = (value or "").strip()
+        if cleaned:
+            where.append(f"{column} = ?")
+            params.append(cleaned)
+
+    if not include_deleted:
+        where.append("is_deleted = 0")
+
+    sql = "SELECT * FROM access_control_entries"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY created_at ASC, id ASC"
+
+    def _fetch(target: sqlite3.Connection) -> list[dict]:
+        return [dict(row) for row in target.execute(sql, params).fetchall()]
+
+    if conn is not None:
+        return _fetch(conn)
+    with db_session() as sconn:
+        return _fetch(sconn)
 
 def ensure_parent_dir(p: Path) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
