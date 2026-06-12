@@ -570,6 +570,7 @@ TOOLS_DEFAULTS: ToolConfig = ToolConfig()
 @dataclass(frozen=True)
 class TenantPolicyConfig:
     tenant_id: str = "default"
+    policy_preset: str = "personal"
     conversation_visibility: str = "private"
     message_visibility: str = "private"
     memory_visibility: str = "private"
@@ -580,13 +581,67 @@ class TenantPolicyConfig:
     persona_resource_owner: str = "active_user"
     missing_access_default: str = "allow_owner"
     audit_verbosity: str = "mutations"
+    owner_can_archive: bool = True
+    owner_can_soft_remove: bool = True
+    owner_can_permanent_remove: bool = False
+    tenant_admin_manage_all: bool = True
+    global_admin_manage_all: bool = True
+    tenant_admin_can_permanent_remove: bool = False
+    retention_soft_delete_days: int = 30
+    retention_permanent_delete_days: int = 90
+    retention_audit_event_days: int = 365
 
 
 TENANT_POLICY_DEFAULTS: TenantPolicyConfig = TenantPolicyConfig()
+TENANT_POLICY_PRESET_ALLOWED = {"personal", "household", "corporate"}
 TENANT_POLICY_VISIBILITY_ALLOWED = {"private", "tenant", "public", "inherit"}
 TENANT_POLICY_OWNER_ALLOWED = {"persona", "active_user", "tenant"}
 TENANT_POLICY_MISSING_ACCESS_ALLOWED = {"allow_owner", "allow_tenant", "deny", "single_user_compatible"}
 TENANT_POLICY_AUDIT_ALLOWED = {"off", "mutations", "decisions", "verbose"}
+TENANT_POLICY_BUILTIN_PRESETS: dict[str, dict[str, Any]] = {
+    "personal": {
+        "missing_access_default": "allow_owner",
+        "owner_can_archive": True,
+        "owner_can_soft_remove": True,
+        "owner_can_permanent_remove": False,
+        "tenant_admin_manage_all": True,
+        "global_admin_manage_all": True,
+        "tenant_admin_can_permanent_remove": False,
+        "retention_windows": {
+            "soft_delete_days": 30,
+            "permanent_delete_days": 90,
+            "audit_event_days": 365,
+        },
+    },
+    "household": {
+        "missing_access_default": "allow_tenant",
+        "owner_can_archive": True,
+        "owner_can_soft_remove": True,
+        "owner_can_permanent_remove": False,
+        "tenant_admin_manage_all": True,
+        "global_admin_manage_all": True,
+        "tenant_admin_can_permanent_remove": False,
+        "retention_windows": {
+            "soft_delete_days": 45,
+            "permanent_delete_days": 120,
+            "audit_event_days": 365,
+        },
+    },
+    "corporate": {
+        "missing_access_default": "deny",
+        "owner_can_archive": True,
+        "owner_can_soft_remove": False,
+        "owner_can_permanent_remove": False,
+        "tenant_admin_manage_all": True,
+        "global_admin_manage_all": True,
+        "tenant_admin_can_permanent_remove": True,
+        "retention_windows": {
+            "soft_delete_days": 90,
+            "permanent_delete_days": 365,
+            "audit_event_days": 2555,
+        },
+    },
+}
 
 
 @dataclass
@@ -630,6 +685,15 @@ def load_app_config() -> AppConfig:
         search_chat_history=get_app_setting_bool(APP_KEYS.search_chat_history)
     )
 
+def _apply_tenant_policy_preset(policy: TenantPolicyConfig, preset_name: str | None) -> TenantPolicyConfig:
+    selected = _choice(preset_name, policy.policy_preset, TENANT_POLICY_PRESET_ALLOWED)
+    preset = _tenant_policy_from_mapping(policy, TENANT_POLICY_BUILTIN_PRESETS.get(selected, {}))
+    toml_preset = _toml_get(("tenant_policy", "presets", selected), {})
+    if isinstance(toml_preset, dict):
+        preset = _tenant_policy_from_mapping(preset, toml_preset)
+    return replace(preset, policy_preset=selected)
+
+
 def _tenant_policy_from_mapping(base: TenantPolicyConfig, raw: dict[str, Any]) -> TenantPolicyConfig:
     if not raw:
         return base
@@ -639,6 +703,8 @@ def _tenant_policy_from_mapping(base: TenantPolicyConfig, raw: dict[str, Any]) -
 
     if "tenant_id" in raw or "default_tenant_id" in raw:
         updates["tenant_id"] = str(raw.get("tenant_id", raw.get("default_tenant_id", base.tenant_id))).strip() or base.tenant_id
+    if "policy_preset" in raw or "preset" in raw:
+        updates["policy_preset"] = _choice(raw.get("policy_preset", raw.get("preset")), base.policy_preset, TENANT_POLICY_PRESET_ALLOWED)
     if isinstance(visibility, dict):
         for key, field_name in (
             ("conversation", "conversation_visibility"),
@@ -661,6 +727,40 @@ def _tenant_policy_from_mapping(base: TenantPolicyConfig, raw: dict[str, Any]) -
     if "public_sharing_enabled" in raw:
         updates["public_sharing_enabled"] = _coerce_bool(raw["public_sharing_enabled"], base.public_sharing_enabled)
 
+    for key in (
+        "owner_can_archive",
+        "owner_can_soft_remove",
+        "owner_can_permanent_remove",
+        "tenant_admin_manage_all",
+        "global_admin_manage_all",
+        "tenant_admin_can_permanent_remove",
+    ):
+        if key in raw:
+            updates[key] = _coerce_bool(raw[key], getattr(base, key))
+
+    retention = raw.get("retention_windows")
+    if isinstance(retention, dict):
+        for key, field_name in (
+            ("soft_delete_days", "retention_soft_delete_days"),
+            ("permanent_delete_days", "retention_permanent_delete_days"),
+            ("audit_event_days", "retention_audit_event_days"),
+        ):
+            if key in retention:
+                try:
+                    updates[field_name] = max(0, int(retention[key]))
+                except (TypeError, ValueError):
+                    pass
+    for field_name in (
+        "retention_soft_delete_days",
+        "retention_permanent_delete_days",
+        "retention_audit_event_days",
+    ):
+        if field_name in raw:
+            try:
+                updates[field_name] = max(0, int(raw[field_name]))
+            except (TypeError, ValueError):
+                pass
+
     return replace(base, **updates)
 
 def load_tenant_policy_config(tenant_id: str | None = None) -> TenantPolicyConfig:
@@ -669,6 +769,11 @@ def load_tenant_policy_config(tenant_id: str | None = None) -> TenantPolicyConfi
             ("tenant_policy", "default_tenant_id"),
             env_name="TENANT_POLICY_DEFAULT_TENANT_ID",
             default=TENANT_POLICY_DEFAULTS.tenant_id,
+        ),
+        policy_preset=_choice(
+            _first_toml(("tenant_policy", "policy_preset"), ("tenant_policy", "preset"), default=TENANT_POLICY_DEFAULTS.policy_preset),
+            TENANT_POLICY_DEFAULTS.policy_preset,
+            TENANT_POLICY_PRESET_ALLOWED,
         ),
         conversation_visibility=_choice(
             _first_toml(("tenant_policy", "visibility_defaults", "conversation"), default=TENANT_POLICY_DEFAULTS.conversation_visibility),
@@ -720,6 +825,20 @@ def load_tenant_policy_config(tenant_id: str | None = None) -> TenantPolicyConfi
             TENANT_POLICY_DEFAULTS.audit_verbosity,
             TENANT_POLICY_AUDIT_ALLOWED,
         ),
+        owner_can_archive=_cfg_bool(("tenant_policy", "owner_can_archive"), env_name="TENANT_POLICY_OWNER_CAN_ARCHIVE", default=TENANT_POLICY_DEFAULTS.owner_can_archive),
+        owner_can_soft_remove=_cfg_bool(("tenant_policy", "owner_can_soft_remove"), env_name="TENANT_POLICY_OWNER_CAN_SOFT_REMOVE", default=TENANT_POLICY_DEFAULTS.owner_can_soft_remove),
+        owner_can_permanent_remove=_cfg_bool(("tenant_policy", "owner_can_permanent_remove"), env_name="TENANT_POLICY_OWNER_CAN_PERMANENT_REMOVE", default=TENANT_POLICY_DEFAULTS.owner_can_permanent_remove),
+        tenant_admin_manage_all=_cfg_bool(("tenant_policy", "tenant_admin_manage_all"), env_name="TENANT_POLICY_TENANT_ADMIN_MANAGE_ALL", default=TENANT_POLICY_DEFAULTS.tenant_admin_manage_all),
+        global_admin_manage_all=_cfg_bool(("tenant_policy", "global_admin_manage_all"), env_name="TENANT_POLICY_GLOBAL_ADMIN_MANAGE_ALL", default=TENANT_POLICY_DEFAULTS.global_admin_manage_all),
+        tenant_admin_can_permanent_remove=_cfg_bool(("tenant_policy", "tenant_admin_can_permanent_remove"), env_name="TENANT_POLICY_TENANT_ADMIN_CAN_PERMANENT_REMOVE", default=TENANT_POLICY_DEFAULTS.tenant_admin_can_permanent_remove),
+        retention_soft_delete_days=_cfg_int(("tenant_policy", "retention_windows", "soft_delete_days"), env_name="TENANT_POLICY_RETENTION_SOFT_DELETE_DAYS", default=TENANT_POLICY_DEFAULTS.retention_soft_delete_days),
+        retention_permanent_delete_days=_cfg_int(("tenant_policy", "retention_windows", "permanent_delete_days"), env_name="TENANT_POLICY_RETENTION_PERMANENT_DELETE_DAYS", default=TENANT_POLICY_DEFAULTS.retention_permanent_delete_days),
+        retention_audit_event_days=_cfg_int(("tenant_policy", "retention_windows", "audit_event_days"), env_name="TENANT_POLICY_RETENTION_AUDIT_EVENT_DAYS", default=TENANT_POLICY_DEFAULTS.retention_audit_event_days),
+    )
+
+    policy = _tenant_policy_from_mapping(
+        _apply_tenant_policy_preset(TenantPolicyConfig(), policy.policy_preset),
+        policy.__dict__,
     )
 
     target_tenant_id = (tenant_id or policy.tenant_id or TENANT_POLICY_DEFAULTS.tenant_id).strip() or TENANT_POLICY_DEFAULTS.tenant_id
@@ -727,6 +846,8 @@ def load_tenant_policy_config(tenant_id: str | None = None) -> TenantPolicyConfi
 
     tenant_override = _toml_get(("tenant_policy", "tenants", target_tenant_id), {})
     if isinstance(tenant_override, dict):
+        if "policy_preset" in tenant_override or "preset" in tenant_override:
+            policy = _apply_tenant_policy_preset(policy, str(tenant_override.get("policy_preset", tenant_override.get("preset"))))
         policy = _tenant_policy_from_mapping(policy, tenant_override)
         policy = replace(policy, tenant_id=target_tenant_id)
     return policy
@@ -737,6 +858,8 @@ def resolve_tenant_policy(
 ) -> TenantPolicyConfig:
     policy = load_tenant_policy_config(tenant_id)
     if overrides:
+        if "policy_preset" in overrides or "preset" in overrides:
+            policy = _apply_tenant_policy_preset(policy, str(overrides.get("policy_preset", overrides.get("preset"))))
         policy = _tenant_policy_from_mapping(policy, overrides)
         if tenant_id:
             policy = replace(policy, tenant_id=tenant_id.strip() or policy.tenant_id)
