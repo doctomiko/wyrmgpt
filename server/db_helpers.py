@@ -9,7 +9,7 @@ from typing import Any, Callable, Iterable, Iterator
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 25
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
@@ -148,6 +148,60 @@ def get_audit_event(audit_id: str, conn: sqlite3.Connection | None = None) -> di
         return _fetch(conn)
     with db_session() as sconn:
         return _fetch(sconn)
+
+_OWNED_RESOURCE_TABLES = (
+    "projects",
+    "conversations",
+    "messages",
+    "memories",
+    "files",
+    "artifacts",
+)
+
+def ensure_resource_ownership_columns(
+    conn: sqlite3.Connection,
+    tables: Iterable[str] = _OWNED_RESOURCE_TABLES,
+) -> None:
+    for table in tables:
+        if not table or not _VALID_TABLE.match(table):
+            raise ValueError(f"Unsafe table name: {table!r}")
+        if not _table_exists(conn, table):
+            continue
+        _add_column_if_missing(conn, table, "tenant_id", "TEXT NOT NULL DEFAULT 'default'")
+        _add_column_if_missing(conn, table, "owner_principal_type", "TEXT")
+        _add_column_if_missing(conn, table, "owner_principal_id", "TEXT")
+        _add_column_if_missing(conn, table, "created_by_principal_type", "TEXT")
+        _add_column_if_missing(conn, table, "created_by_principal_id", "TEXT")
+        _add_column_if_missing(conn, table, "source_principal_type", "TEXT")
+        _add_column_if_missing(conn, table, "source_principal_id", "TEXT")
+        _add_column_if_missing(conn, table, "visibility", "TEXT NOT NULL DEFAULT 'private'")
+        _add_column_if_missing(conn, table, "sharing_mode", "TEXT NOT NULL DEFAULT 'owner'")
+        _add_column_if_missing(conn, table, "provenance_json", "TEXT")
+
+        conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{table}_tenant_id ON {table}(tenant_id)"
+        )
+        conn.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS idx_{table}_owner_principal
+                ON {table}(owner_principal_type, owner_principal_id)
+            """
+        )
+        conn.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS idx_{table}_created_by_principal
+                ON {table}(created_by_principal_type, created_by_principal_id)
+            """
+        )
+        conn.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS idx_{table}_source_principal
+                ON {table}(source_principal_type, source_principal_id)
+            """
+        )
+        conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{table}_visibility ON {table}(visibility)"
+        )
 
 def ensure_parent_dir(p: Path) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
