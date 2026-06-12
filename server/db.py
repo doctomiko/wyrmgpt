@@ -32,6 +32,7 @@ from .db_helpers import (
     ensure_audit_events_schema, ensure_resource_ownership_columns,
     ensure_access_control_schema, ensure_identity_group_role_schema,
     create_access_control_entry, list_access_control_entries, remove_access_control_entry,
+    log_audit_event,
 )
 # Support legacy migrations from v1-v7. You can remove this after a few releases once most users have migrated or started fresh.
 from .db_migrate import _migrate_schema_legacy
@@ -593,6 +594,89 @@ def db_get_artifact_access_resource(artifact_id: str) -> dict | None:
         elif row["scope_type"] in ("conversation", "chat") and row["scope_uuid"]:
             inherited.append({"resource_type": "conversation", "resource_id": row["scope_uuid"]})
         return _access_resource_from_owned_row("artifact", row, inherited)
+
+
+def db_get_effective_sharing_source(resource_type: str, resource_id: str | int) -> dict | None:
+    resource_type = (resource_type or "").strip().lower()
+    loaders = {
+        "project": lambda rid: db_get_project_access_resource(int(rid)),
+        "file": lambda rid: db_get_file_access_resource(str(rid)),
+        "artifact": lambda rid: db_get_artifact_access_resource(str(rid)),
+        "conversation": lambda rid: db_get_conversation_access_resource(str(rid)),
+        "memory": lambda rid: db_get_memory_access_resource(str(rid)),
+    }
+    loader = loaders.get(resource_type)
+    if loader is None:
+        raise ValueError(f"Unsupported resource_type: {resource_type}")
+    resource = loader(resource_id)
+    if not resource:
+        return None
+    inherited = resource.get("inherited_from") or []
+    return {
+        "resource": resource,
+        "effective_source": inherited[0] if inherited else {"resource_type": resource["resource_type"], "resource_id": resource["resource_id"]},
+        "inherited_from": inherited,
+    }
+
+
+def promote_artifact_access_policy(
+    artifact_id: str,
+    *,
+    owner_user_id: str = "local",
+    visibility: str | None = None,
+    promoted_by_user_id: str = "local",
+) -> bool:
+    artifact_id = (artifact_id or "").strip()
+    if not artifact_id:
+        raise ValueError("artifact_id is required")
+    owner_user_id = (owner_user_id or "local").strip() or "local"
+    promoted_by_user_id = (promoted_by_user_id or "local").strip() or "local"
+    with db_session() as conn:
+        row = conn.execute("SELECT * FROM artifacts WHERE id = ?", (artifact_id,)).fetchone()
+        if not row:
+            return False
+        before = dict(row)
+        try:
+            provenance = json.loads(row["provenance_json"] or "{}")
+            if not isinstance(provenance, dict):
+                provenance = {}
+        except Exception:
+            provenance = {}
+        provenance["promoted_access_policy"] = {
+            "promoted_by_user_id": promoted_by_user_id,
+            "promoted_at": _utc_now_iso(),
+            "previous_sharing_mode": row["sharing_mode"],
+        }
+        conn.execute(
+            """
+            UPDATE artifacts
+            SET owner_user_id = ?, updated_by_user_id = ?,
+                owner_principal_type = 'user', owner_principal_id = ?,
+                visibility = COALESCE(?, visibility), sharing_mode = 'owner',
+                provenance_json = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (owner_user_id, promoted_by_user_id, owner_user_id, visibility, json.dumps(provenance, ensure_ascii=False, sort_keys=True), _utc_now_iso(), artifact_id),
+        )
+        after = conn.execute("SELECT * FROM artifacts WHERE id = ?", (artifact_id,)).fetchone()
+        log_audit_event(
+            event_type="artifact.access_policy.promote",
+            tenant_id=row["tenant_id"] or "default",
+            actor_principal_type="user",
+            actor_principal_id=promoted_by_user_id,
+            resource_type="artifact",
+            resource_id=artifact_id,
+            target_principal_type="user",
+            target_principal_id=owner_user_id,
+            action="share",
+            summary=f"Promoted artifact {artifact_id} access policy",
+            before=before,
+            after=dict(after) if after else None,
+            conn=conn,
+            raise_on_error=True,
+        )
+        return True
+
 
 def db_get_conversation_project_id(conn, conversation_id: str) -> int | None:
     row = conn.execute(
