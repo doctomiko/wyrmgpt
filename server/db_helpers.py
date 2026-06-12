@@ -699,6 +699,31 @@ def list_access_control_entries(
     with db_session() as sconn:
         return _fetch(sconn)
 
+BUILT_IN_ROLE_NAMES = {
+    "global_admin",
+    "tenant_admin",
+    "tenant_member",
+    "tenant_viewer",
+    "persona_manager",
+    "data_steward",
+    "auditor",
+}
+
+_BUILT_IN_ROLE_PERMISSIONS = {
+    "global_admin": ("manage", "share", "view", "edit", "archive", "soft_remove", "permanent_remove", "restore", "use_in_context", "audit"),
+    "tenant_admin": ("manage", "share", "view", "edit", "archive", "soft_remove", "restore", "use_in_context", "audit"),
+    "tenant_member": ("view", "edit", "use_in_context"),
+    "tenant_viewer": ("view",),
+    "persona_manager": ("view", "edit", "use_in_context", "manage"),
+    "data_steward": ("view", "edit", "archive", "restore", "audit"),
+    "auditor": ("view", "audit"),
+}
+
+
+def is_builtin_identity_role(name: str) -> bool:
+    return (name or "").strip().lower() in BUILT_IN_ROLE_NAMES
+
+
 def ensure_identity_group_role_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
@@ -745,6 +770,21 @@ def ensure_identity_group_role_schema(conn: sqlite3.Connection) -> None:
             UNIQUE(tenant_id, name)
         );
 
+        CREATE TABLE IF NOT EXISTS identity_role_permissions (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            role_id TEXT NOT NULL,
+            permission TEXT NOT NULL,
+            effect TEXT NOT NULL DEFAULT 'allow' CHECK(effect IN ('allow', 'deny')),
+            resource_type TEXT,
+            created_by_principal_type TEXT,
+            created_by_principal_id TEXT,
+            created_at TEXT NOT NULL,
+            is_deleted INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY(role_id) REFERENCES identity_roles(id) ON DELETE CASCADE,
+            UNIQUE(tenant_id, role_id, permission, effect, resource_type, is_deleted)
+        );
+
         CREATE TABLE IF NOT EXISTS identity_role_assignments (
             id TEXT PRIMARY KEY,
             tenant_id TEXT NOT NULL DEFAULT 'default',
@@ -768,12 +808,397 @@ def ensure_identity_group_role_schema(conn: sqlite3.Connection) -> None:
             ON identity_group_members(tenant_id, member_principal_type, member_principal_id, is_deleted);
         CREATE INDEX IF NOT EXISTS idx_identity_roles_tenant
             ON identity_roles(tenant_id, is_deleted);
+        CREATE INDEX IF NOT EXISTS idx_identity_role_permissions_role
+            ON identity_role_permissions(tenant_id, role_id, is_deleted);
+        CREATE INDEX IF NOT EXISTS idx_identity_role_permissions_permission
+            ON identity_role_permissions(tenant_id, permission, effect, is_deleted);
         CREATE INDEX IF NOT EXISTS idx_identity_role_assignments_role
             ON identity_role_assignments(tenant_id, role_id, is_deleted);
         CREATE INDEX IF NOT EXISTS idx_identity_role_assignments_principal
             ON identity_role_assignments(tenant_id, principal_type, principal_id, is_deleted);
         """
     )
+    seed_builtin_identity_roles(conn)
+
+
+def _identity_now() -> str:
+    return _utc_now_iso()
+
+
+def _identity_audit(
+    conn: sqlite3.Connection,
+    *,
+    event_type: str,
+    tenant_id: str,
+    actor_principal_type: str | None,
+    actor_principal_id: str | None,
+    resource_type: str,
+    resource_id: str,
+    summary: str,
+    before: dict | None = None,
+    after: dict | None = None,
+) -> None:
+    ensure_audit_events_schema(conn)
+    log_audit_event(
+        event_type=event_type,
+        tenant_id=tenant_id,
+        actor_principal_type=actor_principal_type or "user",
+        actor_principal_id=actor_principal_id or "local",
+        resource_type=resource_type,
+        resource_id=resource_id,
+        action="manage_identity",
+        summary=summary,
+        before=before,
+        after=after,
+        conn=conn,
+        raise_on_error=True,
+    )
+
+
+def seed_builtin_identity_roles(conn: sqlite3.Connection, tenant_id: str = "default") -> None:
+    now = _identity_now()
+    for name, permissions in _BUILT_IN_ROLE_PERMISSIONS.items():
+        role_tenant = "global" if name == "global_admin" else (tenant_id or "default")
+        role_id = f"builtin:{role_tenant}:{name}"
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO identity_roles (
+                id, tenant_id, name, display_name, description,
+                created_by_principal_type, created_by_principal_id, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, 'service', 'system', ?, ?)
+            """,
+            (role_id, role_tenant, name, name.replace("_", " ").title(), "Built-in role", now, now),
+        )
+        for permission in permissions:
+            perm_id = f"builtin:{role_tenant}:{name}:{permission}"
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO identity_role_permissions (
+                    id, tenant_id, role_id, permission, effect, resource_type,
+                    created_by_principal_type, created_by_principal_id, created_at
+                )
+                VALUES (?, ?, ?, ?, 'allow', NULL, 'service', 'system', ?)
+                """,
+                (perm_id, role_tenant, role_id, permission, now),
+            )
+
+
+def create_identity_group(
+    *,
+    name: str,
+    tenant_id: str = "default",
+    display_name: str | None = None,
+    description: str | None = None,
+    created_by_principal_type: str | None = None,
+    created_by_principal_id: str | None = None,
+    conn: sqlite3.Connection | None = None,
+) -> str:
+    def _create(target: sqlite3.Connection) -> str:
+        ensure_identity_group_role_schema(target)
+        group_id = new_uuid()
+        now = _identity_now()
+        values = (
+            group_id, tenant_id or "default", _required_acl_value("name", name).lower(),
+            (display_name or name).strip(), (description or "").strip() or None,
+            (created_by_principal_type or "user").strip() or "user",
+            (created_by_principal_id or "local").strip() or "local", now, now,
+        )
+        target.execute(
+            """
+            INSERT INTO identity_groups (
+                id, tenant_id, name, display_name, description,
+                created_by_principal_type, created_by_principal_id, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            values,
+        )
+        row = target.execute("SELECT * FROM identity_groups WHERE id = ?", (group_id,)).fetchone()
+        _identity_audit(target, event_type="identity_group.create", tenant_id=values[1], actor_principal_type=values[5], actor_principal_id=values[6], resource_type="identity_group", resource_id=group_id, summary=f"Created group {values[2]}", after=dict(row) if row else None)
+        return group_id
+    if conn is not None:
+        return _create(conn)
+    with db_session() as active_conn:
+        return _create(active_conn)
+
+
+def list_identity_groups(*, tenant_id: str | None = None, include_deleted: bool = False, conn: sqlite3.Connection | None = None) -> list[dict]:
+    def _list(target: sqlite3.Connection) -> list[dict]:
+        ensure_identity_group_role_schema(target)
+        where = [] if include_deleted else ["is_deleted = 0"]
+        params: list[Any] = []
+        if tenant_id:
+            where.append("tenant_id = ?")
+            params.append(tenant_id)
+        sql = "SELECT * FROM identity_groups" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY tenant_id, name"
+        return [dict(r) for r in target.execute(sql, params).fetchall()]
+    if conn is not None:
+        return _list(conn)
+    with db_session() as active_conn:
+        return _list(active_conn)
+
+
+def update_identity_group(group_id: str, *, display_name: str | None = None, description: str | None = None, is_deleted: bool | None = None, actor_principal_type: str | None = None, actor_principal_id: str | None = None, conn: sqlite3.Connection | None = None) -> bool:
+    def _update(target: sqlite3.Connection) -> bool:
+        before_row = target.execute("SELECT * FROM identity_groups WHERE id = ?", (group_id,)).fetchone()
+        if not before_row:
+            return False
+        before = dict(before_row)
+        target.execute(
+            """
+            UPDATE identity_groups
+            SET display_name = COALESCE(?, display_name), description = COALESCE(?, description),
+                is_deleted = COALESCE(?, is_deleted), updated_at = ?
+            WHERE id = ?
+            """,
+            (display_name, description, None if is_deleted is None else int(is_deleted), _identity_now(), group_id),
+        )
+        after = dict(target.execute("SELECT * FROM identity_groups WHERE id = ?", (group_id,)).fetchone())
+        _identity_audit(target, event_type="identity_group.update", tenant_id=after["tenant_id"], actor_principal_type=actor_principal_type, actor_principal_id=actor_principal_id, resource_type="identity_group", resource_id=group_id, summary=f"Updated group {after['name']}", before=before, after=after)
+        return True
+    if conn is not None:
+        return _update(conn)
+    with db_session() as active_conn:
+        return _update(active_conn)
+
+
+def add_identity_group_member(*, group_id: str, member_principal_type: str, member_principal_id: str, tenant_id: str = "default", added_by_principal_type: str | None = None, added_by_principal_id: str | None = None, expires_at: str | None = None, conn: sqlite3.Connection | None = None) -> str:
+    def _add(target: sqlite3.Connection) -> str:
+        ensure_identity_group_role_schema(target)
+        member_type = _validate_ace_principal_type(member_principal_type)
+        member_id = _required_acl_value("member_principal_id", member_principal_id)
+        membership_id = new_uuid()
+        now = _identity_now()
+        target.execute(
+            """
+            INSERT INTO identity_group_members (
+                id, tenant_id, group_id, member_principal_type, member_principal_id,
+                added_by_principal_type, added_by_principal_id, created_at, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (membership_id, tenant_id or "default", group_id, member_type, member_id, added_by_principal_type or "user", added_by_principal_id or "local", now, expires_at),
+        )
+        row = target.execute("SELECT * FROM identity_group_members WHERE id = ?", (membership_id,)).fetchone()
+        _identity_audit(target, event_type="identity_group_member.add", tenant_id=tenant_id or "default", actor_principal_type=added_by_principal_type, actor_principal_id=added_by_principal_id, resource_type="identity_group", resource_id=group_id, summary=f"Added {member_type}:{member_id} to group", after=dict(row) if row else None)
+        return membership_id
+    if conn is not None:
+        return _add(conn)
+    with db_session() as active_conn:
+        return _add(active_conn)
+
+
+def list_identity_group_members(*, group_id: str | None = None, tenant_id: str | None = None, member_principal_type: str | None = None, member_principal_id: str | None = None, include_deleted: bool = False, conn: sqlite3.Connection | None = None) -> list[dict]:
+    def _list(target: sqlite3.Connection) -> list[dict]:
+        ensure_identity_group_role_schema(target)
+        where = [] if include_deleted else ["is_deleted = 0"]
+        params: list[Any] = []
+        for col, value in (("tenant_id", tenant_id), ("group_id", group_id), ("member_principal_type", member_principal_type), ("member_principal_id", member_principal_id)):
+            if value:
+                where.append(f"{col} = ?")
+                params.append(value)
+        sql = "SELECT * FROM identity_group_members" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY created_at, id"
+        return [dict(r) for r in target.execute(sql, params).fetchall()]
+    if conn is not None:
+        return _list(conn)
+    with db_session() as active_conn:
+        return _list(active_conn)
+
+
+def create_identity_role(*, name: str, tenant_id: str = "default", display_name: str | None = None, description: str | None = None, created_by_principal_type: str | None = None, created_by_principal_id: str | None = None, conn: sqlite3.Connection | None = None) -> str:
+    def _create(target: sqlite3.Connection) -> str:
+        ensure_identity_group_role_schema(target)
+        role_id = new_uuid()
+        now = _identity_now()
+        values = (role_id, tenant_id or "default", _required_acl_value("name", name).lower(), (display_name or name).strip(), (description or "").strip() or None, created_by_principal_type or "user", created_by_principal_id or "local", now, now)
+        target.execute("""
+            INSERT INTO identity_roles (id, tenant_id, name, display_name, description, created_by_principal_type, created_by_principal_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, values)
+        row = target.execute("SELECT * FROM identity_roles WHERE id = ?", (role_id,)).fetchone()
+        _identity_audit(target, event_type="identity_role.create", tenant_id=values[1], actor_principal_type=values[5], actor_principal_id=values[6], resource_type="identity_role", resource_id=role_id, summary=f"Created role {values[2]}", after=dict(row) if row else None)
+        return role_id
+    if conn is not None:
+        return _create(conn)
+    with db_session() as active_conn:
+        return _create(active_conn)
+
+
+def list_identity_roles(*, tenant_id: str | None = None, include_deleted: bool = False, conn: sqlite3.Connection | None = None) -> list[dict]:
+    def _list(target: sqlite3.Connection) -> list[dict]:
+        ensure_identity_group_role_schema(target)
+        where = [] if include_deleted else ["is_deleted = 0"]
+        params: list[Any] = []
+        if tenant_id:
+            where.append("tenant_id = ?")
+            params.append(tenant_id)
+        sql = "SELECT * FROM identity_roles" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY tenant_id, name"
+        return [dict(r) for r in target.execute(sql, params).fetchall()]
+    if conn is not None:
+        return _list(conn)
+    with db_session() as active_conn:
+        return _list(active_conn)
+
+
+def update_identity_role(role_id: str, *, display_name: str | None = None, description: str | None = None, is_deleted: bool | None = None, actor_principal_type: str | None = None, actor_principal_id: str | None = None, conn: sqlite3.Connection | None = None) -> bool:
+    def _update(target: sqlite3.Connection) -> bool:
+        before_row = target.execute("SELECT * FROM identity_roles WHERE id = ?", (role_id,)).fetchone()
+        if not before_row:
+            return False
+        before = dict(before_row)
+        target.execute("""
+            UPDATE identity_roles
+            SET display_name = COALESCE(?, display_name), description = COALESCE(?, description), is_deleted = COALESCE(?, is_deleted), updated_at = ?
+            WHERE id = ?
+        """, (display_name, description, None if is_deleted is None else int(is_deleted), _identity_now(), role_id))
+        after = dict(target.execute("SELECT * FROM identity_roles WHERE id = ?", (role_id,)).fetchone())
+        _identity_audit(target, event_type="identity_role.update", tenant_id=after["tenant_id"], actor_principal_type=actor_principal_type, actor_principal_id=actor_principal_id, resource_type="identity_role", resource_id=role_id, summary=f"Updated role {after['name']}", before=before, after=after)
+        return True
+    if conn is not None:
+        return _update(conn)
+    with db_session() as active_conn:
+        return _update(active_conn)
+
+
+def add_identity_role_permission(*, role_id: str, permission: str, tenant_id: str = "default", effect: str = "allow", resource_type: str | None = None, created_by_principal_type: str | None = None, created_by_principal_id: str | None = None, conn: sqlite3.Connection | None = None) -> str:
+    def _add(target: sqlite3.Connection) -> str:
+        ensure_identity_group_role_schema(target)
+        perm = _validate_ace_action(permission)
+        normalized_effect = _required_acl_value("effect", effect).lower()
+        if normalized_effect not in _VALID_ACE_EFFECTS:
+            raise ValueError("effect must be 'allow' or 'deny'")
+        permission_id = new_uuid()
+        now = _identity_now()
+        target.execute("""
+            INSERT INTO identity_role_permissions (id, tenant_id, role_id, permission, effect, resource_type, created_by_principal_type, created_by_principal_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (permission_id, tenant_id or "default", role_id, perm, normalized_effect, (resource_type or "").strip() or None, created_by_principal_type or "user", created_by_principal_id or "local", now))
+        row = target.execute("SELECT * FROM identity_role_permissions WHERE id = ?", (permission_id,)).fetchone()
+        _identity_audit(target, event_type="identity_role_permission.add", tenant_id=tenant_id or "default", actor_principal_type=created_by_principal_type, actor_principal_id=created_by_principal_id, resource_type="identity_role", resource_id=role_id, summary=f"Added {normalized_effect} {perm} role permission", after=dict(row) if row else None)
+        return permission_id
+    if conn is not None:
+        return _add(conn)
+    with db_session() as active_conn:
+        return _add(active_conn)
+
+
+def list_identity_role_permissions(*, role_id: str | None = None, tenant_id: str | None = None, include_deleted: bool = False, conn: sqlite3.Connection | None = None) -> list[dict]:
+    def _list(target: sqlite3.Connection) -> list[dict]:
+        ensure_identity_group_role_schema(target)
+        where = [] if include_deleted else ["is_deleted = 0"]
+        params: list[Any] = []
+        for col, value in (("tenant_id", tenant_id), ("role_id", role_id)):
+            if value:
+                where.append(f"{col} = ?")
+                params.append(value)
+        sql = "SELECT * FROM identity_role_permissions" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY created_at, id"
+        return [dict(r) for r in target.execute(sql, params).fetchall()]
+    if conn is not None:
+        return _list(conn)
+    with db_session() as active_conn:
+        return _list(active_conn)
+
+
+def assign_identity_role(*, role_id: str, principal_type: str, principal_id: str, tenant_id: str = "default", granted_by_principal_type: str | None = None, granted_by_principal_id: str | None = None, expires_at: str | None = None, conn: sqlite3.Connection | None = None) -> str:
+    def _assign(target: sqlite3.Connection) -> str:
+        ensure_identity_group_role_schema(target)
+        normalized_type = _validate_ace_principal_type(principal_type)
+        assignment_id = new_uuid()
+        now = _identity_now()
+        target.execute("""
+            INSERT INTO identity_role_assignments (id, tenant_id, role_id, principal_type, principal_id, granted_by_principal_type, granted_by_principal_id, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (assignment_id, tenant_id or "default", role_id, normalized_type, _required_acl_value("principal_id", principal_id), granted_by_principal_type or "user", granted_by_principal_id or "local", now, expires_at))
+        row = target.execute("SELECT * FROM identity_role_assignments WHERE id = ?", (assignment_id,)).fetchone()
+        _identity_audit(target, event_type="identity_role_assignment.add", tenant_id=tenant_id or "default", actor_principal_type=granted_by_principal_type, actor_principal_id=granted_by_principal_id, resource_type="identity_role", resource_id=role_id, summary=f"Assigned role to {normalized_type}:{principal_id}", after=dict(row) if row else None)
+        return assignment_id
+    if conn is not None:
+        return _assign(conn)
+    with db_session() as active_conn:
+        return _assign(active_conn)
+
+
+def list_identity_role_assignments(*, role_id: str | None = None, tenant_id: str | None = None, principal_type: str | None = None, principal_id: str | None = None, include_deleted: bool = False, conn: sqlite3.Connection | None = None) -> list[dict]:
+    def _list(target: sqlite3.Connection) -> list[dict]:
+        ensure_identity_group_role_schema(target)
+        where = [] if include_deleted else ["is_deleted = 0"]
+        params: list[Any] = []
+        for col, value in (("tenant_id", tenant_id), ("role_id", role_id), ("principal_type", principal_type), ("principal_id", principal_id)):
+            if value:
+                where.append(f"{col} = ?")
+                params.append(value)
+        sql = "SELECT * FROM identity_role_assignments" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY created_at, id"
+        return [dict(r) for r in target.execute(sql, params).fetchall()]
+    if conn is not None:
+        return _list(conn)
+    with db_session() as active_conn:
+        return _list(active_conn)
+
+
+def update_identity_group_member(membership_id: str, *, expires_at: str | None = None, is_deleted: bool | None = None, actor_principal_type: str | None = None, actor_principal_id: str | None = None, conn: sqlite3.Connection | None = None) -> bool:
+    def _update(target: sqlite3.Connection) -> bool:
+        before_row = target.execute("SELECT * FROM identity_group_members WHERE id = ?", (membership_id,)).fetchone()
+        if not before_row:
+            return False
+        before = dict(before_row)
+        target.execute("""
+            UPDATE identity_group_members
+            SET expires_at = COALESCE(?, expires_at), is_deleted = COALESCE(?, is_deleted)
+            WHERE id = ?
+        """, (expires_at, None if is_deleted is None else int(is_deleted), membership_id))
+        after = dict(target.execute("SELECT * FROM identity_group_members WHERE id = ?", (membership_id,)).fetchone())
+        _identity_audit(target, event_type="identity_group_member.update", tenant_id=after["tenant_id"], actor_principal_type=actor_principal_type, actor_principal_id=actor_principal_id, resource_type="identity_group", resource_id=after["group_id"], summary=f"Updated group membership {membership_id}", before=before, after=after)
+        return True
+    if conn is not None:
+        return _update(conn)
+    with db_session() as active_conn:
+        return _update(active_conn)
+
+
+def update_identity_role_permission(permission_id: str, *, effect: str | None = None, resource_type: str | None = None, is_deleted: bool | None = None, actor_principal_type: str | None = None, actor_principal_id: str | None = None, conn: sqlite3.Connection | None = None) -> bool:
+    def _update(target: sqlite3.Connection) -> bool:
+        before_row = target.execute("SELECT * FROM identity_role_permissions WHERE id = ?", (permission_id,)).fetchone()
+        if not before_row:
+            return False
+        before = dict(before_row)
+        normalized_effect = None
+        if effect is not None:
+            normalized_effect = _required_acl_value("effect", effect).lower()
+            if normalized_effect not in _VALID_ACE_EFFECTS:
+                raise ValueError("effect must be 'allow' or 'deny'")
+        target.execute("""
+            UPDATE identity_role_permissions
+            SET effect = COALESCE(?, effect), resource_type = COALESCE(?, resource_type), is_deleted = COALESCE(?, is_deleted)
+            WHERE id = ?
+        """, (normalized_effect, (resource_type or "").strip() or None, None if is_deleted is None else int(is_deleted), permission_id))
+        after = dict(target.execute("SELECT * FROM identity_role_permissions WHERE id = ?", (permission_id,)).fetchone())
+        _identity_audit(target, event_type="identity_role_permission.update", tenant_id=after["tenant_id"], actor_principal_type=actor_principal_type, actor_principal_id=actor_principal_id, resource_type="identity_role", resource_id=after["role_id"], summary=f"Updated role permission {permission_id}", before=before, after=after)
+        return True
+    if conn is not None:
+        return _update(conn)
+    with db_session() as active_conn:
+        return _update(active_conn)
+
+
+def update_identity_role_assignment(assignment_id: str, *, expires_at: str | None = None, is_deleted: bool | None = None, actor_principal_type: str | None = None, actor_principal_id: str | None = None, conn: sqlite3.Connection | None = None) -> bool:
+    def _update(target: sqlite3.Connection) -> bool:
+        before_row = target.execute("SELECT * FROM identity_role_assignments WHERE id = ?", (assignment_id,)).fetchone()
+        if not before_row:
+            return False
+        before = dict(before_row)
+        target.execute("""
+            UPDATE identity_role_assignments
+            SET expires_at = COALESCE(?, expires_at), is_deleted = COALESCE(?, is_deleted)
+            WHERE id = ?
+        """, (expires_at, None if is_deleted is None else int(is_deleted), assignment_id))
+        after = dict(target.execute("SELECT * FROM identity_role_assignments WHERE id = ?", (assignment_id,)).fetchone())
+        _identity_audit(target, event_type="identity_role_assignment.update", tenant_id=after["tenant_id"], actor_principal_type=actor_principal_type, actor_principal_id=actor_principal_id, resource_type="identity_role", resource_id=after["role_id"], summary=f"Updated role assignment {assignment_id}", before=before, after=after)
+        return True
+    if conn is not None:
+        return _update(conn)
+    with db_session() as active_conn:
+        return _update(active_conn)
+
 
 def ensure_parent_dir(p: Path) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
