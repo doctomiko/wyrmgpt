@@ -18,7 +18,7 @@ from .logging_helper import log_debug
 from .config import (
     load_core_config, load_app_config, load_ui_config,
     RetrievalConfig, load_retrieval_config, 
-    load_import_config,
+    load_import_config, resolve_tenant_policy,
 )
 
 from .markdown_helper import autolink_text, apply_house_markdown_normalization
@@ -844,16 +844,132 @@ def _ensure_conversation_exists(conn: sqlite3.Connection, conversation_id: str) 
     if not row:
         raise ValueError(f"Conversation not found: {conversation_id}")
 
-def db_create_conversation(conversation_id: str, title: str = "New chat") -> None:
+def _principal_from_payload(
+    role: str,
+    meta: dict | None = None,
+    author_meta: dict | None = None,
+) -> tuple[str, str]:
+    payloads = [author_meta or {}, meta or {}]
+    for payload in payloads:
+        principal_type = (payload.get("principal_type") or payload.get("type") or "").strip()
+        principal_id = (payload.get("principal_id") or payload.get("id") or "").strip()
+        if principal_type and principal_id:
+            return principal_type, principal_id
+
+    role = (role or "").strip().lower()
+    if role == "assistant":
+        persona_id = ""
+        for payload in payloads:
+            persona_id = (
+                payload.get("persona_id")
+                or payload.get("deployment_id")
+                or payload.get("model")
+                or ""
+            ).strip()
+            if persona_id:
+                break
+        return "persona", persona_id or "assistant"
+    return "user", "local"
+
+def _conversation_access_resource_from_row(row: sqlite3.Row | dict) -> dict:
+    return {
+        "resource_type": "conversation",
+        "resource_id": row["id"],
+        "tenant_id": row["tenant_id"] or "default",
+        "owner_principal_type": row["owner_principal_type"],
+        "owner_principal_id": row["owner_principal_id"],
+        "visibility": row["visibility"],
+    }
+
+def db_get_conversation_access_resource(conversation_id: str) -> dict | None:
+    with db_session() as conn:
+        row = conn.execute(
+            """
+            SELECT id, tenant_id, owner_principal_type, owner_principal_id, visibility
+            FROM conversations
+            WHERE id = ?
+            """,
+            (conversation_id,),
+        ).fetchone()
+        return _conversation_access_resource_from_row(row) if row else None
+
+def db_get_message_access_resource(message_id: int) -> dict | None:
+    with db_session() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                m.id,
+                m.conversation_id,
+                m.tenant_id,
+                m.owner_principal_type,
+                m.owner_principal_id,
+                m.visibility,
+                c.tenant_id AS conversation_tenant_id
+            FROM messages m
+            LEFT JOIN conversations c ON c.id = m.conversation_id
+            WHERE m.id = ?
+            """,
+            (int(message_id),),
+        ).fetchone()
+        if not row:
+            return None
+        tenant_id = row["tenant_id"] or row["conversation_tenant_id"] or "default"
+        return {
+            "resource_type": "message",
+            "resource_id": str(row["id"]),
+            "tenant_id": tenant_id,
+            "owner_principal_type": row["owner_principal_type"],
+            "owner_principal_id": row["owner_principal_id"],
+            "visibility": row["visibility"],
+            "inherited_from": [
+                {"resource_type": "conversation", "resource_id": row["conversation_id"]}
+            ],
+        }
+
+def db_create_conversation(
+    conversation_id: str,
+    title: str = "New chat",
+    *,
+    tenant_id: str | None = None,
+    owner_principal_type: str | None = None,
+    owner_principal_id: str | None = None,
+    created_by_principal_type: str | None = None,
+    created_by_principal_id: str | None = None,
+    visibility: str | None = None,
+    sharing_mode: str | None = None,
+    provenance: dict | None = None,
+) -> None:
     now = _utc_now_iso()
     title = (title or "").strip() or "New chat"
+    policy = resolve_tenant_policy(tenant_id)
+    tenant_id = (tenant_id or policy.tenant_id or "default").strip() or "default"
+    owner_principal_type = (owner_principal_type or "user").strip() or "user"
+    owner_principal_id = (owner_principal_id or "local").strip() or "local"
+    created_by_principal_type = (created_by_principal_type or owner_principal_type).strip() or owner_principal_type
+    created_by_principal_id = (created_by_principal_id or owner_principal_id).strip() or owner_principal_id
+    visibility = (visibility or policy.conversation_visibility or "private").strip() or "private"
+    sharing_mode = (sharing_mode or "owner").strip() or "owner"
+    provenance_json = json.dumps(provenance, ensure_ascii=False, sort_keys=True) if provenance else None
+
     with db_session() as conn:
         conn.execute(
             """
-            INSERT INTO conversations(id, title, created_at, updated_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO conversations(
+                id, title, created_at, updated_at, tenant_id,
+                owner_principal_type, owner_principal_id,
+                created_by_principal_type, created_by_principal_id,
+                source_principal_type, source_principal_id,
+                visibility, sharing_mode, provenance_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (conversation_id, title, now, now),
+            (
+                conversation_id, title, now, now, tenant_id,
+                owner_principal_type, owner_principal_id,
+                created_by_principal_type, created_by_principal_id,
+                created_by_principal_type, created_by_principal_id,
+                visibility, sharing_mode, provenance_json,
+            ),
         )
 
 def update_conversation_title(conversation_id: str, title: str) -> bool:
@@ -898,7 +1014,15 @@ def db_list_conversations(
                 c.project_id,
                 c.archived,
                 p.name AS project_name,
-                s.summary_text AS summary_text
+                s.summary_text AS summary_text,
+                c.tenant_id,
+                c.owner_principal_type,
+                c.owner_principal_id,
+                c.created_by_principal_type,
+                c.created_by_principal_id,
+                c.visibility,
+                c.sharing_mode,
+                c.provenance_json
             FROM conversations c
             LEFT JOIN projects p ON p.id = c.project_id
             LEFT JOIN artifacts s
@@ -924,6 +1048,14 @@ def db_list_conversations(
                 "is_unassigned_pseudo": r["project_id"] is None,
                 "archived": bool(r["archived"]),
                 "summary_excerpt": _summary_excerpt(r["summary_text"] or ""),
+                "tenant_id": r["tenant_id"] or "default",
+                "owner_principal_type": r["owner_principal_type"],
+                "owner_principal_id": r["owner_principal_id"],
+                "created_by_principal_type": r["created_by_principal_type"],
+                "created_by_principal_id": r["created_by_principal_id"],
+                "visibility": r["visibility"],
+                "sharing_mode": r["sharing_mode"],
+                "provenance_json": r["provenance_json"],
             }
             for r in rows
         ]
@@ -931,7 +1063,7 @@ def db_list_conversations(
 def db_set_conversation_project(conversation_id: str, project_id: int | None) -> None:
     with db_session() as conn:
         conn.execute(
-            "UPDATE conversations SET project_id = ?, updated_at = ? WHERE id = ?",
+            "UPDATE conversations SET project_id = ?, updated_at = ?, sharing_mode = COALESCE(sharing_mode, 'owner') WHERE id = ?",
             (project_id, _utc_now_iso(), conversation_id),
         )
 
@@ -2018,16 +2150,41 @@ def db_add_message(
     now = _utc_now_iso()
     meta_json = json.dumps(meta) if meta is not None else None
     author_meta_json = json.dumps(author_meta) if author_meta is not None else None
+    source_principal_type, source_principal_id = _principal_from_payload(role, meta, author_meta)
 
     new_message_id = 0
 
     with db_session() as conn:
+        conv = conn.execute(
+            """
+            SELECT tenant_id, owner_principal_type, owner_principal_id, visibility
+            FROM conversations
+            WHERE id = ?
+            """,
+            (conversation_id,),
+        ).fetchone()
+        tenant_id = (conv["tenant_id"] if conv else None) or "default"
+        owner_principal_type = (conv["owner_principal_type"] if conv else None) or source_principal_type
+        owner_principal_id = (conv["owner_principal_id"] if conv else None) or source_principal_id
         cur = conn.execute(
             """
-            INSERT INTO messages(conversation_id, role, content, created_at, meta, author_meta)
-            VALUES(?, ?, ?, ?, ?, ?)
+            INSERT INTO messages(
+                conversation_id, role, content, created_at, meta, author_meta,
+                tenant_id, owner_principal_type, owner_principal_id,
+                created_by_principal_type, created_by_principal_id,
+                source_principal_type, source_principal_id,
+                visibility, sharing_mode, provenance_json
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (conversation_id, role, content, now, meta_json, author_meta_json),
+            (
+                conversation_id, role, content, now, meta_json, author_meta_json,
+                tenant_id, owner_principal_type, owner_principal_id,
+                source_principal_type, source_principal_id,
+                source_principal_type, source_principal_id,
+                "inherit", "inherit",
+                json.dumps({"conversation_id": conversation_id}, ensure_ascii=False, sort_keys=True),
+            ),
         )
         new_message_id = int(cur.lastrowid or 0)
 
@@ -2064,7 +2221,12 @@ def db_get_messages_raw(conversation_id: str, limit: int = 200) -> list[dict]:
     with db_session() as conn:
         rows = conn.execute(
             """
-            SELECT id, role, content, created_at, meta, author_meta
+            SELECT
+                id, role, content, created_at, meta, author_meta,
+                tenant_id, owner_principal_type, owner_principal_id,
+                created_by_principal_type, created_by_principal_id,
+                source_principal_type, source_principal_id,
+                visibility, sharing_mode, provenance_json
             FROM messages
             WHERE conversation_id = ?
             ORDER BY id ASC
@@ -2098,6 +2260,17 @@ def db_get_messages_raw(conversation_id: str, limit: int = 200) -> list[dict]:
                 "created_at": r["created_at"],
                 "meta": meta_obj,
                 "author_meta": author_meta_obj,
+                "tenant_id": r["tenant_id"] or "default",
+                "owner_principal_type": r["owner_principal_type"],
+                "owner_principal_id": r["owner_principal_id"],
+                "created_by_principal_type": r["created_by_principal_type"],
+                "created_by_principal_id": r["created_by_principal_id"],
+                "source_principal_type": r["source_principal_type"],
+                "source_principal_id": r["source_principal_id"],
+                "visibility": r["visibility"],
+                "sharing_mode": r["sharing_mode"],
+                "provenance_json": r["provenance_json"],
+                "inherited_from": [{"resource_type": "conversation", "resource_id": conversation_id}],
             }
         )
     return results
