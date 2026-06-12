@@ -88,6 +88,10 @@ def _migrate_schema_v28(conn) -> None:
     )
 
 
+def _migrate_schema_v29(conn) -> None:
+    ensure_resource_ownership_columns(conn)
+
+
 MIGRATIONS: list[tuple[int, Callable]] = [
     (8, _migrate_schema_v8),
     (9, _migrate_schema_v9),
@@ -110,6 +114,7 @@ MIGRATIONS: list[tuple[int, Callable]] = [
     (26, _migrate_schema_v26),
     (27, _migrate_schema_v27),
     (28, _migrate_schema_v28),
+    (29, _migrate_schema_v29),
 ]
 
 # endregion
@@ -1045,8 +1050,6 @@ def db_get_message_access_resource(message_id: int) -> dict | None:
                 m.id,
                 m.conversation_id,
                 m.tenant_id,
-                m.owner_principal_type,
-                m.owner_principal_id,
                 m.visibility,
                 c.tenant_id AS conversation_tenant_id
             FROM messages m
@@ -1062,9 +1065,9 @@ def db_get_message_access_resource(message_id: int) -> dict | None:
             "resource_type": "message",
             "resource_id": str(row["id"]),
             "tenant_id": tenant_id,
-            "owner_principal_type": row["owner_principal_type"],
-            "owner_principal_id": row["owner_principal_id"],
-            "visibility": row["visibility"],
+            "owner_principal_type": None,
+            "owner_principal_id": None,
+            "visibility": row["visibility"] or "inherit",
             "inherited_from": [
                 {"resource_type": "conversation", "resource_id": row["conversation_id"]}
             ],
@@ -2301,30 +2304,26 @@ def db_add_message(
     with db_session() as conn:
         conv = conn.execute(
             """
-            SELECT tenant_id, owner_principal_type, owner_principal_id, visibility
+            SELECT tenant_id, visibility
             FROM conversations
             WHERE id = ?
             """,
             (conversation_id,),
         ).fetchone()
         tenant_id = (conv["tenant_id"] if conv else None) or "default"
-        owner_principal_type = (conv["owner_principal_type"] if conv else None) or source_principal_type
-        owner_principal_id = (conv["owner_principal_id"] if conv else None) or source_principal_id
         cur = conn.execute(
             """
             INSERT INTO messages(
                 conversation_id, role, content, created_at, meta, author_meta,
-                tenant_id, owner_principal_type, owner_principal_id,
-                created_by_principal_type, created_by_principal_id,
+                tenant_id, created_by_principal_type, created_by_principal_id,
                 source_principal_type, source_principal_id,
                 visibility, sharing_mode, provenance_json
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 conversation_id, role, content, now, meta_json, author_meta_json,
-                tenant_id, owner_principal_type, owner_principal_id,
-                source_principal_type, source_principal_id,
+                tenant_id, source_principal_type, source_principal_id,
                 source_principal_type, source_principal_id,
                 "inherit", "inherit",
                 json.dumps({"conversation_id": conversation_id}, ensure_ascii=False, sort_keys=True),
@@ -2367,7 +2366,7 @@ def db_get_messages_raw(conversation_id: str, limit: int = 200) -> list[dict]:
             """
             SELECT
                 id, role, content, created_at, meta, author_meta,
-                tenant_id, owner_principal_type, owner_principal_id,
+                tenant_id,
                 created_by_principal_type, created_by_principal_id,
                 source_principal_type, source_principal_id,
                 visibility, sharing_mode, provenance_json
@@ -2405,8 +2404,8 @@ def db_get_messages_raw(conversation_id: str, limit: int = 200) -> list[dict]:
                 "meta": meta_obj,
                 "author_meta": author_meta_obj,
                 "tenant_id": r["tenant_id"] or "default",
-                "owner_principal_type": r["owner_principal_type"],
-                "owner_principal_id": r["owner_principal_id"],
+                "owner_principal_type": None,
+                "owner_principal_id": None,
                 "created_by_principal_type": r["created_by_principal_type"],
                 "created_by_principal_id": r["created_by_principal_id"],
                 "source_principal_type": r["source_principal_type"],

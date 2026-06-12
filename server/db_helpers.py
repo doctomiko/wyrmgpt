@@ -9,7 +9,7 @@ from typing import Any, Callable, Iterable, Iterator
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-SCHEMA_VERSION = 28
+SCHEMA_VERSION = 29
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
@@ -187,22 +187,82 @@ def get_audit_event(audit_id: str, conn: sqlite3.Connection | None = None) -> di
 _OWNED_RESOURCE_TABLES = (
     "projects",
     "conversations",
-    "messages",
     "memories",
     "files",
     "artifacts",
+    "personas",
+    "user_profiles",
 )
+
+_MESSAGE_IDENTITY_TABLES = ("messages",)
+
+_OWNED_RESOURCE_ID_COLUMNS = {
+    "projects": "id",
+    "conversations": "id",
+    "memories": "id",
+    "files": "id",
+    "artifacts": "id",
+    "personas": "id",
+    "user_profiles": "id",
+}
+
+
+def ensure_identity_resource_tables(conn: sqlite3.Connection) -> None:
+    now = _utc_now_iso()
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS personas (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            display_name TEXT NOT NULL,
+            description TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS user_profiles (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            user_id TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            profile_json TEXT,
+            about_text TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(tenant_id, user_id)
+        );
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO personas (id, tenant_id, display_name, description, created_at, updated_at)
+        VALUES ('assistant', 'default', 'Doc Tomiko', 'Default local assistant persona', ?, ?)
+        """,
+        (now, now),
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO user_profiles (id, tenant_id, user_id, display_name, profile_json, about_text, created_at, updated_at)
+        VALUES ('local', 'default', 'local', 'Doc', NULL, NULL, ?, ?)
+        """,
+        (now, now),
+    )
 
 def ensure_resource_ownership_columns(
     conn: sqlite3.Connection,
     tables: Iterable[str] = _OWNED_RESOURCE_TABLES,
 ) -> None:
+    ensure_identity_resource_tables(conn)
     for table in tables:
         if not table or not _VALID_TABLE.match(table):
             raise ValueError(f"Unsafe table name: {table!r}")
         if not _table_exists(conn, table):
             continue
         _add_column_if_missing(conn, table, "tenant_id", "TEXT NOT NULL DEFAULT 'default'")
+        _add_column_if_missing(conn, table, "owner_user_id", "TEXT NOT NULL DEFAULT 'local'")
+        _add_column_if_missing(conn, table, "created_by_user_id", "TEXT NOT NULL DEFAULT 'local'")
+        _add_column_if_missing(conn, table, "updated_by_user_id", "TEXT NOT NULL DEFAULT 'local'")
         _add_column_if_missing(conn, table, "owner_principal_type", "TEXT")
         _add_column_if_missing(conn, table, "owner_principal_id", "TEXT")
         _add_column_if_missing(conn, table, "created_by_principal_type", "TEXT")
@@ -214,7 +274,30 @@ def ensure_resource_ownership_columns(
         _add_column_if_missing(conn, table, "provenance_json", "TEXT")
 
         conn.execute(
+            f"""
+            UPDATE {table}
+            SET
+                owner_user_id = COALESCE(NULLIF(TRIM(owner_user_id), ''), 'local'),
+                created_by_user_id = COALESCE(NULLIF(TRIM(created_by_user_id), ''), 'local'),
+                updated_by_user_id = COALESCE(NULLIF(TRIM(updated_by_user_id), ''), created_by_user_id, owner_user_id, 'local'),
+                owner_principal_type = COALESCE(NULLIF(TRIM(owner_principal_type), ''), 'user'),
+                owner_principal_id = COALESCE(NULLIF(TRIM(owner_principal_id), ''), owner_user_id, 'local'),
+                created_by_principal_type = COALESCE(NULLIF(TRIM(created_by_principal_type), ''), 'user'),
+                created_by_principal_id = COALESCE(NULLIF(TRIM(created_by_principal_id), ''), created_by_user_id, 'local')
+            """
+        )
+
+        conn.execute(
             f"CREATE INDEX IF NOT EXISTS idx_{table}_tenant_id ON {table}(tenant_id)"
+        )
+        conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{table}_owner_user_id ON {table}(owner_user_id)"
+        )
+        conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{table}_created_by_user_id ON {table}(created_by_user_id)"
+        )
+        conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{table}_updated_by_user_id ON {table}(updated_by_user_id)"
         )
         conn.execute(
             f"""
@@ -237,6 +320,118 @@ def ensure_resource_ownership_columns(
         conn.execute(
             f"CREATE INDEX IF NOT EXISTS idx_{table}_visibility ON {table}(visibility)"
         )
+
+    ensure_message_identity_columns(conn)
+
+
+def ensure_message_identity_columns(conn: sqlite3.Connection) -> None:
+    for table in _MESSAGE_IDENTITY_TABLES:
+        if not _table_exists(conn, table):
+            continue
+        _add_column_if_missing(conn, table, "tenant_id", "TEXT NOT NULL DEFAULT 'default'")
+        _add_column_if_missing(conn, table, "created_by_principal_type", "TEXT")
+        _add_column_if_missing(conn, table, "created_by_principal_id", "TEXT")
+        _add_column_if_missing(conn, table, "source_principal_type", "TEXT")
+        _add_column_if_missing(conn, table, "source_principal_id", "TEXT")
+        _add_column_if_missing(conn, table, "visibility", "TEXT NOT NULL DEFAULT 'inherit'")
+        _add_column_if_missing(conn, table, "sharing_mode", "TEXT NOT NULL DEFAULT 'inherit'")
+        _add_column_if_missing(conn, table, "provenance_json", "TEXT")
+        conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_tenant_id ON {table}(tenant_id)")
+        conn.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS idx_{table}_source_principal
+                ON {table}(source_principal_type, source_principal_id)
+            """
+        )
+
+def transfer_resource_ownership(
+    *,
+    resource_type: str,
+    resource_id: str,
+    owner_user_id: str,
+    updated_by_user_id: str = "local",
+    tenant_id: str = "default",
+    conn: sqlite3.Connection | None = None,
+) -> bool:
+    table = (resource_type or "").strip()
+    if table == "project":
+        table = "projects"
+    elif table == "conversation":
+        table = "conversations"
+    elif table == "memory":
+        table = "memories"
+    elif table == "file":
+        table = "files"
+    elif table == "artifact":
+        table = "artifacts"
+    elif table == "persona":
+        table = "personas"
+    elif table == "user_profile":
+        table = "user_profiles"
+
+    if table not in _OWNED_RESOURCE_ID_COLUMNS:
+        raise ValueError(f"Unsupported owned resource type: {resource_type}")
+    owner_user_id = (owner_user_id or "").strip()
+    if not owner_user_id:
+        raise ValueError("owner_user_id is required")
+    updated_by_user_id = (updated_by_user_id or "local").strip() or "local"
+    id_column = _OWNED_RESOURCE_ID_COLUMNS[table]
+    now = _utc_now_iso()
+
+    def _transfer(target: sqlite3.Connection) -> bool:
+        row = target.execute(
+            f"SELECT * FROM {table} WHERE {id_column} = ?",
+            (str(resource_id),),
+        ).fetchone()
+        if row is None and table == "projects":
+            row = target.execute(
+                f"SELECT * FROM {table} WHERE {id_column} = ?",
+                (int(resource_id),),
+            ).fetchone()
+        if row is None:
+            return False
+        before = dict(row)
+        target.execute(
+            f"""
+            UPDATE {table}
+            SET
+                owner_user_id = ?,
+                updated_by_user_id = ?,
+                owner_principal_type = 'user',
+                owner_principal_id = ?,
+                updated_at = COALESCE(?, updated_at)
+            WHERE {id_column} = ?
+            """,
+            (owner_user_id, updated_by_user_id, owner_user_id, now, row[id_column]),
+        )
+        after = target.execute(
+            f"SELECT * FROM {table} WHERE {id_column} = ?",
+            (row[id_column],),
+        ).fetchone()
+        ensure_audit_events_schema(target)
+        log_audit_event(
+            event_type="ownership.transfer",
+            tenant_id=tenant_id,
+            actor_principal_type="user",
+            actor_principal_id=updated_by_user_id,
+            resource_type=resource_type,
+            resource_id=str(resource_id),
+            target_principal_type="user",
+            target_principal_id=owner_user_id,
+            action="transfer_ownership",
+            summary=f"Transferred {resource_type} ownership to {owner_user_id}",
+            before=before,
+            after=dict(after) if after else None,
+            conn=target,
+            raise_on_error=True,
+        )
+        return True
+
+    if conn is not None:
+        return _transfer(conn)
+    with db_session() as active_conn:
+        return _transfer(active_conn)
+
 
 def ensure_access_control_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(
