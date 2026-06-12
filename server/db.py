@@ -1073,6 +1073,80 @@ def db_get_message_access_resource(message_id: int) -> dict | None:
             ],
         }
 
+def _conversation_default_access_conn(
+    conn: sqlite3.Connection,
+    *,
+    tenant_id: str | None = None,
+    project_id: int | None = None,
+    user_id: str | None = None,
+    owner_principal_type: str | None = None,
+    owner_principal_id: str | None = None,
+    created_by_principal_type: str | None = None,
+    created_by_principal_id: str | None = None,
+    visibility: str | None = None,
+    sharing_mode: str | None = None,
+) -> dict:
+    policy = resolve_tenant_policy(tenant_id)
+    access = {
+        "tenant_id": (tenant_id or policy.tenant_id or "default").strip() or "default",
+        "owner_principal_type": "user",
+        "owner_principal_id": "local",
+        "created_by_principal_type": "user",
+        "created_by_principal_id": "local",
+        "visibility": (policy.conversation_visibility or "private").strip() or "private",
+        "sharing_mode": "owner",
+    }
+
+    user_id = (user_id or "local").strip() or "local"
+    profile = conn.execute(
+        """
+        SELECT tenant_id, owner_principal_type, owner_principal_id, visibility, sharing_mode
+        FROM user_profiles
+        WHERE tenant_id = ? AND user_id = ?
+        LIMIT 1
+        """,
+        (access["tenant_id"], user_id),
+    ).fetchone() if _table_exists(conn, "user_profiles") else None
+    if profile:
+        access.update({
+            "tenant_id": profile["tenant_id"] or access["tenant_id"],
+            "owner_principal_type": profile["owner_principal_type"] or access["owner_principal_type"],
+            "owner_principal_id": profile["owner_principal_id"] or access["owner_principal_id"],
+            "visibility": profile["visibility"] or access["visibility"],
+            "sharing_mode": profile["sharing_mode"] or access["sharing_mode"],
+        })
+
+    if project_id is not None:
+        project = conn.execute(
+            """
+            SELECT tenant_id, owner_principal_type, owner_principal_id, visibility, sharing_mode
+            FROM projects
+            WHERE id = ?
+            """,
+            (int(project_id),),
+        ).fetchone()
+        if project:
+            access.update({
+                "tenant_id": project["tenant_id"] or access["tenant_id"],
+                "owner_principal_type": project["owner_principal_type"] or access["owner_principal_type"],
+                "owner_principal_id": project["owner_principal_id"] or access["owner_principal_id"],
+                "visibility": project["visibility"] or access["visibility"],
+                "sharing_mode": "inherit",
+            })
+
+    if owner_principal_type:
+        access["owner_principal_type"] = owner_principal_type.strip() or access["owner_principal_type"]
+    if owner_principal_id:
+        access["owner_principal_id"] = owner_principal_id.strip() or access["owner_principal_id"]
+    access["created_by_principal_type"] = (created_by_principal_type or access["owner_principal_type"]).strip() or access["owner_principal_type"]
+    access["created_by_principal_id"] = (created_by_principal_id or access["owner_principal_id"]).strip() or access["owner_principal_id"]
+    if visibility:
+        access["visibility"] = visibility.strip() or access["visibility"]
+    if sharing_mode:
+        access["sharing_mode"] = sharing_mode.strip() or access["sharing_mode"]
+    return access
+
+
 def db_create_conversation(
     conversation_id: str,
     title: str = "New chat",
@@ -1085,37 +1159,43 @@ def db_create_conversation(
     visibility: str | None = None,
     sharing_mode: str | None = None,
     provenance: dict | None = None,
+    project_id: int | None = None,
+    user_id: str | None = None,
 ) -> None:
     now = _utc_now_iso()
     title = (title or "").strip() or "New chat"
-    policy = resolve_tenant_policy(tenant_id)
-    tenant_id = (tenant_id or policy.tenant_id or "default").strip() or "default"
-    owner_principal_type = (owner_principal_type or "user").strip() or "user"
-    owner_principal_id = (owner_principal_id or "local").strip() or "local"
-    created_by_principal_type = (created_by_principal_type or owner_principal_type).strip() or owner_principal_type
-    created_by_principal_id = (created_by_principal_id or owner_principal_id).strip() or owner_principal_id
-    visibility = (visibility or policy.conversation_visibility or "private").strip() or "private"
-    sharing_mode = (sharing_mode or "owner").strip() or "owner"
     provenance_json = json.dumps(provenance, ensure_ascii=False, sort_keys=True) if provenance else None
 
     with db_session() as conn:
+        access = _conversation_default_access_conn(
+            conn,
+            tenant_id=tenant_id,
+            project_id=project_id,
+            user_id=user_id,
+            owner_principal_type=owner_principal_type,
+            owner_principal_id=owner_principal_id,
+            created_by_principal_type=created_by_principal_type,
+            created_by_principal_id=created_by_principal_id,
+            visibility=visibility,
+            sharing_mode=sharing_mode,
+        )
         conn.execute(
             """
             INSERT INTO conversations(
-                id, title, created_at, updated_at, tenant_id,
+                id, project_id, title, created_at, updated_at, tenant_id,
                 owner_principal_type, owner_principal_id,
                 created_by_principal_type, created_by_principal_id,
                 source_principal_type, source_principal_id,
                 visibility, sharing_mode, provenance_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                conversation_id, title, now, now, tenant_id,
-                owner_principal_type, owner_principal_id,
-                created_by_principal_type, created_by_principal_id,
-                created_by_principal_type, created_by_principal_id,
-                visibility, sharing_mode, provenance_json,
+                conversation_id, project_id, title, now, now, access["tenant_id"],
+                access["owner_principal_type"], access["owner_principal_id"],
+                access["created_by_principal_type"], access["created_by_principal_id"],
+                access["created_by_principal_type"], access["created_by_principal_id"],
+                access["visibility"], access["sharing_mode"], provenance_json,
             ),
         )
 
@@ -1209,9 +1289,26 @@ def db_list_conversations(
 
 def db_set_conversation_project(conversation_id: str, project_id: int | None) -> None:
     with db_session() as conn:
+        if project_id is None:
+            conn.execute(
+                "UPDATE conversations SET project_id = ?, updated_at = ?, sharing_mode = COALESCE(sharing_mode, 'owner') WHERE id = ?",
+                (project_id, _utc_now_iso(), conversation_id),
+            )
+            return
+        access = _conversation_default_access_conn(conn, project_id=int(project_id))
         conn.execute(
-            "UPDATE conversations SET project_id = ?, updated_at = ?, sharing_mode = COALESCE(sharing_mode, 'owner') WHERE id = ?",
-            (project_id, _utc_now_iso(), conversation_id),
+            """
+            UPDATE conversations
+            SET project_id = ?, updated_at = ?, tenant_id = ?,
+                owner_principal_type = ?, owner_principal_id = ?,
+                visibility = ?, sharing_mode = 'inherit'
+            WHERE id = ?
+            """,
+            (
+                int(project_id), _utc_now_iso(), access["tenant_id"],
+                access["owner_principal_type"], access["owner_principal_id"],
+                access["visibility"], conversation_id,
+            ),
         )
 
 def db_set_conversation_archived(conversation_id: str, archived: bool) -> None:

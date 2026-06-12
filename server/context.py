@@ -25,7 +25,9 @@ from .db import (
     db_list_artifact_reading_sessions,
     list_artifact_reading_sessions_for_conversation,
     db_list_artifact_reading_steps,
+    db_get_conversation_access_resource,
 )
+from .access_control import resolve_access
 
 from .config import (
     CoreConfig, get_prompt, load_core_config,
@@ -1298,6 +1300,17 @@ def build_context(
     ) -> dict:
     ctx_cfg = ctx_cfg or load_context_config()
     ret_cfg = ret_cfg or load_retrieval_config()
+
+    access_resource = db_get_conversation_access_resource(conversation_id)
+    if access_resource:
+        principal = {
+            "principal_type": "user",
+            "principal_id": "local",
+            "tenant_id": access_resource.get("tenant_id") or "default",
+        }
+        decision = resolve_access(principal, access_resource, "read", explain=True)
+        if not decision.allowed:
+            raise PermissionError(f"Conversation access denied: {decision.reason}")
 
     # Do not lazily rebuild conversation transcript artifacts inside ordinary
     # context assembly. Read paths should stay read-mostly; explicit refresh
