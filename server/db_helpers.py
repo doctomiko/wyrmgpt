@@ -34,6 +34,14 @@ def _audit_metadata_json(metadata: Any | None) -> str | None:
         return value or None
     return json.dumps(metadata, ensure_ascii=False, sort_keys=True)
 
+def _audit_json(value: Any | None) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return cleaned or None
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
 def ensure_audit_events_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
@@ -45,9 +53,14 @@ def ensure_audit_events_schema(conn: sqlite3.Connection) -> None:
             actor_principal_id TEXT,
             resource_type TEXT,
             resource_id TEXT,
+            target_principal_type TEXT,
+            target_principal_id TEXT,
             action TEXT,
             decision TEXT,
             reason TEXT,
+            summary TEXT,
+            before_json TEXT,
+            after_json TEXT,
             request_id TEXT,
             source_ip TEXT,
             user_agent TEXT,
@@ -67,6 +80,17 @@ def ensure_audit_events_schema(conn: sqlite3.Connection) -> None:
             ON audit_events(request_id);
         """
     )
+    _add_column_if_missing(conn, "audit_events", "target_principal_type", "TEXT")
+    _add_column_if_missing(conn, "audit_events", "target_principal_id", "TEXT")
+    _add_column_if_missing(conn, "audit_events", "summary", "TEXT")
+    _add_column_if_missing(conn, "audit_events", "before_json", "TEXT")
+    _add_column_if_missing(conn, "audit_events", "after_json", "TEXT")
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_audit_events_target
+            ON audit_events(target_principal_type, target_principal_id, created_at)
+        """
+    )
 
 def log_audit_event(
     *,
@@ -76,9 +100,14 @@ def log_audit_event(
     actor_principal_id: str | None = None,
     resource_type: str | None = None,
     resource_id: str | None = None,
+    target_principal_type: str | None = None,
+    target_principal_id: str | None = None,
     action: str | None = None,
     decision: str | None = None,
     reason: str | None = None,
+    summary: str | None = None,
+    before: Any | None = None,
+    after: Any | None = None,
     request_id: str | None = None,
     source_ip: str | None = None,
     user_agent: str | None = None,
@@ -99,9 +128,14 @@ def log_audit_event(
         (actor_principal_id or "").strip() or None,
         (resource_type or "").strip() or None,
         (resource_id or "").strip() or None,
+        (target_principal_type or "").strip() or None,
+        (target_principal_id or "").strip() or None,
         (action or "").strip() or None,
         (decision or "").strip() or None,
         (reason or "").strip() or None,
+        (summary or "").strip() or None,
+        _audit_json(before),
+        _audit_json(after),
         (request_id or "").strip() or None,
         (source_ip or "").strip() or None,
         (user_agent or "").strip() or None,
@@ -114,10 +148,11 @@ def log_audit_event(
             """
             INSERT INTO audit_events (
                 id, tenant_id, event_type, actor_principal_type, actor_principal_id,
-                resource_type, resource_id, action, decision, reason, request_id,
+                resource_type, resource_id, target_principal_type, target_principal_id,
+                action, decision, reason, summary, before_json, after_json, request_id,
                 source_ip, user_agent, metadata_json, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             values,
         )
