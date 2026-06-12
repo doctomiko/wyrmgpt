@@ -1,0 +1,21 @@
+queue_name: wyrmgpt-identity-sharing-burndown
+updated_at: 2026-06-12T18:35:00Z
+source: https://github.com/doctomiko/wyrmgpt/issues
+default_order: issue_number
+items:
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  - 6
+  - 7
+  - 8
+  - 9
+  - 10
+  - 11
+  - 12
+notes:
+  1: "Small Python/SQLite startup compatibility fix."
+  2: "Design anchor; mirror or confirm durable docs before implementation issues."
+  3: "First backend implementation issue in the identity/sharing stream."
