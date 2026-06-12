@@ -1,5 +1,5 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -320,6 +320,10 @@ def _cfg_csv_set(*paths: tuple[str, ...], env_name: str, default: str, allowed: 
         return _normalize_csv_set(raw, allowed)
     return _normalize_csv_set(_env_str(env_name, default), allowed)
 
+def _choice(value: Any, default: str, allowed: set[str]) -> str:
+    cleaned = str(value or "").strip().lower()
+    return cleaned if cleaned in allowed else default
+
 
 @dataclass(frozen=True)
 class CoreConfig:
@@ -563,6 +567,28 @@ class ToolConfig:
 TOOLS_DEFAULTS: ToolConfig = ToolConfig()
 
 
+@dataclass(frozen=True)
+class TenantPolicyConfig:
+    tenant_id: str = "default"
+    conversation_visibility: str = "private"
+    message_visibility: str = "private"
+    memory_visibility: str = "private"
+    file_visibility: str = "private"
+    artifact_visibility: str = "private"
+    project_visibility: str = "private"
+    public_sharing_enabled: bool = False
+    persona_resource_owner: str = "active_user"
+    missing_access_default: str = "allow_owner"
+    audit_verbosity: str = "mutations"
+
+
+TENANT_POLICY_DEFAULTS: TenantPolicyConfig = TenantPolicyConfig()
+TENANT_POLICY_VISIBILITY_ALLOWED = {"private", "tenant", "public", "inherit"}
+TENANT_POLICY_OWNER_ALLOWED = {"persona", "active_user", "tenant"}
+TENANT_POLICY_MISSING_ACCESS_ALLOWED = {"allow_owner", "allow_tenant", "deny", "single_user_compatible"}
+TENANT_POLICY_AUDIT_ALLOWED = {"off", "mutations", "decisions", "verbose"}
+
+
 @dataclass
 class AppConfig:
     search_chat_history: bool = True
@@ -603,6 +629,118 @@ def load_app_config() -> AppConfig:
     return AppConfig(
         search_chat_history=get_app_setting_bool(APP_KEYS.search_chat_history)
     )
+
+def _tenant_policy_from_mapping(base: TenantPolicyConfig, raw: dict[str, Any]) -> TenantPolicyConfig:
+    if not raw:
+        return base
+
+    visibility = raw.get("visibility_defaults")
+    updates: dict[str, Any] = {}
+
+    if "tenant_id" in raw or "default_tenant_id" in raw:
+        updates["tenant_id"] = str(raw.get("tenant_id", raw.get("default_tenant_id", base.tenant_id))).strip() or base.tenant_id
+    if isinstance(visibility, dict):
+        for key, field_name in (
+            ("conversation", "conversation_visibility"),
+            ("message", "message_visibility"),
+            ("memory", "memory_visibility"),
+            ("file", "file_visibility"),
+            ("artifact", "artifact_visibility"),
+            ("project", "project_visibility"),
+        ):
+            if key in visibility:
+                updates[field_name] = _choice(visibility[key], getattr(base, field_name), TENANT_POLICY_VISIBILITY_ALLOWED)
+
+    for key, allowed in (
+        ("persona_resource_owner", TENANT_POLICY_OWNER_ALLOWED),
+        ("missing_access_default", TENANT_POLICY_MISSING_ACCESS_ALLOWED),
+        ("audit_verbosity", TENANT_POLICY_AUDIT_ALLOWED),
+    ):
+        if key in raw:
+            updates[key] = _choice(raw[key], getattr(base, key), allowed)
+    if "public_sharing_enabled" in raw:
+        updates["public_sharing_enabled"] = _coerce_bool(raw["public_sharing_enabled"], base.public_sharing_enabled)
+
+    return replace(base, **updates)
+
+def load_tenant_policy_config(tenant_id: str | None = None) -> TenantPolicyConfig:
+    policy = TenantPolicyConfig(
+        tenant_id=_cfg_str(
+            ("tenant_policy", "default_tenant_id"),
+            env_name="TENANT_POLICY_DEFAULT_TENANT_ID",
+            default=TENANT_POLICY_DEFAULTS.tenant_id,
+        ),
+        conversation_visibility=_choice(
+            _first_toml(("tenant_policy", "visibility_defaults", "conversation"), default=TENANT_POLICY_DEFAULTS.conversation_visibility),
+            TENANT_POLICY_DEFAULTS.conversation_visibility,
+            TENANT_POLICY_VISIBILITY_ALLOWED,
+        ),
+        message_visibility=_choice(
+            _first_toml(("tenant_policy", "visibility_defaults", "message"), default=TENANT_POLICY_DEFAULTS.message_visibility),
+            TENANT_POLICY_DEFAULTS.message_visibility,
+            TENANT_POLICY_VISIBILITY_ALLOWED,
+        ),
+        memory_visibility=_choice(
+            _first_toml(("tenant_policy", "visibility_defaults", "memory"), default=TENANT_POLICY_DEFAULTS.memory_visibility),
+            TENANT_POLICY_DEFAULTS.memory_visibility,
+            TENANT_POLICY_VISIBILITY_ALLOWED,
+        ),
+        file_visibility=_choice(
+            _first_toml(("tenant_policy", "visibility_defaults", "file"), default=TENANT_POLICY_DEFAULTS.file_visibility),
+            TENANT_POLICY_DEFAULTS.file_visibility,
+            TENANT_POLICY_VISIBILITY_ALLOWED,
+        ),
+        artifact_visibility=_choice(
+            _first_toml(("tenant_policy", "visibility_defaults", "artifact"), default=TENANT_POLICY_DEFAULTS.artifact_visibility),
+            TENANT_POLICY_DEFAULTS.artifact_visibility,
+            TENANT_POLICY_VISIBILITY_ALLOWED,
+        ),
+        project_visibility=_choice(
+            _first_toml(("tenant_policy", "visibility_defaults", "project"), default=TENANT_POLICY_DEFAULTS.project_visibility),
+            TENANT_POLICY_DEFAULTS.project_visibility,
+            TENANT_POLICY_VISIBILITY_ALLOWED,
+        ),
+        public_sharing_enabled=_cfg_bool(
+            ("tenant_policy", "public_sharing_enabled"),
+            env_name="TENANT_POLICY_PUBLIC_SHARING_ENABLED",
+            default=TENANT_POLICY_DEFAULTS.public_sharing_enabled,
+        ),
+        persona_resource_owner=_choice(
+            _first_toml(("tenant_policy", "persona_resource_owner"), default=TENANT_POLICY_DEFAULTS.persona_resource_owner),
+            TENANT_POLICY_DEFAULTS.persona_resource_owner,
+            TENANT_POLICY_OWNER_ALLOWED,
+        ),
+        missing_access_default=_choice(
+            _first_toml(("tenant_policy", "missing_access_default"), default=TENANT_POLICY_DEFAULTS.missing_access_default),
+            TENANT_POLICY_DEFAULTS.missing_access_default,
+            TENANT_POLICY_MISSING_ACCESS_ALLOWED,
+        ),
+        audit_verbosity=_choice(
+            _first_toml(("tenant_policy", "audit_verbosity"), default=TENANT_POLICY_DEFAULTS.audit_verbosity),
+            TENANT_POLICY_DEFAULTS.audit_verbosity,
+            TENANT_POLICY_AUDIT_ALLOWED,
+        ),
+    )
+
+    target_tenant_id = (tenant_id or policy.tenant_id or TENANT_POLICY_DEFAULTS.tenant_id).strip() or TENANT_POLICY_DEFAULTS.tenant_id
+    policy = replace(policy, tenant_id=target_tenant_id)
+
+    tenant_override = _toml_get(("tenant_policy", "tenants", target_tenant_id), {})
+    if isinstance(tenant_override, dict):
+        policy = _tenant_policy_from_mapping(policy, tenant_override)
+        policy = replace(policy, tenant_id=target_tenant_id)
+    return policy
+
+def resolve_tenant_policy(
+    tenant_id: str | None = None,
+    overrides: dict[str, Any] | None = None,
+) -> TenantPolicyConfig:
+    policy = load_tenant_policy_config(tenant_id)
+    if overrides:
+        policy = _tenant_policy_from_mapping(policy, overrides)
+        if tenant_id:
+            policy = replace(policy, tenant_id=tenant_id.strip() or policy.tenant_id)
+    return policy
 
 
 def load_core_config() -> CoreConfig:

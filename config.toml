@@ -104,6 +104,21 @@ catalog_file = "./server/tool_catalog.json"
 allow_assistant_tool_blocks = true
 max_calls_per_message = 4
 
+[tenant_policy]
+default_tenant_id = "default"
+public_sharing_enabled = false
+persona_resource_owner = "active_user" # persona | active_user | tenant
+missing_access_default = "allow_owner" # allow_owner | allow_tenant | deny | single_user_compatible
+audit_verbosity = "mutations" # off | mutations | decisions | verbose
+
+[tenant_policy.visibility_defaults]
+conversation = "private"
+message = "private"
+memory = "private"
+file = "private"
+artifact = "private"
+project = "private"
+
 [providers.openai]
 type = "openai"
 base_url = "https://api.openai.com/v1"
