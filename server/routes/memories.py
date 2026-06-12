@@ -38,6 +38,8 @@ def api_create_memory(req: MemoryCreate):
             origin_kind=req.origin_kind,
             scope_type=req.scope_type,
             scope_id=req.scope_id,
+            persona_id=req.persona_id,
+            persona_context_mode=req.persona_context_mode,
         )
         invalidate_all_context_cache()
         return JSONResponse(mem)
@@ -57,6 +59,8 @@ def api_update_memory(memory_id: str, req: MemoryUpdate):
             origin_kind=req.origin_kind,
             scope_type=req.scope_type,
             scope_id=req.scope_id,
+            persona_id=req.persona_id,
+            persona_context_mode=req.persona_context_mode,
         )
         invalidate_all_context_cache()
         return JSONResponse(mem)

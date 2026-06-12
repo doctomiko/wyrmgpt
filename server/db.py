@@ -80,6 +80,13 @@ def _migrate_schema_v26(conn) -> None:
 def _migrate_schema_v27(conn) -> None:
     ensure_identity_group_role_schema(conn)
 
+def _migrate_schema_v28(conn) -> None:
+    _add_column_if_missing(conn, "memories", "persona_principal_id", "TEXT")
+    _add_column_if_missing(conn, "memories", "persona_context_mode", "TEXT NOT NULL DEFAULT 'inherit'")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memories_persona_context ON memories(persona_principal_id, persona_context_mode)"
+    )
+
 
 MIGRATIONS: list[tuple[int, Callable]] = [
     (8, _migrate_schema_v8),
@@ -102,6 +109,7 @@ MIGRATIONS: list[tuple[int, Callable]] = [
     (25, _migrate_schema_v25),
     (26, _migrate_schema_v26),
     (27, _migrate_schema_v27),
+    (28, _migrate_schema_v28),
 ]
 
 # endregion
@@ -2359,6 +2367,18 @@ def _memory_row_to_dict(row: sqlite3.Row) -> dict:
         "origin_kind": row["origin_kind"] or "user_asserted",
         "source_conversation_id": row["source_conversation_id"],
         "source_message_id": row["source_message_id"],
+        "tenant_id": row["tenant_id"] or "default",
+        "owner_principal_type": row["owner_principal_type"],
+        "owner_principal_id": row["owner_principal_id"],
+        "created_by_principal_type": row["created_by_principal_type"],
+        "created_by_principal_id": row["created_by_principal_id"],
+        "source_principal_type": row["source_principal_type"],
+        "source_principal_id": row["source_principal_id"],
+        "visibility": row["visibility"],
+        "sharing_mode": row["sharing_mode"],
+        "provenance_json": row["provenance_json"],
+        "persona_principal_id": row["persona_principal_id"],
+        "persona_context_mode": row["persona_context_mode"] or "inherit",
         "project_ids": [int(x) for x in _split_csv(row["project_ids_csv"]) if str(x).isdigit()],
         "conversation_ids": _split_csv(row["conversation_ids_csv"]),
         "created_at": row["created_at"],
@@ -2378,6 +2398,18 @@ def _fetch_memory_row(conn: sqlite3.Connection, memory_id: str) -> dict:
             COALESCE(m.origin_kind, 'user_asserted') AS origin_kind,
             m.source_conversation_id,
             m.source_message_id,
+            m.tenant_id,
+            m.owner_principal_type,
+            m.owner_principal_id,
+            m.created_by_principal_type,
+            m.created_by_principal_id,
+            m.source_principal_type,
+            m.source_principal_id,
+            m.visibility,
+            m.sharing_mode,
+            m.provenance_json,
+            m.persona_principal_id,
+            m.persona_context_mode,
             m.created_at,
             m.updated_at,
             (
@@ -2411,6 +2443,9 @@ def db_add_memory(
     source_message_id: str | None = None,
     scope_type: str = "global",
     scope_id: int | None = None,
+    persona_id: str | None = None,
+    persona_context_mode: str = "inherit",
+    tenant_id: str | None = None,
 ) -> dict:
     content = (content or "").strip()
     if not content:
@@ -2423,6 +2458,18 @@ def db_add_memory(
     origin_kind = (origin_kind or "user_asserted").strip() or "user_asserted"
     source_conversation_id = (source_conversation_id or "").strip() or None
     source_message_id = (source_message_id or "").strip() or None
+    persona_id = (persona_id or "").strip() or None
+    persona_context_mode = (persona_context_mode or "inherit").strip().lower()
+    if persona_context_mode not in ("inherit", "include", "exclude"):
+        persona_context_mode = "inherit"
+    policy = resolve_tenant_policy(tenant_id)
+    tenant_id = (tenant_id or policy.tenant_id or "default").strip() or "default"
+    source_principal_type = "persona" if persona_id else ("persona" if created_by == "assistant" else "user")
+    source_principal_id = persona_id or ("assistant" if source_principal_type == "persona" else "local")
+    if policy.persona_resource_owner == "persona" and persona_id:
+        owner_principal_type, owner_principal_id = "persona", persona_id
+    else:
+        owner_principal_type, owner_principal_id = "user", "local"
 
     scope_type = (scope_type or "global").strip().lower()
     if scope_type not in ("global", "project"):
@@ -2445,10 +2492,22 @@ def db_add_memory(
                 origin_kind,
                 source_conversation_id,
                 source_message_id,
+                tenant_id,
+                owner_principal_type,
+                owner_principal_id,
+                created_by_principal_type,
+                created_by_principal_id,
+                source_principal_type,
+                source_principal_id,
+                visibility,
+                sharing_mode,
+                provenance_json,
+                persona_principal_id,
+                persona_context_mode,
                 created_at,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             mem_id,
             content,
@@ -2460,6 +2519,18 @@ def db_add_memory(
             origin_kind,
             source_conversation_id,
             source_message_id,
+            tenant_id,
+            owner_principal_type,
+            owner_principal_id,
+            source_principal_type,
+            source_principal_id,
+            source_principal_type,
+            source_principal_id,
+            policy.memory_visibility,
+            "owner",
+            json.dumps({"source_conversation_id": source_conversation_id, "source_message_id": source_message_id}, ensure_ascii=False, sort_keys=True),
+            persona_id,
+            persona_context_mode,
             now,
             now,
         ))
@@ -2495,6 +2566,18 @@ def db_list_memories(limit: int = 200) -> list[dict]:
                 COALESCE(m.origin_kind, 'user_asserted') AS origin_kind,
                 m.source_conversation_id,
                 m.source_message_id,
+                m.tenant_id,
+                m.owner_principal_type,
+                m.owner_principal_id,
+                m.created_by_principal_type,
+                m.created_by_principal_id,
+                m.source_principal_type,
+                m.source_principal_id,
+                m.visibility,
+                m.sharing_mode,
+                m.provenance_json,
+                m.persona_principal_id,
+                m.persona_context_mode,
                 m.created_at,
                 m.updated_at,
                 (
@@ -2529,6 +2612,8 @@ def db_update_memory(
     origin_kind: str = "user_asserted",
     scope_type: str | None = None,
     scope_id: int | None = None,
+    persona_id: str | None = None,
+    persona_context_mode: str | None = None,
 ) -> dict:
     memory_id = (memory_id or "").strip()
     if not memory_id:
@@ -2541,6 +2626,10 @@ def db_update_memory(
     tags_text = _normalize_tags(tags)
     created_by = (created_by or "user").strip() or "user"
     origin_kind = (origin_kind or "user_asserted").strip() or "user_asserted"
+    persona_id = (persona_id or "").strip() or None
+    persona_context_mode = (persona_context_mode or "").strip().lower() or None
+    if persona_context_mode is not None and persona_context_mode not in ("inherit", "include", "exclude"):
+        persona_context_mode = "inherit"
     now = _utc_now_iso()
 
     with db_session() as conn:
@@ -2567,6 +2656,8 @@ def db_update_memory(
                 scope_id = ?,
                 created_by = ?,
                 origin_kind = ?,
+                persona_principal_id = ?,
+                persona_context_mode = ?,
                 updated_at = ?
             WHERE id = ?
         """, (
@@ -2577,6 +2668,8 @@ def db_update_memory(
             final_scope_id,
             created_by,
             origin_kind,
+            persona_id if persona_id is not None else existing.get("persona_principal_id"),
+            persona_context_mode if persona_context_mode is not None else existing.get("persona_context_mode") or "inherit",
             now,
             memory_id,
         ))
@@ -2638,6 +2731,40 @@ def db_memory_link_conversation(memory_id: str, conversation_id: str) -> None:
             VALUES (?, ?)
         """, (memory_id, conversation_id))
 
+def db_get_memory_access_resource(memory_id: str) -> dict | None:
+    with db_session() as conn:
+        try:
+            mem = _fetch_memory_row(conn, memory_id)
+        except ValueError:
+            return None
+    inherited = []
+    inherited.extend({"resource_type": "project", "resource_id": str(pid)} for pid in mem.get("project_ids") or [])
+    inherited.extend({"resource_type": "conversation", "resource_id": cid} for cid in mem.get("conversation_ids") or [])
+    return {
+        "resource_type": "memory",
+        "resource_id": mem["id"],
+        "tenant_id": mem.get("tenant_id") or "default",
+        "owner_principal_type": mem.get("owner_principal_type"),
+        "owner_principal_id": mem.get("owner_principal_id"),
+        "visibility": mem.get("visibility"),
+        "inherited_from": inherited,
+    }
+
+def db_list_memories_for_persona(persona_id: str, include_unassigned: bool = True, limit: int = 200) -> list[dict]:
+    persona_id = (persona_id or "").strip()
+    if not persona_id:
+        return []
+    memories = db_list_memories(limit=limit)
+    out = []
+    for mem in memories:
+        assigned = (mem.get("persona_principal_id") or "").strip()
+        mode = (mem.get("persona_context_mode") or "inherit").strip().lower()
+        if mode == "exclude":
+            continue
+        if assigned == persona_id or (include_unassigned and not assigned):
+            out.append(mem)
+    return out
+
 def memory_artifact_id(memory_id: str) -> str:
     memory_id = (memory_id or "").strip()
     if not memory_id:
@@ -2685,6 +2812,10 @@ def _memory_artifact_text(mem: dict) -> str:
     if src_msg:
         lines.append(f"Source message: {src_msg}")
 
+    persona_id = (mem.get("persona_principal_id") or "").strip()
+    if persona_id:
+        lines.append(f"Persona: {persona_id}")
+
     lines.append("")
     lines.append((mem.get("content") or "").rstrip())
 
@@ -2703,6 +2834,11 @@ def _memory_artifact_meta(mem: dict) -> dict:
         "source_message_id": mem.get("source_message_id"),
         "project_ids": mem.get("project_ids") or [],
         "conversation_ids": mem.get("conversation_ids") or [],
+        "tenant_id": mem.get("tenant_id") or "default",
+        "owner_principal_type": mem.get("owner_principal_type"),
+        "owner_principal_id": mem.get("owner_principal_id"),
+        "persona_principal_id": mem.get("persona_principal_id"),
+        "persona_context_mode": mem.get("persona_context_mode") or "inherit",
     }
 
 def _upsert_memory_artifact_for_row(conn: sqlite3.Connection, mem: dict) -> str:
