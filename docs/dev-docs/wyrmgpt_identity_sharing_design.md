@@ -35,6 +35,14 @@ A principal is the actor being evaluated. Principal kinds should include:
 
 The resolver should accept a principal context that includes the direct user or persona plus derived group and role memberships.
 
+Local-first installs should use stable canonical actor names when no external identity provider is configured:
+
+- the default human user is `Doc`;
+- the default assistant persona is `Doc Tomiko`;
+- persisted IDs should remain stable machine IDs such as `local` or a persona UUID, while display names stay mutable profile data.
+
+Code should not infer permissions from display names. Display names are for diagnostics, audit summaries, and UI labels only.
+
 ### Resource
 
 A resource is anything that can be owned, shared, or inherited into context. Initial shareable resource types are:
@@ -45,6 +53,7 @@ A resource is anything that can be owned, shared, or inherited into context. Ini
 - `file`
 - `artifact`
 - `project`
+- `user_profile`
 
 Resource IDs should be stored as text in generic access tables so integer and UUID primary keys can coexist.
 
@@ -68,6 +77,20 @@ Recommended fields on shareable resources:
 - `visibility`
 - `sharing_mode`
 - `provenance_json`
+
+### User Profiles and About You
+
+Human profile data is a `user_profile` resource. The built-in personal profile shown as "About You" belongs to the active human user, not to a persona. Persona memories must not be used as the canonical store for About You facts.
+
+Recommended profile behavior:
+
+- a profile row has `tenant_id`, `user_id`, `display_name`, and the same owner/provenance fields used by other directly shareable resources;
+- the default profile for local installs has stable user ID `local` and display name `Doc`;
+- profile content can be read by personas only through explicit policy or resolver defaults for persona context use;
+- profile edits are user-driven mutations and should produce audit events once audit logging exists;
+- diagnostics should be able to explain why a human user, admin, or persona can read About You data.
+
+Persona configuration is separate profile-like data for assistant identities. The default local persona display name is `Doc Tomiko`, but persona display names are not access-control principals. Persona IDs are principals when the persona acts, receives memory assignment, or is evaluated for `use_in_context`.
 
 ## 4. Access-Control Entries
 
@@ -153,9 +176,14 @@ Recommended `audit_events` shape:
 - `actor_principal_id TEXT`
 - `resource_type TEXT`
 - `resource_id TEXT`
+- `target_principal_type TEXT`
+- `target_principal_id TEXT`
 - `action TEXT`
 - `decision TEXT`
 - `reason TEXT`
+- `summary TEXT`
+- `before_json TEXT`
+- `after_json TEXT`
 - `request_id TEXT`
 - `source_ip TEXT`
 - `user_agent TEXT`
@@ -193,6 +221,7 @@ Initial inheritance rules:
 - Project conversations, files, artifacts, and memories inherit from their project.
 - File-derived artifacts inherit from the source file.
 - Memories may be persona-scoped, project-scoped, conversation-scoped, global, or directly shared.
+- User profiles do not inherit from conversations, projects, or memories. They inherit only from tenant policy and explicit access-control entries.
 
 Resource tables should keep enough owner and provenance fields to explain why a resource appears in context.
 
@@ -200,22 +229,22 @@ Resource tables should keep enough owner and provenance fields to explain why a 
 
 Diagnostics should answer: who can see this, why, and where did the access come from?
 
-API output should include the effective decision, owner fields, visibility, direct ACEs, inherited ACEs, group and role membership used, tenant policy defaults, and audit event references when available.
+API output should include the effective decision, owner fields, visibility, direct ACEs, inherited ACEs, group and role membership used, tenant policy defaults, persona `use_in_context` results, and audit event references when available.
 
-The UI should present this as a compact inspection panel for a selected conversation, memory, file, artifact, or project. It should not require users to understand table internals.
+The UI should present this as a compact inspection panel for a selected conversation, memory, file, artifact, project, or user profile. It should not require users to understand table internals.
 
 ## 12. Issue Mapping
 
 - #3 adds `audit_events` schema and audit logging helpers.
-- #4 adds owner and provenance fields to shareable resources.
+- #4 adds owner and provenance fields to shareable resources, including user profiles when that table is present.
 - #5 adds generic access-control entries.
 - #6 adds tenant-scoped groups and roles.
 - #7 adds TOML policy defaults and resolver hooks.
 - #8 adds the central access resolver with explain output.
 - #9 updates conversations and messages for ownership, persona identity, and inherited access.
-- #10 updates memories for persona assignment and persona-context access.
+- #10 updates memories for persona assignment and persona-context access while keeping About You in user profiles.
 - #11 updates files, artifacts, and projects for inherited sharing and ownership metadata.
-- #12 adds effective sharing diagnostics API and UI.
+- #12 adds effective sharing diagnostics API and UI, including user profile diagnostics and persona context explanations.
 
 ## 13. Compatibility Notes
 
