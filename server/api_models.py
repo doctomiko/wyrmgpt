@@ -106,7 +106,9 @@ class MemoryCreate(BaseModel):
     scope_type: str = "global"
     scope_id: int | None = None
     persona_id: str | None = None
-    persona_context_mode: str = "inherit"
+    persona_ids: list[str] | None = None
+    persona_scope: str | None = None
+    persona_context_mode: str = "include"
 
 class MemoryUpdate(BaseModel):
     content: str
@@ -117,6 +119,8 @@ class MemoryUpdate(BaseModel):
     scope_type: str | None = None
     scope_id: int | None = None
     persona_id: str | None = None
+    persona_ids: list[str] | None = None
+    persona_scope: str | None = None
     persona_context_mode: str | None = None
 
 class PinRequest(BaseModel):

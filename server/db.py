@@ -31,6 +31,7 @@ from .db_helpers import (
     ensure_parent_dir, _table_exists, _add_column_if_missing,
     ensure_audit_events_schema, ensure_resource_ownership_columns,
     ensure_access_control_schema, ensure_identity_group_role_schema,
+    create_access_control_entry, list_access_control_entries, remove_access_control_entry,
 )
 # Support legacy migrations from v1-v7. You can remove this after a few releases once most users have migrated or started fresh.
 from .db_migrate import _migrate_schema_legacy
@@ -92,6 +93,24 @@ def _migrate_schema_v29(conn) -> None:
     ensure_resource_ownership_columns(conn)
 
 
+def _migrate_schema_v30(conn) -> None:
+    _add_column_if_missing(conn, "memories", "persona_scope", "TEXT NOT NULL DEFAULT 'tenant_all'")
+    _add_column_if_missing(conn, "memories", "persona_principal_ids_json", "TEXT")
+    conn.execute(
+        """
+        UPDATE memories
+        SET persona_scope = CASE
+            WHEN persona_principal_id IS NULL OR TRIM(persona_principal_id) = '' THEN 'tenant_all'
+            ELSE 'assigned'
+        END
+        WHERE persona_scope IS NULL OR TRIM(persona_scope) = ''
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memories_persona_scope ON memories(persona_scope)"
+    )
+
+
 MIGRATIONS: list[tuple[int, Callable]] = [
     (8, _migrate_schema_v8),
     (9, _migrate_schema_v9),
@@ -115,6 +134,7 @@ MIGRATIONS: list[tuple[int, Callable]] = [
     (27, _migrate_schema_v27),
     (28, _migrate_schema_v28),
     (29, _migrate_schema_v29),
+    (30, _migrate_schema_v30),
 ]
 
 # endregion
@@ -2577,6 +2597,69 @@ def db_update_ab_canonical(conversation_id: str, ab_group: str, slot: str) -> No
 
 # region Memories
 
+def _normalize_persona_scope(persona_scope: str | None, persona_id: str | None, persona_ids: list[str] | None) -> str:
+    scope = (persona_scope or "").strip().lower()
+    if scope in {"assigned", "selected", "tenant_all"}:
+        return scope
+    if persona_ids:
+        return "selected"
+    if persona_id:
+        return "assigned"
+    return "tenant_all"
+
+
+def _normalize_persona_ids(persona_ids: list[str] | tuple[str, ...] | None) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in persona_ids or []:
+        cleaned = str(value or "").strip()
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            out.append(cleaned)
+    return out
+
+
+def _sync_memory_persona_access_entries(conn: sqlite3.Connection, mem: dict) -> None:
+    memory_id = str(mem["id"])
+    for row in list_access_control_entries(
+        conn=conn,
+        tenant_id=mem.get("tenant_id") or "default",
+        resource_type="memory",
+        resource_id=memory_id,
+        action="use_in_context",
+    ):
+        if row.get("principal_type") in {"persona", "tenant_personas"}:
+            remove_access_control_entry(row["id"], deleted_by_principal_type="service", deleted_by_principal_id="memory_persona_sync", conn=conn)
+
+    mode = (mem.get("persona_context_mode") or "inherit").strip().lower()
+    if mode == "exclude":
+        return
+    scope = (mem.get("persona_scope") or "tenant_all").strip().lower()
+    targets: list[tuple[str, str]] = []
+    if scope == "tenant_all":
+        targets.append(("tenant_personas", "*"))
+    elif scope == "selected":
+        targets.extend(("persona", pid) for pid in mem.get("persona_principal_ids") or [])
+    else:
+        pid = (mem.get("persona_principal_id") or "").strip()
+        if pid:
+            targets.append(("persona", pid))
+    for principal_type, principal_id in targets:
+        create_access_control_entry(
+            conn=conn,
+            tenant_id=mem.get("tenant_id") or "default",
+            resource_type="memory",
+            resource_id=memory_id,
+            principal_type=principal_type,
+            principal_id=principal_id,
+            effect="allow",
+            action="use_in_context",
+            created_by_principal_type="service",
+            created_by_principal_id="memory_persona_sync",
+            reason="memory persona scope",
+        )
+
+
 def _ensure_memory_exists(conn: sqlite3.Connection, memory_id: str) -> None:
     row = conn.execute("SELECT 1 FROM memories WHERE id = ?", (memory_id,)).fetchone()
     if not row:
@@ -2611,6 +2694,8 @@ def _memory_row_to_dict(row: sqlite3.Row) -> dict:
         "provenance_json": row["provenance_json"],
         "persona_principal_id": row["persona_principal_id"],
         "persona_context_mode": row["persona_context_mode"] or "inherit",
+        "persona_scope": row["persona_scope"] or "tenant_all",
+        "persona_principal_ids": json.loads(row["persona_principal_ids_json"] or "[]"),
         "project_ids": [int(x) for x in _split_csv(row["project_ids_csv"]) if str(x).isdigit()],
         "conversation_ids": _split_csv(row["conversation_ids_csv"]),
         "created_at": row["created_at"],
@@ -2642,6 +2727,8 @@ def _fetch_memory_row(conn: sqlite3.Connection, memory_id: str) -> dict:
             m.provenance_json,
             m.persona_principal_id,
             m.persona_context_mode,
+            m.persona_scope,
+            m.persona_principal_ids_json,
             m.created_at,
             m.updated_at,
             (
@@ -2677,6 +2764,8 @@ def db_add_memory(
     scope_id: int | None = None,
     persona_id: str | None = None,
     persona_context_mode: str = "inherit",
+    persona_ids: list[str] | None = None,
+    persona_scope: str | None = None,
     tenant_id: str | None = None,
 ) -> dict:
     content = (content or "").strip()
@@ -2691,7 +2780,9 @@ def db_add_memory(
     source_conversation_id = (source_conversation_id or "").strip() or None
     source_message_id = (source_message_id or "").strip() or None
     persona_id = (persona_id or "").strip() or None
-    persona_context_mode = (persona_context_mode or "inherit").strip().lower()
+    persona_ids = _normalize_persona_ids(persona_ids)
+    persona_scope = _normalize_persona_scope(persona_scope, persona_id, persona_ids)
+    persona_context_mode = (persona_context_mode or "include").strip().lower()
     if persona_context_mode not in ("inherit", "include", "exclude"):
         persona_context_mode = "inherit"
     policy = resolve_tenant_policy(tenant_id)
@@ -2736,10 +2827,12 @@ def db_add_memory(
                 provenance_json,
                 persona_principal_id,
                 persona_context_mode,
+                persona_scope,
+                persona_principal_ids_json,
                 created_at,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             mem_id,
             content,
@@ -2763,11 +2856,14 @@ def db_add_memory(
             json.dumps({"source_conversation_id": source_conversation_id, "source_message_id": source_message_id}, ensure_ascii=False, sort_keys=True),
             persona_id,
             persona_context_mode,
+            persona_scope,
+            json.dumps(persona_ids, ensure_ascii=False, sort_keys=True) if persona_ids else None,
             now,
             now,
         ))
 
         mem = _fetch_memory_row(conn, mem_id)
+        _sync_memory_persona_access_entries(conn, mem)
         artifact_id = _upsert_memory_artifact_for_row(conn, mem)
 
     try:
@@ -2810,6 +2906,8 @@ def db_list_memories(limit: int = 200) -> list[dict]:
                 m.provenance_json,
                 m.persona_principal_id,
                 m.persona_context_mode,
+                m.persona_scope,
+                m.persona_principal_ids_json,
                 m.created_at,
                 m.updated_at,
                 (
@@ -2846,6 +2944,8 @@ def db_update_memory(
     scope_id: int | None = None,
     persona_id: str | None = None,
     persona_context_mode: str | None = None,
+    persona_ids: list[str] | None = None,
+    persona_scope: str | None = None,
 ) -> dict:
     memory_id = (memory_id or "").strip()
     if not memory_id:
@@ -2859,6 +2959,8 @@ def db_update_memory(
     created_by = (created_by or "user").strip() or "user"
     origin_kind = (origin_kind or "user_asserted").strip() or "user_asserted"
     persona_id = (persona_id or "").strip() or None
+    persona_ids = _normalize_persona_ids(persona_ids)
+    persona_scope = _normalize_persona_scope(persona_scope, persona_id, persona_ids) if (persona_scope is not None or persona_id is not None or persona_ids) else None
     persona_context_mode = (persona_context_mode or "").strip().lower() or None
     if persona_context_mode is not None and persona_context_mode not in ("inherit", "include", "exclude"):
         persona_context_mode = "inherit"
@@ -2890,6 +2992,8 @@ def db_update_memory(
                 origin_kind = ?,
                 persona_principal_id = ?,
                 persona_context_mode = ?,
+                persona_scope = ?,
+                persona_principal_ids_json = ?,
                 updated_at = ?
             WHERE id = ?
         """, (
@@ -2902,11 +3006,14 @@ def db_update_memory(
             origin_kind,
             persona_id if persona_id is not None else existing.get("persona_principal_id"),
             persona_context_mode if persona_context_mode is not None else existing.get("persona_context_mode") or "inherit",
+            persona_scope if persona_scope is not None else existing.get("persona_scope") or "tenant_all",
+            json.dumps(persona_ids, ensure_ascii=False, sort_keys=True) if persona_ids else json.dumps(existing.get("persona_principal_ids") or [], ensure_ascii=False, sort_keys=True),
             now,
             memory_id,
         ))
 
         mem = _fetch_memory_row(conn, memory_id)
+        _sync_memory_persona_access_entries(conn, mem)
         artifact_id = _upsert_memory_artifact_for_row(conn, mem)
 
     try:
@@ -2983,6 +3090,8 @@ def db_get_memory_access_resource(memory_id: str) -> dict | None:
     }
 
 def db_list_memories_for_persona(persona_id: str, include_unassigned: bool = True, limit: int = 200) -> list[dict]:
+    from .access_control import resolve_access
+
     persona_id = (persona_id or "").strip()
     if not persona_id:
         return []
@@ -2991,9 +3100,29 @@ def db_list_memories_for_persona(persona_id: str, include_unassigned: bool = Tru
     for mem in memories:
         assigned = (mem.get("persona_principal_id") or "").strip()
         mode = (mem.get("persona_context_mode") or "inherit").strip().lower()
+        scope = (mem.get("persona_scope") or "tenant_all").strip().lower()
+        selected = set(mem.get("persona_principal_ids") or [])
         if mode == "exclude":
             continue
-        if assigned == persona_id or (include_unassigned and not assigned):
+        candidate = False
+        if scope == "tenant_all":
+            candidate = True
+        elif scope == "selected":
+            candidate = persona_id in selected
+        elif assigned == persona_id or (include_unassigned and not assigned):
+            candidate = True
+        if not candidate:
+            continue
+        resource = db_get_memory_access_resource(mem["id"])
+        if not resource:
+            continue
+        decision = resolve_access(
+            {"principal_type": "persona", "principal_id": persona_id, "tenant_id": mem.get("tenant_id") or "default"},
+            resource,
+            "use_in_context",
+            explain=False,
+        )
+        if decision.allowed:
             out.append(mem)
     return out
 
@@ -3071,6 +3200,8 @@ def _memory_artifact_meta(mem: dict) -> dict:
         "owner_principal_id": mem.get("owner_principal_id"),
         "persona_principal_id": mem.get("persona_principal_id"),
         "persona_context_mode": mem.get("persona_context_mode") or "inherit",
+        "persona_scope": mem.get("persona_scope") or "tenant_all",
+        "persona_principal_ids": mem.get("persona_principal_ids") or [],
     }
 
 def _upsert_memory_artifact_for_row(conn: sqlite3.Connection, mem: dict) -> str:

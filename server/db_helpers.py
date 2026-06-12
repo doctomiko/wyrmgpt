@@ -9,7 +9,7 @@ from typing import Any, Callable, Iterable, Iterator
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-SCHEMA_VERSION = 29
+SCHEMA_VERSION = 30
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"

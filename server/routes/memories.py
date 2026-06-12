@@ -39,6 +39,8 @@ def api_create_memory(req: MemoryCreate):
             scope_type=req.scope_type,
             scope_id=req.scope_id,
             persona_id=req.persona_id,
+            persona_ids=req.persona_ids,
+            persona_scope=req.persona_scope,
             persona_context_mode=req.persona_context_mode,
         )
         invalidate_all_context_cache()
@@ -60,6 +62,8 @@ def api_update_memory(memory_id: str, req: MemoryUpdate):
             scope_type=req.scope_type,
             scope_id=req.scope_id,
             persona_id=req.persona_id,
+            persona_ids=req.persona_ids,
+            persona_scope=req.persona_scope,
             persona_context_mode=req.persona_context_mode,
         )
         invalidate_all_context_cache()
