@@ -58,6 +58,7 @@ const convMenuMoveToBtn = document.getElementById("menuMoveTo");
 const convMenuManageFilesBtn = document.getElementById("menuConvViewFiles");
 const convMenuLibraryBtn = document.getElementById("menuConvLibrary");
 const convMenuCitationsBtn = document.getElementById("menuConvCitations");
+const convMenuSharingBtn = document.getElementById("menuConvSharing");
 const convMenuExportTranscriptBtn = document.getElementById("menuExportTranscript");
 const convMenuSummarizeBtn = document.getElementById("menuSummarize");
 const convMenuSettingsBtn = document.getElementById("menuConvSettings");
@@ -78,6 +79,7 @@ const projMenuFileUploadBtn = document.getElementById("projUpload");
 const projMenuManageFilesBtn = document.getElementById("projFiles");
 const projMenuLibraryBtn = document.getElementById("projLibrary");
 const projMenuCitationsBtn = document.getElementById("projCitations");
+const projMenuSharingBtn = document.getElementById("projSharing");
 // #endregion
 
 // MODAL DIALOGS

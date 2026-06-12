@@ -27,6 +27,7 @@ import server.routes.library  # noqa: F401
 import server.routes.memories  # noqa: F401
 import server.routes.projects  # noqa: F401
 import server.routes.search  # noqa: F401
+import server.routes.sharing  # noqa: F401
 import server.routes.tooling  # noqa: F401
 
 __all__ = ["app"]

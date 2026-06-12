@@ -1199,6 +1199,19 @@ function openMetaInfo(title, obj) {
   metaInfoModal.classList.remove("hidden");
 }
 
+async function openSharingDiagnostics(resourceType, resourceId) {
+  if (!resourceType || !resourceId) return;
+  const params = new URLSearchParams({
+    resource_type: resourceType,
+    resource_id: String(resourceId),
+    action: "read",
+    principal_type: "user",
+    principal_id: "local",
+  });
+  const data = await fetchJsonDebug(`/api/sharing/diagnostics?${params.toString()}`);
+  openMetaInfo(`Sharing: ${resourceType} ${resourceId}`, data);
+}
+
 // #endregion
 
 // #region Debug Helpers

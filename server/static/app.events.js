@@ -112,6 +112,21 @@ if (projMenuCitationsBtn) {
   });
 }
 
+if (projMenuSharingBtn) {
+  projMenuSharingBtn.addEventListener("click", () => {
+    projMenuEl.classList.add("hidden");
+    const pid = menuTargetProjectId;
+    if (!pid) {
+      alert("No project selected.");
+      return;
+    }
+    openSharingDiagnostics("project", pid).catch(e => {
+      console.error("openSharingDiagnostics project failed", e);
+      alert("Failed to load sharing diagnostics.");
+    });
+  });
+}
+
 if (topMenuManageFilesBtn) {
   topMenuManageFilesBtn.addEventListener("click", () => {
     if (topMenuManageFilesBtn.classList.contains("files-disabled")) {
@@ -137,6 +152,21 @@ if (convMenuLibraryBtn) {
       return;
     }
     openLibraryModalForConversation(cid);
+  });
+}
+
+if (convMenuSharingBtn) {
+  convMenuSharingBtn.addEventListener("click", () => {
+    convMenuEl.classList.add("hidden");
+    const cid = menuTargetConversationId || conversationId;
+    if (!cid) {
+      alert("No conversation selected.");
+      return;
+    }
+    openSharingDiagnostics("conversation", cid).catch(e => {
+      console.error("openSharingDiagnostics conversation failed", e);
+      alert("Failed to load sharing diagnostics.");
+    });
   });
 }
 
