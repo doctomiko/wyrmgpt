@@ -119,6 +119,7 @@ const aboutYouAgeEl = document.getElementById("aboutYouAge");
 const aboutYouOccupationEl = document.getElementById("aboutYouOccupation");
 const aboutYouMoreEl = document.getElementById("aboutYouMore");
 const aboutYouSaveBtn = document.getElementById("saveAboutYou");
+const aboutYouSharingBtn = document.getElementById("aboutYouSharing");
 const aboutYouSectionEl = aboutYouNicknameEl ? aboutYouNicknameEl.closest(".memSection") : null;
 // Memories
 const memoryListEl = document.getElementById("memoryList");

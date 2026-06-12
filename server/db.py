@@ -596,6 +596,34 @@ def db_get_artifact_access_resource(artifact_id: str) -> dict | None:
         return _access_resource_from_owned_row("artifact", row, inherited)
 
 
+def db_get_user_profile_access_resource(profile_id: str = "local") -> dict | None:
+    profile_id = (profile_id or "local").strip() or "local"
+    with db_session() as conn:
+        if not _table_exists(conn, "user_profiles"):
+            return None
+        row = conn.execute(
+            """
+            SELECT id, tenant_id, owner_principal_type, owner_principal_id, visibility
+            FROM user_profiles
+            WHERE id = ? OR user_id = ?
+            ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END
+            LIMIT 1
+            """,
+            (profile_id, profile_id, profile_id),
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "resource_type": "user_profile",
+            "resource_id": row["id"],
+            "tenant_id": row["tenant_id"] or "default",
+            "owner_principal_type": row["owner_principal_type"],
+            "owner_principal_id": row["owner_principal_id"],
+            "visibility": row["visibility"],
+            "inherited_from": [],
+        }
+
+
 def db_get_effective_sharing_source(resource_type: str, resource_id: str | int) -> dict | None:
     resource_type = (resource_type or "").strip().lower()
     loaders = {
@@ -604,6 +632,7 @@ def db_get_effective_sharing_source(resource_type: str, resource_id: str | int) 
         "artifact": lambda rid: db_get_artifact_access_resource(str(rid)),
         "conversation": lambda rid: db_get_conversation_access_resource(str(rid)),
         "memory": lambda rid: db_get_memory_access_resource(str(rid)),
+        "user_profile": lambda rid: db_get_user_profile_access_resource(str(rid)),
     }
     loader = loaders.get(resource_type)
     if loader is None:

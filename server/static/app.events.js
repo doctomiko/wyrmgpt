@@ -301,6 +301,14 @@ if (aboutYouSaveBtn) {
     }
   });
 }
+if (aboutYouSharingBtn) {
+  aboutYouSharingBtn.addEventListener("click", () => {
+    openSharingDiagnostics("user_profile", "local").catch(e => {
+      console.error("openSharingDiagnostics about you failed", e);
+      alert("Failed to load sharing diagnostics.");
+    });
+  });
+}
 if (pinAddOrSaveBtn) {
   pinAddOrSaveBtn.addEventListener("click", () => {
     savePinFromUi().catch(e => console.error("savePinFromUi error", e));    
