@@ -11,7 +11,7 @@ from codex_transport import (
     _unsupported_parameter_from_message,
     extract_codex_account_id,
 )
-from cost_tracking import CostTelemetryConfig, calculate_usage_cost, format_cost_log
+from cost_tracking import CostTelemetryConfig, calculate_usage_cost, format_cost_log, usage_cost_to_dict
 from provider_backends import (
     ConnectorProviderConfig,
     normalize_provider_backend,
@@ -42,6 +42,9 @@ def main() -> None:
     rendered = format_cost_log(cost)
     assert "cost_estimate_usd=" in rendered
     assert "budget_used_pct=" in rendered
+    diag = usage_cost_to_dict(cost)
+    assert diag["input_tokens"] == 1000
+    assert diag["budget_used_pct"] is not None
 
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as f:
         f.write('{"gpt-test":{"input_cost_per_million":2.0,"output_cost_per_million":8.0}}')

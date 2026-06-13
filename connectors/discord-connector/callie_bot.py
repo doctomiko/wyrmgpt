@@ -59,6 +59,73 @@ RECENT_AUTHORS = deque(maxlen=10)
 BOT_INSTANCE: Optional[discord.Client] = None
 MAIN_LOOP: asyncio.AbstractEventLoop | None = None
 
+
+def _fmt_diag_int(value: Any) -> str:
+    try:
+        if value is None:
+            return "?"
+        return f"{int(value):,}"
+    except Exception:
+        return "?"
+
+
+def _fmt_diag_money(value: Any) -> str:
+    try:
+        if value is None:
+            return "?"
+        return f"${float(value):.6f}"
+    except Exception:
+        return "?"
+
+
+def _fmt_diag_pct(value: Any) -> str:
+    try:
+        if value is None:
+            return "?"
+        return f"{float(value):.1f}%"
+    except Exception:
+        return "?"
+
+
+def _reply_diagnostics_brief(diagnostics: Dict[str, Any]) -> str:
+    model = diagnostics.get("model") or "?"
+    backend = diagnostics.get("backend") or diagnostics.get("provider") or "?"
+    auth_mode = diagnostics.get("auth_mode") or "?"
+    total = _fmt_diag_int(diagnostics.get("total_tokens"))
+    cost = _fmt_diag_money(diagnostics.get("estimated_cost_usd"))
+    return f"model={model} · backend={backend}/{auth_mode} · tokens={total} · est={cost}"
+
+
+def _reply_diagnostics_details(diagnostics: Dict[str, Any]) -> str:
+    lines = [
+        "Reply diagnostics",
+        f"model: {diagnostics.get('model') or '?'}",
+        f"backend: {diagnostics.get('backend') or diagnostics.get('provider') or '?'}",
+        f"auth_mode: {diagnostics.get('auth_mode') or '?'}",
+        f"response_id: {diagnostics.get('response_id') or '?'}",
+        f"latency_ms: {_fmt_diag_int(diagnostics.get('dt_ms'))}",
+        f"input_tokens: {_fmt_diag_int(diagnostics.get('input_tokens'))}",
+        f"output_tokens: {_fmt_diag_int(diagnostics.get('output_tokens'))}",
+        f"total_tokens: {_fmt_diag_int(diagnostics.get('total_tokens'))}",
+        f"estimated_cost: {_fmt_diag_money(diagnostics.get('estimated_cost_usd'))}",
+        f"budget_used_pct: {_fmt_diag_pct(diagnostics.get('budget_used_pct'))}",
+        f"pricing_source: {diagnostics.get('pricing_source') or '?'}",
+        f"attachment_parts: image={diagnostics.get('image_parts', 0)} file={diagnostics.get('file_parts', 0)} text={diagnostics.get('text_parts', 0)}",
+    ]
+    if diagnostics.get("estimated_input_tokens") is not None:
+        lines.append(f"estimated_prompt_tokens: {_fmt_diag_int(diagnostics.get('estimated_input_tokens'))}")
+    return "\n".join(lines)[:1900]
+
+
+class ReplyDiagnosticsView(discord.ui.View):
+    def __init__(self, diagnostics: Dict[str, Any]):
+        super().__init__(timeout=24 * 60 * 60)
+        self._details = _reply_diagnostics_details(diagnostics)
+
+    @discord.ui.button(label="Details", style=discord.ButtonStyle.secondary)
+    async def details_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(self._details, ephemeral=True)
+
 # It is not great that this gets called directly from inside the message processing function.
 # We may want to refactor this later to use an event or similar.
 def _record_author(message: discord.Message) -> None:
@@ -1164,6 +1231,7 @@ class CallieBot(discord.Client):
         # Call OpenAI to get a response
         extra_parts: List[Dict[str, Any]] = []
         user_notes: List[str] = []
+        reply_diagnostics: Dict[str, Any] = {}
         async with message.channel.typing():
             try:
                 provider_config = await cfg.connector_provider_config()
@@ -1196,7 +1264,7 @@ class CallieBot(discord.Client):
                 if not isinstance(max_output_tokens, int) or max_output_tokens <= 0:
                     raise RuntimeError(f"Invalid max_output_tokens={max_output_tokens!r}")
 
-                reply, response_id = await openai_respond(
+                reply, response_id, reply_diagnostics = await openai_respond(
                     system_prompt=system_prompt,
                     memory_blob=memory_blob,
                     transcript=transcript,
@@ -1208,6 +1276,18 @@ class CallieBot(discord.Client):
                     extra_content_parts=extra_parts,
                     cost_telemetry=await cfg.cost_telemetry_config(),
                     provider_config=provider_config,
+                )
+                image_parts = sum(1 for part in extra_parts if part.get("type") == "input_image")
+                file_parts = sum(1 for part in extra_parts if part.get("type") == "input_file")
+                text_parts = sum(1 for part in extra_parts if part.get("type") == "input_text")
+                reply_diagnostics.update(
+                    {
+                        "backend": provider_config.backend,
+                        "auth_mode": provider_config.auth_mode,
+                        "image_parts": image_parts,
+                        "file_parts": file_parts,
+                        "text_parts": text_parts,
+                    }
                 )
 
                 log.info("OpenAI response_id=%s chars=%s for msg_id=%s", response_id, len(reply), message.id)
@@ -1277,6 +1357,13 @@ class CallieBot(discord.Client):
         if reply != before_cleanup:
             log.info("Reply cleanup: stripped leading addressee prefix msg_id=%s", message.id)
 
+        diagnostics_mode = await cfg.reply_diagnostics_mode()
+        diagnostics_view: Optional[ReplyDiagnosticsView] = None
+        if diagnostics_mode in {"spoiler", "both"} and reply_diagnostics:
+            reply += f"\n\n||{_reply_diagnostics_brief(reply_diagnostics)}||"
+        if diagnostics_mode in {"button", "both"} and reply_diagnostics:
+            diagnostics_view = ReplyDiagnosticsView(reply_diagnostics)
+
         limit = await cfg.discord_safe_limit()
         chunks = chunk_for_discord(reply, limit)
         log.info(f"TX plan: chunks={len(chunks)} sizes={[len(c) for c in chunks]} in_reply_to={message.id}")
@@ -1292,12 +1379,12 @@ class CallieBot(discord.Client):
             # If that fails (deleted message, etc), fall back to a standard send.
             if idx == 0:
                 try:
-                    factory = (lambda ch=chunk: send_reply(message, ch))
-                    fallback_factory = (lambda ch=chunk: message.channel.send(ch, silent=True))
+                    factory = (lambda ch=chunk: send_reply(message, ch, view=diagnostics_view))
+                    fallback_factory = (lambda ch=chunk: message.channel.send(ch, silent=True, view=diagnostics_view))
                 except Exception:
                     log.error("Failed to build PK-aware reply factory; falling back to standard reply.")
-                    factory = (lambda ch=chunk: message.reply(ch, mention_author=False))
-                    fallback_factory = (lambda ch=chunk: message.channel.send(ch, silent=True))
+                    factory = (lambda ch=chunk: message.reply(ch, mention_author=False, view=diagnostics_view))
+                    fallback_factory = (lambda ch=chunk: message.channel.send(ch, silent=True, view=diagnostics_view))
             else:
                 factory = (lambda ch=chunk: message.channel.send(ch, reference=message, silent=True))
                 fallback_factory = (lambda ch=chunk: message.channel.send("(Context note: I couldn't reply directly because the referenced message was deleted or unavailable.)\n\n" + ch, silent=True))

@@ -839,11 +839,12 @@ async def send_reply(
     reply_text: str,
     *,
     pk_proxy_name: Optional[str] = None,
+    view: Optional[discord.ui.View] = None,
 ) -> discord.Message:
     """Send a Discord reply without pinging or adding redundant speaker prefixes."""
     if pk_proxy_name:
         log.debug("send_reply ignored deprecated pk_proxy_name prefix for msg_id=%s", message.id)
-    return await message.reply(reply_text, mention_author=False)
+    return await message.reply(reply_text, mention_author=False, view=view)
 
 async def resolve_member_for_gate(message: discord.Message, member: Optional[discord.Member]):
     """

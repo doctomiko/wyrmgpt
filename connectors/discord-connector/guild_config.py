@@ -339,6 +339,36 @@ class GuildConfig:
     async def suppress_ambient_replies(self) -> bool:
         return await self.get_bool("SUPPRESS_AMBIENT_REPLIES", False)
 
+    async def reply_diagnostics_mode(self) -> str:
+        """
+        off: do not add reply diagnostics.
+        spoiler: append a tiny click-to-reveal spoiler footer.
+        button: attach a Details button that opens an ephemeral diagnostic message.
+        both: add both the spoiler footer and the Details button.
+        """
+        raw = ((await self.get_str("REPLY_DIAGNOSTICS_MODE", "off")) or "off").strip().lower()
+        aliases = {
+            "0": "off",
+            "false": "off",
+            "no": "off",
+            "none": "off",
+            "disabled": "off",
+            "1": "spoiler",
+            "true": "spoiler",
+            "yes": "spoiler",
+            "footer": "spoiler",
+            "hidden": "spoiler",
+            "details": "button",
+            "buttons": "button",
+            "all": "both",
+            "full": "both",
+        }
+        mode = aliases.get(raw, raw)
+        if mode not in {"off", "spoiler", "button", "both"}:
+            log.warning("Invalid REPLY_DIAGNOSTICS_MODE=%r; using off", raw)
+            return "off"
+        return mode
+
     # Discord chunking
 
     async def discord_msg_limit(self) -> int:
