@@ -847,6 +847,7 @@ function renderManageFilesItemCard(item, fallbackScopeLabel = "") {
     el.textContent = badge;
     right.appendChild(el);
   });
+  appendAccessBadges(right, item);
   if (item.updated_at) {
     const ts = document.createElement("span");
     ts.className = "libraryBadge";

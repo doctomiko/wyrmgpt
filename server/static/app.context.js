@@ -368,6 +368,43 @@ async function fetchContext(cid, previewLimit = 20, userText = "") {
   return await fetchJsonDebug(`/api/conversation/${cid}/context?${qs.toString()}`);
 }
 
+function accessMetaParts(item) {
+  const parts = [];
+  if (!item || typeof item !== "object") return parts;
+  if (item.admin_visible) parts.push("admin-visible");
+  const access = item.effective_access || {};
+  const reason = String(access.reason || "").trim();
+  if (reason) parts.push(reason);
+  const resource = item.access_resource || {};
+  if (resource.resource_type && resource.resource_id) {
+    parts.push(`${resource.resource_type}:${resource.resource_id}`);
+  }
+  return parts;
+}
+
+function accessMetaSuffix(item) {
+  const parts = accessMetaParts(item);
+  return parts.length ? ` [access: ${parts.join("; ")}]` : "";
+}
+
+function appendAccessBadges(container, item) {
+  if (!container) return;
+  const access = item?.effective_access || {};
+  if (item?.admin_visible) {
+    const badge = document.createElement("span");
+    badge.className = "libraryBadge libraryBadgeAccess libraryBadgeAdminVisible";
+    badge.textContent = "admin";
+    container.appendChild(badge);
+  }
+  const reason = String(access.reason || "").trim();
+  if (reason) {
+    const badge = document.createElement("span");
+    badge.className = "libraryBadge libraryBadgeAccess";
+    badge.textContent = reason;
+    container.appendChild(badge);
+  }
+}
+
 function renderContext(ctx) {
   lastRenderedContext = ctx;
 
@@ -554,7 +591,7 @@ function renderContext(ctx) {
           : f.scope_type === "project"
           ? `project:${f.scope_id ?? "?"}`
           : (f.scope_type || "global");
-      return `${name} [${scope}]`;
+      return `${name} [${scope}]${accessMetaSuffix(f)}`;
     });
 
     wrap.appendChild(createCtxSubBlock("Scoped Files", createCtxList(scopedFileItems)));
@@ -629,7 +666,7 @@ function renderContext(ctx) {
         const src = r.filename || r.scope_key || r.source_kind || "source";
         const channels = (r.retrieval_channels || []).join("+") || "?";
         lines.push(
-          `- ${src}#${r.chunk_index} chunk_id=${r.chunk_id} artifact_id=${r.artifact_id} file_id=${r.file_id || ""} channels=${channels} score=${fmtScore(r.score)} fts=${fmtScore(r.fts_score)} vec=${fmtScore(r.vector_score)}`
+          `- ${src}#${r.chunk_index} chunk_id=${r.chunk_id} artifact_id=${r.artifact_id} file_id=${r.file_id || ""} channels=${channels} score=${fmtScore(r.score)} fts=${fmtScore(r.fts_score)} vec=${fmtScore(r.vector_score)}${accessMetaSuffix(r)}`
         );
         if (r.conversation_title || r.conversation_summary_excerpt || r.conversation_started_at || r.conversation_ended_at) {
           const range =
@@ -673,7 +710,7 @@ function renderContext(ctx) {
 
         const channels = (r.retrieval_channels || []).join("+") || "?";
         lines.push(
-          `- ${src}#${r.chunk_index} chunk_id=${r.chunk_id} channels=${channels} final=${fmtScore(r.final_score ?? r.score)} fts=${fmtScore(r.fts_score)} vec=${fmtScore(r.vector_score)} rrf=${fmtScore(r.rrf_score)} ts=${ts}`
+          `- ${src}#${r.chunk_index} chunk_id=${r.chunk_id} channels=${channels} final=${fmtScore(r.final_score ?? r.score)} fts=${fmtScore(r.fts_score)} vec=${fmtScore(r.vector_score)} rrf=${fmtScore(r.rrf_score)} ts=${ts}${accessMetaSuffix(r)}`
         );
         if (r.conversation_title || r.conversation_summary_excerpt || r.conversation_started_at || r.conversation_ended_at) {
           const range =
@@ -721,7 +758,7 @@ function renderContext(ctx) {
                   : "";
               return `${base}${range}`;
             })();
-      return `${item.kind}: ${label} (raw hits=${item.raw_hit_count}, score=${item.score})`;
+      return `${item.kind}: ${label} (raw hits=${item.raw_hit_count}, score=${item.score})${accessMetaSuffix(item)}`;
     });
 
     accordion.appendChild(
@@ -912,6 +949,7 @@ function renderLibraryItemCard(item, fallbackScopeLabel = "") {
     tenantBadge.textContent = identity.tenant_id;
     right.appendChild(tenantBadge);
   }
+  appendAccessBadges(right, item);
   (item.badges || []).forEach((badge) => {
     const el = document.createElement("span");
     el.className = "libraryBadge";

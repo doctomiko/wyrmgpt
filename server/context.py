@@ -1238,6 +1238,9 @@ def _recommend_expansion_candidates(
             "conversation_ended_at": row.get("conversation_ended_at"),
             "filename": row.get("filename"),
             "chunk_index": row.get("chunk_index"),
+            "effective_access": row.get("effective_access"),
+            "admin_visible": row.get("admin_visible"),
+            "access_resource": row.get("access_resource"),
         })
 
     ranked.sort(key=lambda x: (-int(x.get("raw_hit_count") or 0), float(x.get("score") or 1e9)))
