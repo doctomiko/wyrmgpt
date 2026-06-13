@@ -3,13 +3,16 @@ import json
 import logging
 import random
 import re
+import socket
 import traceback
 from types import CoroutineType
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
+import aiohttp
 import discord
 
 from global_config import GlobalConfig
+from outage_helpers import classify_discord_exception, format_admin_outage
 from pk_helper import PKResolver
 _pk = PKResolver(ttl_seconds=3600)
 
@@ -707,6 +710,25 @@ async def send_with_retry(
                 log.debug(traceback.format_exc())
                 return None
 
+            await asyncio.sleep(float(retry_after))
+            continue
+
+        except (aiohttp.ClientConnectorError, socket.gaierror, TimeoutError, OSError) as e:
+            outage = classify_discord_exception(e)
+            backoff = retry_base_seconds * (2 ** (attempt - 1))
+            retry_after = min(retry_max_seconds, backoff) + (random.random() * retry_jitter_seconds)
+            detail = format_admin_outage(outage, context="send") if outage else f"Discord send network failure: {type(e).__name__}"
+            log.warning(
+                f"TX network trace={trace_id} part={part_idx}/{total_parts} "
+                f"attempt={attempt}/{max_retries} wait={retry_after:.2f}s {detail}"
+            )
+            if attempt >= max_retries:
+                log.error(
+                    f"TX giveup trace={trace_id} part={part_idx}/{total_parts} "
+                    f"network={type(e).__name__} after={attempt} attempts"
+                )
+                log.debug(traceback.format_exc())
+                return None
             await asyncio.sleep(float(retry_after))
             continue
 
