@@ -24,6 +24,7 @@ from guild_config import GuildConfig
 from config_manager import ConfigManager
 from helpers import _norm_content, canonical_json, now_epoch
 from openai_helpers import build_trimmed_transcript, est_tokens, openai_respond, openai_upload_file, sanitize_content, summarize_messages_block
+from outage_helpers import classify_discord_exception, classify_openai_exception, format_admin_outage
 from pk_helper import PKInfo, build_pk_context_block, format_pk_proxy_note
 from word_helpers import extract_docx_markdown, extract_text_bytes
 from access_control import AccessDecision, compute_access_decision #, ChannelReplyMode
@@ -233,7 +234,9 @@ class CallieBot(discord.Client):
         while not self._shutdown_requested.is_set():
             try:
                 log.info("Starting Discord client...")
-                await self.start(token, reconnect=True)
+                # Let our outer loop classify DNS/network failures instead of
+                # letting discord.py emit noisy reconnect tracebacks.
+                await self.start(token, reconnect=False)
 
                 # If start() returns, we were closed/logged out.
                 if self._shutdown_requested.is_set():
@@ -248,14 +251,18 @@ class CallieBot(discord.Client):
                 # DNS hiccup: back off harder, but honor shutdown.
                 if self._shutdown_requested.is_set():
                     break
-                log.warning("Discord connect failed (DNS). Retrying in %ss: %r", backoff, e)
+                outage = classify_discord_exception(e)
+                detail = format_admin_outage(outage, context="connect") if outage else f"Discord connect failed (DNS): {type(e).__name__}"
+                log.warning("%s. Retrying in %ss", detail, backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 300)
 
             except OSError as e:
                 if self._shutdown_requested.is_set():
                     break
-                log.warning("Discord connect failed (network/OS). Retrying in %ss: %r", backoff, e)
+                outage = classify_discord_exception(e)
+                detail = format_admin_outage(outage, context="connect") if outage else f"Discord connect failed (network/OS): {type(e).__name__}"
+                log.warning("%s. Retrying in %ss", detail, backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 300)
 
@@ -428,6 +435,8 @@ class CallieBot(discord.Client):
                     purpose="user_data",
                     api_key=api_key,
                 )
+                if file_id and not file_id.startswith("Sorry,"):
+                    extra_parts.append({"type": "input_file", "file_id": file_id})
                 attachment_notes.append(f"file uploaded: {fname} (file_id={file_id})")
             except Exception as e:
                 # Do NOT explode the whole message; just shield this attachment.
@@ -1136,10 +1145,14 @@ class CallieBot(discord.Client):
             except Exception as e:
                 response_id = ""
                 # Log full traceback to console logs, but DO NOT echo exception text to Discord
-                log.exception("OpenAI failed msg_id=%s err=%s", message.id, type(e).__name__)
+                outage = classify_openai_exception(e)
+                if outage:
+                    log.warning("%s msg_id=%s", format_admin_outage(outage, context="respond"), message.id)
+                else:
+                    log.exception("OpenAI failed msg_id=%s err=%s", message.id, type(e).__name__)
                 log.debug(traceback.format_exc())
                 # Safe user-facing message
-                reply = "(error calling model; see logs)"
+                reply = outage.user_message if outage else "(error calling model; see logs)"
 
         # Capture structured memory suggestions from the model (but do not auto-commit).
         # Format: [[MEMORY_SUGGEST]] {json...} [[/MEMORY_SUGGEST]]
@@ -1244,4 +1257,3 @@ class CallieBot(discord.Client):
             # Log sent messages to SQL
             #for sent in sent_messages:
                 
-
