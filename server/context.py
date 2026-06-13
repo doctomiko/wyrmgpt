@@ -28,6 +28,12 @@ from .db import (
     db_get_conversation_access_resource,
 )
 from .access_control import resolve_access
+from .access_filtering import (
+    filter_corpus_rows_for_access,
+    filter_items_by_resource_access,
+    filter_rows_for_access,
+    principal_from_request,
+)
 
 from .config import (
     CoreConfig, get_prompt, load_core_config,
@@ -824,6 +830,30 @@ def _build_personalization_blocks(pins: list[dict]) -> dict:
 
 # region Context Query Helpers
 
+def _context_principal(conversation_id: str, principal: dict | None = None) -> dict:
+    if principal:
+        return principal
+    access_resource = db_get_conversation_access_resource(conversation_id)
+    return principal_from_request(
+        principal_type="user",
+        principal_id="local",
+        tenant_id=(access_resource or {}).get("tenant_id") or "default",
+    )
+
+
+def _filter_file_map_for_access(files_by_id: dict[str, dict], *, principal: dict) -> dict[str, dict]:
+    if not files_by_id:
+        return {}
+    rows = filter_rows_for_access(list(files_by_id.values()), "file", principal=principal)
+    return {str(row.get("id") or "").strip(): row for row in rows if str(row.get("id") or "").strip()}
+
+
+def _filter_conversation_ids_for_access(conversation_ids: list[str], *, principal: dict) -> list[str]:
+    rows = [{"id": cid} for cid in conversation_ids if str(cid or "").strip()]
+    visible = filter_items_by_resource_access(rows, "conversation", principal=principal)
+    return [str(row.get("id") or "").strip() for row in visible if str(row.get("id") or "").strip()]
+
+
 def _artifact_to_input_message(art: dict, *, label: str) -> dict:
     title = (art.get("title") or "").strip()
     artifact_id = (art.get("id") or "").strip()
@@ -843,8 +873,16 @@ def _artifact_to_input_message(art: dict, *, label: str) -> dict:
     return {"role": "user", "content": text}
 
 
-def _build_scoped_file_artifact_inventory_message(conversation_id: str, *, max_items: int = 12) -> dict | None:
-    files_by_id: dict[str, dict] = gather_scoped_files(conversation_id)
+def _build_scoped_file_artifact_inventory_message(
+    conversation_id: str,
+    *,
+    principal: dict,
+    max_items: int = 12,
+) -> dict | None:
+    files_by_id: dict[str, dict] = _filter_file_map_for_access(
+        gather_scoped_files(conversation_id),
+        principal=principal,
+    )
     if not files_by_id:
         return None
 
@@ -1297,17 +1335,14 @@ def build_context(
         ret_cfg: RetrievalConfig | None = None,
         include_preview: bool = True,
         allow_derivative_refresh: bool = True,
+        principal: dict | None = None,
     ) -> dict:
     ctx_cfg = ctx_cfg or load_context_config()
     ret_cfg = ret_cfg or load_retrieval_config()
+    principal = _context_principal(conversation_id, principal)
 
     access_resource = db_get_conversation_access_resource(conversation_id)
     if access_resource:
-        principal = {
-            "principal_type": "user",
-            "principal_id": "local",
-            "tenant_id": access_resource.get("tenant_id") or "default",
-        }
         decision = resolve_access(principal, access_resource, "read", explain=True)
         if not decision.allowed:
             raise PermissionError(f"Conversation access denied: {decision.reason}")
@@ -1427,8 +1462,14 @@ def build_context(
     expanded_artifact_ids: set[str] = set()
 
     # Memories first.
-    scoped_memories = _order_scoped_memories_for_context(
+    visible_memories = filter_rows_for_access(
         db_list_memories(limit=max(max_full_memories * 4, 200)),
+        "memory",
+        principal=principal,
+        action="use_in_context",
+    )
+    scoped_memories = _order_scoped_memories_for_context(
+        visible_memories,
         project_id,
         limit=max(max_full_memories * 4, 200),
     )
@@ -1469,6 +1510,7 @@ def build_context(
             project_id,
             limit=max_full_chats,
         )
+        summary_rows = filter_rows_for_access(summary_rows, "conversation", principal=principal)
 
         if summary_rows:
             with db_session() as conn:
@@ -1521,6 +1563,7 @@ def build_context(
         file_messages, included_file_artifact_labels, file_artifact_ids = _build_file_messages_for_conversation(
             conversation_id,
             limit=max_full_files,
+            principal=principal,
             already_included_artifact_ids=included_artifact_ids,
             user_text=user_text,
             ctx_cfg=ctx_cfg,
@@ -1532,7 +1575,7 @@ def build_context(
         whole_artifact_messages.extend(file_messages)
         included_artifact_ids.update(file_artifact_ids)
     else:
-        inventory_msg = _build_scoped_file_artifact_inventory_message(conversation_id)
+        inventory_msg = _build_scoped_file_artifact_inventory_message(conversation_id, principal=principal)
         if inventory_msg:
             whole_artifact_messages.append(inventory_msg)
 
@@ -1543,6 +1586,7 @@ def build_context(
             project_id,
             limit=max_full_chats,
         )
+        scoped_conversation_ids = _filter_conversation_ids_for_access(scoped_conversation_ids, principal=principal)
 
         with db_session() as conn:
             for cid in scoped_conversation_ids:
@@ -1573,6 +1617,12 @@ def build_context(
     retained_rows = list_conversation_retained_artifacts(
         conversation_id,
         include_dropped=False,
+    )
+    retained_rows = filter_items_by_resource_access(
+        retained_rows,
+        "artifact",
+        id_key="artifact_id",
+        principal=principal,
     )
 
     if retained_rows:
@@ -1670,6 +1720,14 @@ def build_context(
         retrieved_rows_raw = chunks_resp.get("raw_results") or []
         retrieved_rows = chunks_resp.get("results") or []
         retrieval_debug = chunks_resp.get("debug") or {"skipped": False, "reason": None}
+        retrieved_rows_raw = filter_corpus_rows_for_access(retrieved_rows_raw, principal=principal)
+        retrieved_rows = filter_corpus_rows_for_access(retrieved_rows, principal=principal)
+        retrieval_debug["access_filtered"] = True
+        retrieval_debug["access_principal"] = {
+            "principal_type": principal.get("principal_type"),
+            "principal_id": principal.get("principal_id"),
+            "tenant_id": principal.get("tenant_id"),
+        }
 
         # If full files are already included, do NOT also stuff file-derived chunks into the final RAG block.
         if do_include_files:
@@ -1928,7 +1986,7 @@ def build_context(
     system_text = "\n\n".join(system_blocks)
 
     # Build the list of scoped files regardless of do_include_files
-    scoped_files_by_id = gather_scoped_files(conversation_id)
+    scoped_files_by_id = _filter_file_map_for_access(gather_scoped_files(conversation_id), principal=principal)
     scoped_files = []
     for file_id, file_row in scoped_files_by_id.items():
         scoped_files.append({
@@ -2037,6 +2095,7 @@ def build_model_input(
         ctx: dict | None = None,
         tool_cfg: ToolConfig | None = None,
         tools: ToolRegistry | None = None,
+        principal: dict | None = None,
     ) -> ModelInput:
     """
     Build a Responses-API compatible input.
@@ -2048,7 +2107,7 @@ def build_model_input(
     query_cfg = query_cfg or load_retrieval_config()
     tool_cfg = tool_cfg or load_tool_config()
     
-    ctx = ctx or build_context(conversation_id, user_text, ctx_cfg, query_cfg, include_preview=False)
+    ctx = ctx or build_context(conversation_id, user_text, ctx_cfg, query_cfg, include_preview=False, principal=principal)
 
     history_rows = ctx.get("history_rows") or []
     system_messages = [{"role": "system", "content": ctx["system_text"]}]
@@ -2075,6 +2134,7 @@ def build_context_panel_payload(
     query_cfg: RetrievalConfig | None = None,
     tool_cfg: ToolConfig | None = None,
     tools: ToolRegistry | None = None,
+    principal: dict | None = None,
 ) -> dict:
     """
     Side-panel-only diagnostic payload.
@@ -2092,6 +2152,7 @@ def build_context_panel_payload(
         ret_cfg=query_cfg,
         include_preview=False,
         allow_derivative_refresh=False,
+        principal=principal,
     )
 
     # Build the ACTUAL model input from the same ctx so the side panel reflects reality
@@ -2103,6 +2164,7 @@ def build_context_panel_payload(
         ctx=ctx,
         tool_cfg=tool_cfg,
         tools=tools,
+        principal=principal,
     )
 
     preview_limit = max(1, int(ctx_cfg.preview_limit))
@@ -2163,6 +2225,7 @@ def _build_file_messages_for_conversation(
     conversation_id: str,
     *,
     limit: int,
+    principal: dict,
     already_included_artifact_ids: set[str] | None = None,
     user_text: str,
     ctx_cfg: ContextConfig,
@@ -2171,7 +2234,10 @@ def _build_file_messages_for_conversation(
     current_message_id: int | None,
     allow_derivative_refresh: bool = True,
 ) -> tuple[list[dict], list[str], set[str]]:
-    files_by_id: dict[str, dict] = gather_scoped_files(conversation_id)
+    files_by_id: dict[str, dict] = _filter_file_map_for_access(
+        gather_scoped_files(conversation_id),
+        principal=principal,
+    )
     if not files_by_id:
         return [], [], set()
 
@@ -2196,7 +2262,11 @@ def _build_file_messages_for_conversation(
             if not file_id:
                 continue
 
-            artifacts = artifact_headers_by_file_id.get(file_id, [])
+            artifacts = filter_items_by_resource_access(
+                artifact_headers_by_file_id.get(file_id, []),
+                "artifact",
+                principal=principal,
+            )
             if not artifacts:
                 continue
 

@@ -273,6 +273,10 @@ def api_conversation_context(
     conversation_id: str,
     user_text: str = "",
     preview_limit: int | None = None,
+    principal_type: str = "user",
+    principal_id: str = "local",
+    tenant_id: str = "default",
+    admin_view: str | None = None,
 ):
     ctx_cfg = load_context_config()
     if preview_limit is not None:
@@ -283,11 +287,18 @@ def api_conversation_context(
             estimate_model=ctx_cfg.estimate_model,
         )
 
+    principal = principal_from_request(
+        principal_type=principal_type,
+        principal_id=principal_id,
+        tenant_id=tenant_id,
+        admin_view=admin_view,
+    )
     payload = build_context_panel_payload(
         conversation_id=conversation_id,
         user_text=user_text or "",
         ctx_cfg=ctx_cfg,
         tool_cfg=TOOL_CFG,
+        principal=principal,
     )
     return JSONResponse(payload)
 
