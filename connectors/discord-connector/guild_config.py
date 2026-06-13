@@ -355,6 +355,35 @@ class GuildConfig:
         #return await self.get_int("DISCORD_SAFE_LIMIT", 1900)
 
     # Attachments
+    async def attachment_inspection_policy(self) -> str:
+        """
+        reply: inspect attachments whenever Callie is going to reply.
+        invoked: inspect attachments only when the user explicitly mentions/replies to Callie.
+        disabled: never inspect attachments.
+        """
+        raw = ((await self.get_str("ATTACHMENT_INSPECTION_POLICY", "reply")) or "reply").strip().lower()
+        aliases = {
+            "allow": "reply",
+            "allowed": "reply",
+            "replying": "reply",
+            "when_replying": "reply",
+            "mention": "invoked",
+            "mentions": "invoked",
+            "require_mention": "invoked",
+            "require_mentions": "invoked",
+            "require_invocation": "invoked",
+            "invocation": "invoked",
+            "off": "disabled",
+            "none": "disabled",
+            "never": "disabled",
+            "deny": "disabled",
+        }
+        policy = aliases.get(raw, raw)
+        if policy not in {"reply", "invoked", "disabled"}:
+            log.warning("Invalid ATTACHMENT_INSPECTION_POLICY=%r; using reply", raw)
+            return "reply"
+        return policy
+
     async def max_attachment_mb(self) -> float:
         """This is the softer limit for PDFs and images we try to inline. Default 10 MB."""
         return await self.get_float("MAX_ATTACHMENT_MB", 10.0)
