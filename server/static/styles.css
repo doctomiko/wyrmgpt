@@ -1548,6 +1548,15 @@ button.libraryGroupHeader {
   flex-wrap: wrap;
 }
 
+.libraryAdminToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
 .libraryBadge {
   font-size: 0.72rem;
   padding: 2px 6px;

@@ -1112,6 +1112,13 @@ async function loadLibraryModal() {
   } else if (libraryModalMode === "project" && libraryModalProjectId != null) {
     url = `/api/projects/${encodeURIComponent(libraryModalProjectId)}/library`;
   }
+  const params = new URLSearchParams({
+    principal_type: "user",
+    principal_id: "local",
+    tenant_id: "default",
+    admin_view: libraryAdminViewToggle && libraryAdminViewToggle.checked ? "true" : "false",
+  });
+  url += `${url.includes("?") ? "&" : "?"}${params.toString()}`;
 
   librarySectionsEl.textContent = "Loading…";
   libraryModal.classList.remove("hidden");

@@ -215,6 +215,13 @@ if (libraryCloseBottomBtn) {
 if (libraryBackdrop) {
   libraryBackdrop.addEventListener("click", closeLibraryModal);
 }
+if (libraryAdminViewToggle) {
+  libraryAdminViewToggle.addEventListener("change", () => {
+    if (libraryModal && !libraryModal.classList.contains("hidden")) {
+      loadLibraryModal();
+    }
+  });
+}
 
 // #endregion
 

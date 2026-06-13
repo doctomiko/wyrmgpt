@@ -198,6 +198,7 @@ const libraryModal = document.getElementById("libraryModal");
 const libraryTitleEl = document.getElementById("libraryModalTitle");
 const libraryScopeNoteEl = document.getElementById("libraryScopeNote");
 const librarySectionsEl = document.getElementById("librarySections");
+const libraryAdminViewToggle = document.getElementById("libraryAdminView");
 const libraryCloseBtn = document.getElementById("libraryClose");
 const libraryCloseBottomBtn = document.getElementById("libraryCloseBottom");
 const libraryBackdrop = libraryModal ? libraryModal.querySelector(".modalBackdrop") : null;
