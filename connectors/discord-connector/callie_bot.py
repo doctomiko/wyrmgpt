@@ -25,6 +25,7 @@ from config_manager import ConfigManager
 from helpers import _norm_content, canonical_json, now_epoch
 from openai_helpers import build_trimmed_transcript, est_tokens, openai_respond, openai_upload_file, sanitize_content, summarize_messages_block
 from outage_helpers import classify_discord_exception, classify_openai_exception, format_admin_outage
+from provider_backends import resolve_oauth_tokens, validate_provider_config
 from pk_helper import PKInfo, build_pk_context_block, format_pk_proxy_note
 from word_helpers import extract_docx_markdown, extract_text_bytes
 from access_control import AccessDecision, compute_access_decision #, ChannelReplyMode
@@ -722,7 +723,8 @@ class CallieBot(discord.Client):
                     trimmed_batch,
                     await cfg.openai_model(),
                     summary_target_max_tokens,
-                    api_key=await cfg.openai_api_key()
+                    api_key=await cfg.openai_api_key(),
+                    cost_telemetry=await cfg.cost_telemetry_config(),
                 )
                 if not summary_text:
                     break
@@ -1105,22 +1107,36 @@ class CallieBot(discord.Client):
                 pass
         log.info(f"Dispatch: transcript_msgs={len(transcript)}/{len(all_transcript)} memory_chars={len(memory_blob)} replying_to_msg_id={message.id}")
 
-        # Vivian! Oh we have a place were we cared about invoked!
-        # TODO make this a policy we can set from global or guild config
-        # Attachment handling (explicit invocation only)
-        extra_parts, user_notes = await self._build_attachment_parts(
-            message,
-            cfg,
-            invoked=bool(decision.is_invoked),
-        )
-
         # Call OpenAI to get a response
+        extra_parts: List[Dict[str, Any]] = []
+        user_notes: List[str] = []
         async with message.channel.typing():
             try:
+                provider_config = await cfg.connector_provider_config()
+                model = await cfg.openai_model()
+                oauth_sources = resolve_oauth_tokens(provider_config) if not provider_config.is_openai_api else None
+                log.info(
+                    "LLM provider selected backend=%s auth_mode=%s model=%s oauth_access_source=%s oauth_refresh_source=%s msg_id=%s",
+                    provider_config.backend,
+                    provider_config.auth_mode,
+                    model,
+                    oauth_sources.access_source if oauth_sources else "not_applicable",
+                    oauth_sources.refresh_source if oauth_sources else "not_applicable",
+                    message.id,
+                )
+                validate_provider_config(provider_config)
+
+                # Vivian! Oh we have a place were we cared about invoked!
+                # TODO make this a policy we can set from global or guild config
+                # Attachment handling (explicit invocation only)
+                extra_parts, user_notes = await self._build_attachment_parts(
+                    message,
+                    cfg,
+                    invoked=bool(decision.is_invoked),
+                )
                 system_prompt = await cfg.system_prompt()
                 max_output_tokens = await cfg.max_output_tokens()
                 api_key = await cfg.openai_api_key()
-                model = await cfg.openai_model()
                 # Hard guards with non-leaky errors
                 if not model or not str(model).strip():
                     raise RuntimeError("Missing OPENAI_MODEL")
@@ -1139,9 +1155,15 @@ class CallieBot(discord.Client):
                     api_key=api_key,
                     model=model,
                     extra_content_parts=extra_parts,
+                    cost_telemetry=await cfg.cost_telemetry_config(),
+                    provider_config=provider_config,
                 )
 
                 log.info("OpenAI response_id=%s chars=%s for msg_id=%s", response_id, len(reply), message.id)
+            except NotImplementedError as e:
+                response_id = ""
+                log.warning("Connector provider backend unavailable msg_id=%s err=%s", message.id, str(e))
+                reply = "(connector config error: selected LLM backend is not implemented yet; see logs)"
             except Exception as e:
                 response_id = ""
                 # Log full traceback to console logs, but DO NOT echo exception text to Discord

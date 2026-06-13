@@ -21,6 +21,8 @@ from env_utils_new import (
 import os
 
 from helpers import normalize_exts
+from cost_tracking import CostTelemetryConfig
+from provider_backends import ConnectorProviderConfig, normalize_provider_backend
 
 log, _log_settings = setup_logging("guild_config")
 
@@ -392,7 +394,17 @@ class GuildConfig:
         Prefer per-guild override (DB) if present; otherwise env.
         Never log the value; caller uses it for API calls only.
         """
-        return await self.get_str("OPENAI_API_KEY", None)
+        token = await self.get_str("OPENAI_API_KEY", None)
+        if token:
+            return token
+        return await self.get_str("OPENAI_API_TOKEN", None)
+
+    async def openai_oauth_token(self) -> Optional[str]:
+        """
+        ChatGPT/Codex-style OAuth/access token slot for future authenticated-session backends.
+        This is intentionally separate from OPENAI_API_TOKEN so operators can keep both.
+        """
+        return await self.get_str("OPENAI_OAUTH_TOKEN", None)
 
     async def openai_model(self) -> str:
         default = self.global_config.default_openai_model() if callable(self.global_config.default_openai_model) else self.global_config.default_openai_model
@@ -401,6 +413,27 @@ class GuildConfig:
 
     async def max_output_tokens(self) -> int:
         return await self.get_int("MAX_OUTPUT_TOKENS", 600)
+
+    async def cost_telemetry_config(self) -> CostTelemetryConfig:
+        return CostTelemetryConfig(
+            enabled=await self.get_bool("OPENAI_COST_LOG_ENABLED", True),
+            monthly_budget_usd=await self.get_float("OPENAI_MONTHLY_BUDGET_USD", 0.0),
+            month_to_date_start_usd=await self.get_float("OPENAI_MONTH_TO_DATE_SPEND_USD", 0.0),
+            default_input_per_1m=await self.get_float("OPENAI_COST_INPUT_PER_1M", 0.0),
+            default_output_per_1m=await self.get_float("OPENAI_COST_OUTPUT_PER_1M", 0.0),
+            model_pricing_json=(await self.get_str("OPENAI_MODEL_PRICING_JSON", "")) or "",
+        )
+
+    async def connector_provider_config(self) -> ConnectorProviderConfig:
+        return ConnectorProviderConfig(
+            backend=normalize_provider_backend(await self.get_str("CONNECTOR_LLM_BACKEND", "openai_api")),
+            auth_mode=((await self.get_str("CONNECTOR_AUTH_MODE", "api_key")) or "api_key").strip().lower(),
+            oauth_token=((await self.openai_oauth_token()) or "").strip(),
+            oauth_refresh_token=((await self.get_str("OPENAI_OAUTH_REFRESH_TOKEN", "")) or "").strip(),
+            token_path=((await self.get_str("OPENAI_OAUTH_TOKEN_PATH", "")) or "").strip(),
+            refresh_token_path=((await self.get_str("OPENAI_OAUTH_REFRESH_TOKEN_PATH", "")) or "").strip(),
+            oauth_device_code_command=((await self.get_str("CONNECTOR_OAUTH_DEVICE_CODE_COMMAND", "")) or "").strip(),
+        )
 
     # Context management
 
