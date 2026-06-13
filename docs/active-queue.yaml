@@ -1,5 +1,5 @@
 queue_name: wyrmgpt-identity-sharing-burndown
-updated_at: 2026-06-12T18:35:00Z
+updated_at: 2026-06-13T01:14:30Z
 source: https://github.com/doctomiko/wyrmgpt/issues
 default_order: issue_number
 items:
@@ -15,7 +15,13 @@ items:
   - 10
   - 11
   - 12
+  - 13
+  - 14
+  - 15
 notes:
   1: "Small Python/SQLite startup compatibility fix."
   2: "Design anchor; mirror or confirm durable docs before implementation issues."
   3: "First backend implementation issue in the identity/sharing stream."
+  13: "Admin bulk reassignment tools for ownership, provenance, sharing, and persona access."
+  14: "Library/asset UI surfaces ownership, provenance, sharing, and persona access with admin edits."
+  15: "Permission-control visible UI surfaces and add admin visibility toggles."
