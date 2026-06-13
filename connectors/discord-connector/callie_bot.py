@@ -486,6 +486,42 @@ class CallieBot(discord.Client):
             r.raise_for_status()
             return r.content
 
+    async def _maybe_send_attachment_invocation_reminder(
+        self,
+        message: discord.Message,
+        decision: AccessDecision,
+    ) -> None:
+        """
+        If attachments were withheld only because this was not an invocation,
+        tell the user how to get them inspected instead of silently dropping them.
+        """
+        if not getattr(message, "attachments", None):
+            return
+        if decision.is_invoked:
+            return
+        if not decision.record:
+            return
+        if decision.can_speak and not decision.speak_suppressed:
+            return
+
+        log.info(
+            "Attachment reminder: msg_id=%s attachments=%s mode=%s can_speak=%s speak_suppressed=%s reason=%s",
+            message.id,
+            len(message.attachments),
+            decision.mode.value,
+            decision.can_speak,
+            decision.speak_suppressed,
+            decision.reason,
+        )
+        reminder = (
+            "(Attachment note: I saw the upload, but I only inspect files/images when you mention me "
+            "or reply to me directly. Please resend it with a mention if you want me to look at it.)"
+        )
+        try:
+            await message.reply(reminder, mention_author=False)
+        except Exception as e:
+            log.warning("Attachment reminder send failed msg_id=%s err=%s", message.id, type(e).__name__)
+
     def _mark_pk_active(self, channel_id: int) -> None:
         self._pk_active_channels[channel_id] = time.time()
 
@@ -951,14 +987,17 @@ class CallieBot(discord.Client):
         raw_content = message.content or ""
 
         log.info(f"RX guild_id={message.guild.id if message.guild else None} "
-                 f"msg_id={message.id} author={author_name} author_id={message.author.id} chars={len(raw_content)}")
+                 f"msg_id={message.id} author={author_name} author_id={message.author.id} "
+                 f"chars={len(raw_content)} attachments={len(getattr(message, 'attachments', []) or [])}")
 
         # If we aren't allowed to speak, stop after recording/summary work.
         if not decision.can_speak:
+            await self._maybe_send_attachment_invocation_reminder(message, decision)
             log.info("Gate: speaking not allowed -> stop after recording")
             return
         # Ambient reply suppression
         if decision.speak_suppressed:
+            await self._maybe_send_attachment_invocation_reminder(message, decision)
             log.info("Gate: ambient/passive suppression -> stop after recording")
             return
         #if cfg.reply_policy == "Ambient":
