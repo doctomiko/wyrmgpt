@@ -27,6 +27,7 @@ from openai_helpers import build_trimmed_transcript, est_tokens, openai_respond,
 from outage_helpers import classify_discord_exception, classify_openai_exception, format_admin_outage
 from provider_backends import resolve_oauth_tokens, validate_provider_config
 from pk_helper import PKInfo, build_pk_context_block, format_pk_proxy_note
+from reply_cleanup import strip_obvious_reply_prefix
 from word_helpers import extract_docx_markdown, extract_text_bytes
 from access_control import AccessDecision, compute_access_decision #, ChannelReplyMode
 
@@ -305,7 +306,7 @@ class CallieBot(discord.Client):
         message: discord.Message,
         cfg: "GuildConfig",
         *,
-        invoked: bool,
+        should_process: bool,
     ) -> Tuple[List[Dict[str, Any]], List[str]]:
         """
         Process Discord message attachments into model-ready extra parts.
@@ -320,8 +321,7 @@ class CallieBot(discord.Client):
         extra_parts: List[Dict[str, Any]] = []
         user_notes: List[str] = []
 
-        # Policy: attachments only processed on explicit invocation
-        if not invoked or not message.attachments:
+        if not should_process or not message.attachments:
             return extra_parts, user_notes
 
         blocked: List[str] = []
@@ -456,6 +456,21 @@ class CallieBot(discord.Client):
             extra_parts.append(
                 {"type": "input_text", "text": "Connector note (shielded/blocked): " + " | ".join(user_notes)}
             )
+
+        image_parts = sum(1 for part in extra_parts if part.get("type") == "input_image")
+        file_parts = sum(1 for part in extra_parts if part.get("type") == "input_file")
+        text_parts = sum(1 for part in extra_parts if part.get("type") == "input_text")
+        log.info(
+            "Attachment processing msg_id=%s attachments=%s extra_parts=%s image_parts=%s file_parts=%s text_parts=%s blocked=%s shielded=%s",
+            message.id,
+            len(message.attachments),
+            len(extra_parts),
+            image_parts,
+            file_parts,
+            text_parts,
+            len(blocked),
+            len(shielded),
+        )
 
         return extra_parts, user_notes
 
@@ -1126,13 +1141,10 @@ class CallieBot(discord.Client):
                 )
                 validate_provider_config(provider_config)
 
-                # Vivian! Oh we have a place were we cared about invoked!
-                # TODO make this a policy we can set from global or guild config
-                # Attachment handling (explicit invocation only)
                 extra_parts, user_notes = await self._build_attachment_parts(
                     message,
                     cfg,
-                    invoked=bool(decision.is_invoked),
+                    should_process=bool(decision.can_speak),
                 )
                 system_prompt = await cfg.system_prompt()
                 max_output_tokens = await cfg.max_output_tokens()
@@ -1216,6 +1228,16 @@ class CallieBot(discord.Client):
             shield_msg = "(Attachment notes: " + " | ".join(user_notes) + ")"
             reply = shield_msg + "\n\n" + reply
 
+        cleanup_names = [
+            decision.effective_author.author_name,
+            getattr(message.author, "display_name", None),
+            getattr(message.author, "name", None),
+        ]
+        before_cleanup = reply
+        reply = strip_obvious_reply_prefix(reply, [str(name) for name in cleanup_names if name])
+        if reply != before_cleanup:
+            log.info("Reply cleanup: stripped leading addressee prefix msg_id=%s", message.id)
+
         limit = await cfg.discord_safe_limit()
         chunks = chunk_for_discord(reply, limit)
         log.info(f"TX plan: chunks={len(chunks)} sizes={[len(c) for c in chunks]} in_reply_to={message.id}")
@@ -1231,12 +1253,7 @@ class CallieBot(discord.Client):
             # If that fails (deleted message, etc), fall back to a standard send.
             if idx == 0:
                 try:
-                    pk_proxy_name = (
-                        getattr(message.author, "display_name", None)
-                        or getattr(message.author, "name", None)
-                        or None
-                    )
-                    factory = (lambda ch=chunk: send_reply(message, ch, pk_proxy_name=pk_proxy_name))
+                    factory = (lambda ch=chunk: send_reply(message, ch))
                     fallback_factory = (lambda ch=chunk: message.channel.send(ch, silent=True))
                 except Exception:
                     log.error("Failed to build PK-aware reply factory; falling back to standard reply.")
