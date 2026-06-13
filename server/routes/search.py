@@ -1,4 +1,5 @@
 from server.api_models import CorpusSearchRequest
+from server.access_filtering import filter_corpus_rows_for_access, principal_from_request
 from server.config import RetrievalConfig, load_retrieval_config
 from server.logging_helper import log_warn
 
@@ -32,6 +33,13 @@ def corpus_search(req: CorpusSearchRequest):
         cfg=cfg,
         #include_global=req.include_global,
     )
+    principal = principal_from_request(
+        principal_type=req.principal_type,
+        principal_id=req.principal_id,
+        tenant_id=req.tenant_id,
+        admin_view=req.admin_view,
+    )
+    rows = filter_corpus_rows_for_access(rows, principal=principal)
     return {"ok": True, "results": rows}
 
 # endregion

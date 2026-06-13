@@ -7,6 +7,7 @@ from fastapi import File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from typing import Any
 
+from server.access_filtering import filter_rows_for_access, principal_from_request
 from server.api_helpers import RowDict, coerce_optional_int, http_from_value_error, load_json_object, normalize_scope_type
 from server.api_models import BulkFileDeleteRequest, BulkFileMoveScopeRequest, FileDescriptionUpdate, FileImageDescribeRequest, FileImageOcrRequest, FileMoveScopeRequest, FilePreflightRequest, FileRegister, FileRenameRequest
 from server.db import (
@@ -580,18 +581,42 @@ async def api_upload_file(
 # region File Endpoints
 
 @app.get("/api/files")
-def api_list_files():
+def api_list_files(
+    principal_type: str = "user",
+    principal_id: str = "local",
+    tenant_id: str = "default",
+    admin_view: str | None = None,
+):
     """
     List all non-deleted files in the system.
     Used by the top-level Manage Files button for the 'all' view.
     """
-    files = [_augment_file_row_for_ui(f) for f in db_list_all_files()]
+    principal = principal_from_request(
+        principal_type=principal_type,
+        principal_id=principal_id,
+        tenant_id=tenant_id,
+        admin_view=admin_view,
+    )
+    rows = filter_rows_for_access(db_list_all_files(), "file", principal=principal)
+    files = [_augment_file_row_for_ui(f) for f in rows]
     return JSONResponse({"files": files})
 
 
 @app.get("/api/files/global")
-def api_list_global_files():
-    files = [_augment_file_row_for_ui(f) for f in db_list_global_files()]
+def api_list_global_files(
+    principal_type: str = "user",
+    principal_id: str = "local",
+    tenant_id: str = "default",
+    admin_view: str | None = None,
+):
+    principal = principal_from_request(
+        principal_type=principal_type,
+        principal_id=principal_id,
+        tenant_id=tenant_id,
+        admin_view=admin_view,
+    )
+    rows = filter_rows_for_access(db_list_global_files(), "file", principal=principal)
+    files = [_augment_file_row_for_ui(f) for f in rows]
     return JSONResponse({"files": files})
 
 
@@ -953,7 +978,13 @@ async def api_upload_conversation_file(conversation_id: str, file: UploadFile = 
     )
 
 @app.get("/api/conversations/{conversation_id}/files")
-def api_list_conversation_files(conversation_id: str):
+def api_list_conversation_files(
+    conversation_id: str,
+    principal_type: str = "user",
+    principal_id: str = "local",
+    tenant_id: str = "default",
+    admin_view: str | None = None,
+):
     """
     List files attached to a conversation via conversation_files.
     """
@@ -962,7 +993,17 @@ def api_list_conversation_files(conversation_id: str):
         raise HTTPException(status_code=400, detail="conversation_id is required")
 
     try:
-        files = db_list_files_for_conversation(conversation_id)
+        principal = principal_from_request(
+            principal_type=principal_type,
+            principal_id=principal_id,
+            tenant_id=tenant_id,
+            admin_view=admin_view,
+        )
+        files = filter_rows_for_access(
+            db_list_files_for_conversation(conversation_id),
+            "file",
+            principal=principal,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -1037,12 +1078,28 @@ async def api_upload_project_file(project_id: int, file: UploadFile = File(...))
     )
 
 @app.get("/api/projects/{project_id}/files")
-def api_list_project_files(project_id: int):
+def api_list_project_files(
+    project_id: int,
+    principal_type: str = "user",
+    principal_id: str = "local",
+    tenant_id: str = "default",
+    admin_view: str | None = None,
+):
     """
     List files attached to a project via project_files.
     """
     try:
-        files = db_list_files_for_project(project_id)
+        principal = principal_from_request(
+            principal_type=principal_type,
+            principal_id=principal_id,
+            tenant_id=tenant_id,
+            admin_view=admin_view,
+        )
+        files = filter_rows_for_access(
+            db_list_files_for_project(project_id),
+            "file",
+            principal=principal,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

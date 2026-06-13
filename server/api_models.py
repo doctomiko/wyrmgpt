@@ -178,6 +178,10 @@ class CorpusSearchRequest(BaseModel):
     query: str
     limit: int = 10
     include_global: bool = False
+    principal_type: str = "user"
+    principal_id: str = "local"
+    tenant_id: str = "default"
+    admin_view: str | None = None
 
 class FilePreflightItem(BaseModel):
     name: str

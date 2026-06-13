@@ -2,6 +2,7 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
 from server.access_control import resolve_access
+from server.access_filtering import principal_from_request
 from server.db import (
     db_get_artifact_access_resource,
     db_get_conversation_access_resource,
@@ -86,6 +87,10 @@ def api_sharing_diagnostics(
     principal_type: str = "user",
     principal_id: str = "local",
     tenant_id: str | None = None,
+    requester_type: str = "user",
+    requester_id: str = "local",
+    requester_tenant_id: str | None = None,
+    admin_view: str | None = None,
 ):
     resource = _resource_for(resource_type, resource_id)
     principal = {
@@ -95,6 +100,15 @@ def api_sharing_diagnostics(
     }
 
     with db_session() as conn:
+        requester = principal_from_request(
+            principal_type=requester_type,
+            principal_id=requester_id,
+            tenant_id=requester_tenant_id or principal["tenant_id"],
+            admin_view=admin_view,
+        )
+        audit_decision = resolve_access(requester, resource, "audit", explain=True, conn=conn)
+        if not audit_decision.allowed:
+            raise HTTPException(status_code=403, detail="Sharing diagnostics require audit access.")
         decision = resolve_access(principal, resource, action, explain=True, conn=conn)
         memberships = _principal_memberships(conn, principal)
         effective_source = db_get_effective_sharing_source(resource["resource_type"], resource["resource_id"])
