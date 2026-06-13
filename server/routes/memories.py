@@ -3,6 +3,7 @@ from typing import Optional
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
+from server.access_filtering import filter_rows_for_access, principal_from_request
 from server.api_helpers import http_from_value_error
 from server.api_models import AboutYouRequest, MemoryCreate, MemoryLinkProjectRequest, MemoryUpdate, PinRequest
 from server.db import (
@@ -23,8 +24,24 @@ from server.routes.base import app
 # region Memory APIs
 
 @app.get("/api/memories")
-def api_list_memories(limit: int = 200):
-    return JSONResponse(db_list_memories(limit=limit))
+def api_list_memories(
+    limit: int = 200,
+    principal_type: str = "user",
+    principal_id: str = "local",
+    tenant_id: str = "default",
+    admin_view: str | None = None,
+):
+    principal = principal_from_request(
+        principal_type=principal_type,
+        principal_id=principal_id,
+        tenant_id=tenant_id,
+        admin_view=admin_view,
+    )
+    return JSONResponse(filter_rows_for_access(
+        db_list_memories(limit=limit),
+        "memory",
+        principal=principal,
+    ))
 
 
 @app.post("/api/memories")

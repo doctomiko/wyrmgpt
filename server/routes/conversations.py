@@ -4,6 +4,7 @@ import re
 from fastapi import HTTPException, Response
 from fastapi.responses import JSONResponse
 
+from server.access_filtering import filter_rows_for_access, principal_from_request
 from server.api_helpers import http_from_value_error, postprocess_text
 from server.api_models import ArchiveRequest, MoveProjectRequest, TitleRequest
 from server.config import ContextConfig, SummaryConfig, get_prompt, load_context_config, load_summary_config
@@ -20,11 +21,22 @@ from server.routes.base import app
 @app.get("/api/conversations")
 def api_conversations(
     include_archived: bool = False,
-    limit: int = core_cfg.limit_api_conversations
+    limit: int = core_cfg.limit_api_conversations,
+    principal_type: str = "user",
+    principal_id: str = "local",
+    tenant_id: str = "default",
+    admin_view: str | None = None,
 ):
-    return JSONResponse(db_list_conversations(
-        limit=limit, 
-        include_archived=include_archived))
+    rows = db_list_conversations(
+        limit=limit,
+        include_archived=include_archived)
+    principal = principal_from_request(
+        principal_type=principal_type,
+        principal_id=principal_id,
+        tenant_id=tenant_id,
+        admin_view=admin_view,
+    )
+    return JSONResponse(filter_rows_for_access(rows, "conversation", principal=principal))
 
 @app.get("/api/conversation/{conversation_id}/messages")
 def api_conversation_messages(

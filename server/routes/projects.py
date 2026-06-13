@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
+from server.access_filtering import filter_rows_for_access, principal_from_request
 from server.api_helpers import coerce_optional_int, http_from_value_error
 from server.api_models import ArchiveRequest, ImportRule, ProjectCreateRequest, ProjectUpdateRequest
 from server.db import (
@@ -61,8 +62,20 @@ def api_update_project(project_id: int, req: ProjectUpdateRequest):
 
 
 @app.get("/api/projects")
-def api_get_projects():
-    return {"projects": db_list_projects()}
+def api_get_projects(
+    principal_type: str = "user",
+    principal_id: str = "local",
+    tenant_id: str = "default",
+    admin_view: str | None = None,
+):
+    principal = principal_from_request(
+        principal_type=principal_type,
+        principal_id=principal_id,
+        tenant_id=tenant_id,
+        admin_view=admin_view,
+    )
+    projects = filter_rows_for_access(db_list_projects(), "project", principal=principal)
+    return {"projects": projects}
 
 
 @app.post("/api/projects/{project_id}/archive")

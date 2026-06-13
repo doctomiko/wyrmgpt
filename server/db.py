@@ -427,6 +427,13 @@ def db_list_projects(
             "is_pseudo_global": False,
             "created_at": r["created_at"],
             "updated_at": r["updated_at"],
+            "tenant_id": r["tenant_id"] or "default",
+            "owner_principal_type": r["owner_principal_type"],
+            "owner_principal_id": r["owner_principal_id"],
+            "created_by_principal_type": r["created_by_principal_type"],
+            "created_by_principal_id": r["created_by_principal_id"],
+            "sharing_mode": r["sharing_mode"],
+            "provenance_json": r["provenance_json"],
         }
         for r in rows
     ]
@@ -443,6 +450,13 @@ def db_list_projects(
                 "is_pseudo_global": True,
                 "created_at": None,
                 "updated_at": None,
+                "tenant_id": "default",
+                "owner_principal_type": "user",
+                "owner_principal_id": "local",
+                "created_by_principal_type": "system",
+                "created_by_principal_id": "global_project",
+                "sharing_mode": "owner",
+                "provenance_json": None,
             }
         )
     return out
