@@ -1556,6 +1556,22 @@ button.libraryGroupHeader {
   color: var(--muted);
 }
 
+.libraryBadgeVisibility-private {
+  border-color: rgba(230, 126, 126, 0.55);
+  color: #f0aaa8;
+}
+
+.libraryBadgeVisibility-tenant,
+.libraryBadgeTenant {
+  border-color: rgba(111, 174, 255, 0.55);
+  color: #a9ccff;
+}
+
+.libraryBadgeVisibility-public {
+  border-color: rgba(112, 204, 156, 0.55);
+  color: #aee4c8;
+}
+
 .libraryMeta {
   font-size: 0.83rem;
   color: var(--muted);

@@ -899,6 +899,19 @@ function renderLibraryItemCard(item, fallbackScopeLabel = "") {
 
   const right = document.createElement("div");
   right.className = "libraryBadges";
+  const identity = item.identity || {};
+  if (identity.visibility) {
+    const visibilityBadge = document.createElement("span");
+    visibilityBadge.className = `libraryBadge libraryBadgeVisibility libraryBadgeVisibility-${String(identity.visibility).toLowerCase()}`;
+    visibilityBadge.textContent = identity.visibility;
+    right.appendChild(visibilityBadge);
+  }
+  if (identity.tenant_id && identity.tenant_id !== "default") {
+    const tenantBadge = document.createElement("span");
+    tenantBadge.className = "libraryBadge libraryBadgeTenant";
+    tenantBadge.textContent = identity.tenant_id;
+    right.appendChild(tenantBadge);
+  }
   (item.badges || []).forEach((badge) => {
     const el = document.createElement("span");
     el.className = "libraryBadge";
@@ -928,6 +941,19 @@ function renderLibraryItemCard(item, fallbackScopeLabel = "") {
 
   const actions = document.createElement("div");
   actions.className = "libraryActions";
+  if (item.sharing_resource_type && item.sharing_resource_id && typeof openSharingDiagnostics === "function") {
+    const sharingBtn = document.createElement("button");
+    sharingBtn.textContent = "Sharing...";
+    sharingBtn.addEventListener("click", async () => {
+      try {
+        await openSharingDiagnostics(item.sharing_resource_type, item.sharing_resource_id);
+      } catch (e) {
+        console.error("openSharingDiagnostics from library failed", e);
+        alert("Failed to load sharing diagnostics.");
+      }
+    });
+    actions.appendChild(sharingBtn);
+  }
   (item.promote_targets || []).forEach((target) => {
     const btn = document.createElement("button");
     btn.textContent = target.label || "Promote";

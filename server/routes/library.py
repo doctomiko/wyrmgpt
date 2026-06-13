@@ -39,6 +39,52 @@ def _pack_library_section(key: str, title: str, groups: list[RowDict]) -> RowDic
     return {"key": key, "title": title, "groups": live_groups}
 
 
+def _principal_label(row: RowDict, prefix: str) -> str | None:
+    principal_type = (row.get(f"{prefix}_principal_type") or "").strip()
+    principal_id = (row.get(f"{prefix}_principal_id") or "").strip()
+    if not principal_type and not principal_id:
+        return None
+    if principal_type and principal_id:
+        return f"{principal_type}:{principal_id}"
+    return principal_id or principal_type
+
+
+def _identity_summary(row: RowDict, resource_type: str) -> RowDict:
+    tenant_id = (row.get("tenant_id") or "default").strip() or "default"
+    owner = _principal_label(row, "owner")
+    created_by = _principal_label(row, "created_by")
+    source = _principal_label(row, "source")
+    visibility = (row.get("visibility") or "").strip() or None
+    sharing_mode = (row.get("sharing_mode") or "").strip() or None
+    provenance_json = load_json_object(row.get("provenance_json"))
+    return {
+        "resource_type": resource_type,
+        "tenant_id": tenant_id,
+        "owner": owner,
+        "created_by": created_by,
+        "source": source,
+        "visibility": visibility,
+        "sharing_mode": sharing_mode,
+        "provenance_json": provenance_json,
+    }
+
+
+def _append_identity_meta(meta: list[str], row: RowDict, resource_type: str) -> RowDict:
+    identity = _identity_summary(row, resource_type)
+    meta.append(f"Tenant: {identity['tenant_id']}")
+    if identity.get("owner"):
+        meta.append(f"Owner: {identity['owner']}")
+    if identity.get("visibility"):
+        meta.append(f"Visibility: {identity['visibility']}")
+    if identity.get("sharing_mode"):
+        meta.append(f"Sharing: {identity['sharing_mode']}")
+    if identity.get("created_by"):
+        meta.append(f"Created by: {identity['created_by']}")
+    if identity.get("source"):
+        meta.append(f"Source principal: {identity['source']}")
+    return identity
+
+
 def _make_session_library_item(session_row: RowDict, *, inherited_from: str, conversation_title: str | None = None) -> RowDict:
     meta = [
         f"Mode: {session_row.get('mode') or 'reading'}",
@@ -101,6 +147,7 @@ def _make_artifact_library_item(
         meta.append(f"Conversation: {conversation_title}")
     if artifact_row.get("provenance"):
         meta.append(f"Provenance: {artifact_row.get('provenance')}")
+    identity = _append_identity_meta(meta, artifact_row, "artifact")
 
     promote_targets: list[RowDict] = []
     promote_disabled_reason: str | None = None
@@ -124,6 +171,9 @@ def _make_artifact_library_item(
         "badges": badges,
         "promote_targets": promote_targets,
         "promote_disabled_reason": promote_disabled_reason,
+        "identity": identity,
+        "sharing_resource_type": "artifact",
+        "sharing_resource_id": artifact_row["id"],
     }
 
 
@@ -170,6 +220,7 @@ def _make_file_library_item(
         meta.append(f"Import note: {import_note}")
     if file_row.get("provenance"):
         meta.append(f"Provenance: {file_row.get('provenance')}")
+    identity = _append_identity_meta(meta, file_row, "file")
 
     badges: list[str] = []
     if is_image:
@@ -197,6 +248,9 @@ def _make_file_library_item(
         "promote_targets": promote_targets_for_scope(scope_type, project_id=project_id),
         "meta_json": file_meta,
         "provenance": file_row.get("provenance"),
+        "identity": identity,
+        "sharing_resource_type": "file",
+        "sharing_resource_id": file_row["id"],
     }
 
 # endregion
