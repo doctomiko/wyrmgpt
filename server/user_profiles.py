@@ -191,7 +191,7 @@ def get_user_about_you(user_id: int | None) -> dict[str, Any]:
             """
             SELECT * FROM user_profiles
             WHERE user_id=? AND profile_kind=?
-            ORDER BY id DESC
+            ORDER BY updated_at DESC, created_at DESC, id DESC
             LIMIT 1
             """,
             (int(user_id), _PROFILE_KIND),
@@ -227,17 +227,23 @@ def upsert_user_about_you(user_id: int, value: dict[str, Any], *, tenant_id: int
             u = conn.execute("SELECT tenant_id FROM users WHERE id=?", (int(user_id),)).fetchone()
             tenant_id = u["tenant_id"] if u else None
         row = conn.execute(
-            "SELECT id FROM user_profiles WHERE user_id=? AND profile_kind=? ORDER BY id DESC LIMIT 1",
+            """
+            SELECT id FROM user_profiles
+            WHERE user_id=? AND profile_kind=?
+            ORDER BY updated_at DESC, created_at DESC, id DESC
+            LIMIT 1
+            """,
             (int(user_id), _PROFILE_KIND),
         ).fetchone()
         if row:
             conn.execute(
                 """
                 UPDATE user_profiles
-                SET tenant_id=?, content_text=?, updated_at=?, value_json=?
+                SET tenant_id=?, display_name='About You', profile_json=?, about_text=?,
+                    content_text=?, updated_at=?, value_json=?
                 WHERE id=?
                 """,
-                (tenant_id, text, now, json.dumps(clean, ensure_ascii=False), int(row["id"])),
+                (tenant_id, json.dumps(clean, ensure_ascii=False), text, text, now, json.dumps(clean, ensure_ascii=False), row["id"]),
             )
         else:
             _insert_about_profile_conn(
