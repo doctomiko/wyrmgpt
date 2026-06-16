@@ -37,10 +37,24 @@ CREATE TABLE IF NOT EXISTS audit_events (
 """
 
 _INDEX_SQL = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_events_event_uuid ON audit_events(event_uuid)",
     "CREATE INDEX IF NOT EXISTS idx_audit_events_tenant_created ON audit_events(tenant_id, created_at)",
-    "CREATE INDEX IF NOT EXISTS idx_audit_events_resource ON audit_events(resource_kind, resource_id)",
+    "CREATE INDEX IF NOT EXISTS idx_audit_events_resource_kind ON audit_events(resource_kind, resource_id)",
     "CREATE INDEX IF NOT EXISTS idx_audit_events_actor_user ON audit_events(actor_user_id, created_at)",
     "CREATE INDEX IF NOT EXISTS idx_audit_events_event_type ON audit_events(event_type, created_at)",
+)
+
+_MIGRATION_COLUMNS = (
+    ("event_uuid", "TEXT"),
+    ("actor_user_id", "INTEGER"),
+    ("actor_persona_id", "INTEGER"),
+    ("resource_kind", "TEXT"),
+    ("target_user_id", "INTEGER"),
+    ("target_persona_id", "INTEGER"),
+    ("summary", "TEXT"),
+    ("before_json", "TEXT"),
+    ("after_json", "TEXT"),
+    ("metadata_json", "TEXT"),
 )
 
 
@@ -57,6 +71,13 @@ def ensure_audit_events_schema(conn: sqlite3.Connection | None = None) -> None:
     """Create the audit_events table and indexes if they do not already exist."""
     if conn is not None:
         conn.execute(_SCHEMA_SQL)
+        existing_columns = {
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(audit_events)").fetchall()
+        }
+        for column_name, column_type in _MIGRATION_COLUMNS:
+            if column_name not in existing_columns:
+                conn.execute(f"ALTER TABLE audit_events ADD COLUMN {column_name} {column_type}")
         for sql in _INDEX_SQL:
             conn.execute(sql)
         return
