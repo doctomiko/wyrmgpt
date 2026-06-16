@@ -43,6 +43,31 @@ def _row(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return {k: row[k] for k in row.keys()} if row else None
 
 
+def _meta_dict(value: Any) -> dict[str, Any]:
+    if not value:
+        return {}
+    if isinstance(value, dict):
+        return dict(value)
+    try:
+        decoded = json.loads(str(value))
+        return decoded if isinstance(decoded, dict) else {}
+    except Exception:
+        return {}
+
+
+def _decorate_user(row: dict[str, Any]) -> dict[str, Any]:
+    meta = _meta_dict(row.get("meta_json"))
+    row["meta"] = meta
+    avatar_path = str(meta.get("avatar_path") or "").strip()
+    if avatar_path:
+        rev = str(meta.get("avatar_updated_at") or row.get("updated_at") or "").strip()
+        suffix = f"?v={rev}" if rev else ""
+        row["avatar_url"] = f"/api/identity/scope/users/{row['id']}/avatar{suffix}"
+    else:
+        row["avatar_url"] = None
+    return row
+
+
 def _int(value: Any, default: int | None = None) -> int | None:
     if value in (None, ""):
         return default
@@ -380,7 +405,7 @@ def list_users(tenant_id: int | None = None, include_disabled: bool = True) -> l
             """,
             params,
         ).fetchall()
-    return [_row(r) for r in rows]
+    return [_decorate_user(_row(r) or {}) for r in rows]
 
 
 def create_user(display_name: str, handle: str | None = None, tenant_id: int | None = None, role: str = "member", meta_json: Any = None, is_global: bool = False, is_global_admin: bool = False, slug: str | None = None) -> dict[str, Any]:

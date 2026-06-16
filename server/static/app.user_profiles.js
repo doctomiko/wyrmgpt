@@ -7,6 +7,7 @@
   let managedAboutUserId = null;
   let managedAboutProfileLoaded = false;
   let managedAboutLoadSeq = 0;
+  let managedAvatarObjectUrl = null;
   let userListObserver = null;
   let toastTimer = null;
 
@@ -203,7 +204,45 @@
     if ($("identityAboutAge")) $("identityAboutAge").value = "";
     if ($("identityAboutOccupation")) $("identityAboutOccupation").value = "";
     if ($("identityAboutMore")) $("identityAboutMore").value = "";
+    clearManagedAvatarSelection();
+    setManagedAvatarPreview(null);
     setManagedAboutTitle(null);
+  }
+
+  function clearManagedAvatarSelection() {
+    const input = $("identityUserAvatar");
+    if (input) input.value = "";
+    if (managedAvatarObjectUrl) {
+      URL.revokeObjectURL(managedAvatarObjectUrl);
+      managedAvatarObjectUrl = null;
+    }
+  }
+
+  function setManagedAvatarPreview(user) {
+    const preview = $("identityUserAvatarPreview");
+    const empty = $("identityUserAvatarEmpty");
+    if (!preview) return;
+    if (managedAvatarObjectUrl) {
+      URL.revokeObjectURL(managedAvatarObjectUrl);
+      managedAvatarObjectUrl = null;
+    }
+    const url = user?.avatar_url || "";
+    preview.src = url;
+    preview.classList.toggle("hidden", !url);
+    empty?.classList.toggle("hidden", !!url);
+  }
+
+  function previewSelectedAvatar() {
+    const input = $("identityUserAvatar");
+    const file = input?.files?.[0];
+    const preview = $("identityUserAvatarPreview");
+    const empty = $("identityUserAvatarEmpty");
+    if (!preview || !file) return;
+    if (managedAvatarObjectUrl) URL.revokeObjectURL(managedAvatarObjectUrl);
+    managedAvatarObjectUrl = URL.createObjectURL(file);
+    preview.src = managedAvatarObjectUrl;
+    preview.classList.remove("hidden");
+    empty?.classList.add("hidden");
   }
 
   function ensureManageUserAboutPanel() {
@@ -233,6 +272,14 @@
           More About This User
           <textarea id="identityAboutMore" rows="8" placeholder="Anything enduring, useful, or identity-shaping about this user."></textarea>
         </label>
+        <label class="span2">
+          Profile Image
+          <input id="identityUserAvatar" type="file" accept="image/jpeg,image/png,image/gif,image/webp,image/*" />
+        </label>
+        <div class="span2 identityAvatarPreviewRow">
+          <img id="identityUserAvatarPreview" class="identityUserAvatarPreview hidden" alt="" />
+          <div id="identityUserAvatarEmpty" class="identityUserAvatarEmpty">No profile image</div>
+        </div>
         <div class="span2">
           <button id="identitySaveUserBottom">Create User</button>
         </div>
@@ -250,6 +297,10 @@
         .identityAboutGrid label { display: grid; gap: 4px; }
         .identityAboutGrid .span2 { grid-column: 1 / -1; }
         .identityAboutGrid input, .identityAboutGrid textarea { width: 100%; box-sizing: border-box; }
+        .identityAvatarPreviewRow { display: flex; align-items: center; gap: 10px; min-height: 44px; }
+        .identityUserAvatarPreview, .identityUserAvatarThumb { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; background: rgba(128,128,128,.18); border: 1px solid rgba(128,128,128,.35); }
+        .identityUserAvatarEmpty { font-size: .82rem; opacity: .72; }
+        .identityListItem.hasAvatar { grid-template-columns: 36px minmax(0, 1fr) auto; align-items: center; }
         .identityRefDetails { grid-column: 1 / -1; margin-top: 4px; opacity: .82; }
         .identityRefDetails summary { cursor: pointer; }
         .identityRefDetails ul { margin: 4px 0 0 18px; padding: 0; }
@@ -259,6 +310,7 @@
       document.head.appendChild(style);
     }
     $("identitySaveUserBottom")?.addEventListener("click", handleUserSaveClick, true);
+    $("identityUserAvatar")?.addEventListener("change", previewSelectedAvatar);
     $("identityUserName")?.addEventListener("input", () => {
       if (!currentEditingUserId()) setManagedAboutTitle(null);
     });
@@ -277,6 +329,8 @@
     managedAboutProfileLoaded = false;
     const user = userPool().find((u) => Number(u.id) === Number(userId));
     setManagedAboutTitle(user || { id: userId });
+    clearManagedAvatarSelection();
+    setManagedAvatarPreview(user);
     setUserSaveButtonLabels();
     const data = await fetchUserAboutYou(userId, actorUserId);
     if (requestSeq !== managedAboutLoadSeq || Number(managedAboutUserId) !== Number(userId)) return;
@@ -305,6 +359,29 @@
       tenant_id: isGlobal ? null : Number(scopeValue || activeIdentity().tenant_id || 0) || null,
       role: isGlobalAdmin ? "global_admin" : isTenantAdmin ? "tenant_admin" : "member",
     };
+  }
+
+  async function uploadManagedAvatar(userId, actingUserId) {
+    const input = $("identityUserAvatar");
+    const file = input?.files?.[0];
+    if (!userId || !file) return null;
+    const form = new FormData();
+    form.append("acting_user_id", String(actingUserId || userId));
+    form.append("file", file);
+    const res = await fetch(`/api/identity/scope/users/${encodeURIComponent(userId)}/avatar`, {
+      method: "POST",
+      body: form,
+    });
+    if (!res.ok) {
+      let detail = "";
+      try {
+        const data = await res.json();
+        detail = data?.detail || data?.error || "";
+      } catch {}
+      throw new Error(detail || `Avatar upload failed with HTTP ${res.status}`);
+    }
+    clearManagedAvatarSelection();
+    return await res.json();
   }
 
   function setUserSaveButtonLabels() {
@@ -337,6 +414,9 @@
     const aboutPayload = readManagedAboutFields();
     if (savedUserId && (hasAnyAboutFields(aboutPayload) || editingUserId || managedAboutProfileLoaded)) {
       await saveUserAboutYou(savedUserId, activeIdentity().user_id, aboutPayload);
+    }
+    if (savedUserId) {
+      await uploadManagedAvatar(savedUserId, activeIdentity().user_id);
     }
 
     const state = identityState();
@@ -415,6 +495,14 @@
       row.dataset.userId = String(user.id);
       const label = row.querySelector(".identityListLabel");
       const actions = row.querySelector(".identityListActions");
+      if (user.avatar_url && label && !row.querySelector(".identityUserAvatarThumb")) {
+        const avatar = document.createElement("img");
+        avatar.className = "identityUserAvatarThumb";
+        avatar.src = user.avatar_url;
+        avatar.alt = "";
+        row.classList.add("hasAvatar");
+        row.insertBefore(avatar, label);
+      }
       if (label && Number(user.reference_count || 0) > 0) {
         const details = document.createElement("details");
         details.className = "identityRefDetails";

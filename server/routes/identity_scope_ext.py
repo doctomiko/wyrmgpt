@@ -8,12 +8,17 @@ separate management surfaces.
 
 from __future__ import annotations
 
+import json
+import mimetypes
+import uuid
+from pathlib import Path
 from typing import Any
 
-from fastapi import Body, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi import Body, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
 
 from server.routes.base import app
+from server.db_helpers import DATA_DIR, _utc_now_iso
 from server.identity_db import (
     create_persona,
     create_tenant,
@@ -46,6 +51,47 @@ def _int_or_none(value: Any) -> int | None:
         return int(value)
     except Exception:
         return None
+
+
+_AVATAR_ROOT = DATA_DIR / "identity" / "avatars"
+_AVATAR_MAX_BYTES = 5 * 1024 * 1024
+_AVATAR_EXT_BY_MIME = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+}
+
+
+def _json_meta(value: Any) -> dict[str, Any]:
+    if not value:
+        return {}
+    if isinstance(value, dict):
+        return dict(value)
+    try:
+        decoded = json.loads(str(value))
+        return decoded if isinstance(decoded, dict) else {}
+    except Exception:
+        return {}
+
+
+def _user_by_id(user_id: int) -> dict[str, Any] | None:
+    rows = [u for u in list_users(None, include_disabled=True) if int(u.get("id") or 0) == int(user_id)]
+    return rows[0] if rows else None
+
+
+def _avatar_file_from_user(user: dict[str, Any]) -> Path | None:
+    meta = _json_meta(user.get("meta_json"))
+    rel = str(meta.get("avatar_path") or "").strip()
+    if not rel:
+        return None
+    path = (DATA_DIR / rel).resolve()
+    root = _AVATAR_ROOT.resolve()
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return None
+    return path
 
 
 def _capabilities(user_id: int | None, tenant_id: int | None) -> dict[str, bool]:
@@ -215,6 +261,88 @@ def api_scope_update_user(user_id: int, payload: dict[str, Any] = Body(default_f
         raise
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/identity/scope/users/{user_id}/avatar")
+async def api_scope_upload_user_avatar(
+    user_id: int,
+    acting_user_id: int | None = Form(default=None),
+    file: UploadFile = File(...),
+):
+    try:
+        target = _user_by_id(user_id)
+        if not target:
+            raise HTTPException(status_code=404, detail="User not found.")
+
+        is_self_upload = acting_user_id is not None and int(acting_user_id) == int(user_id)
+        target_tenant_id = _int_or_none(target.get("tenant_id"))
+        if not is_self_upload:
+            if int(target.get("is_global") or 0) == 1 or int(target.get("is_global_admin") or 0) == 1:
+                if not user_is_global_admin(acting_user_id):
+                    raise HTTPException(status_code=403, detail="Only a global admin can edit global user avatars.")
+            else:
+                _require_user_manager({"acting_user_id": acting_user_id}, target_tenant_id)
+
+        original_name = Path(file.filename or "avatar").name
+        content_type = (file.content_type or mimetypes.guess_type(original_name)[0] or "").split(";")[0].strip().lower()
+        ext = _AVATAR_EXT_BY_MIME.get(content_type)
+        if not ext:
+            raise HTTPException(status_code=400, detail="Avatar must be a JPEG, PNG, GIF, or WebP image.")
+
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > _AVATAR_MAX_BYTES:
+                raise HTTPException(status_code=400, detail="Avatar image must be 5 MB or smaller.")
+            chunks.append(chunk)
+        await file.close()
+        if total <= 0:
+            raise HTTPException(status_code=400, detail="Avatar image is empty.")
+
+        _AVATAR_ROOT.mkdir(parents=True, exist_ok=True)
+        filename = f"user-{int(user_id)}-{uuid.uuid4().hex}{ext}"
+        dest = _AVATAR_ROOT / filename
+        dest.write_bytes(b"".join(chunks))
+
+        meta = _json_meta(target.get("meta_json"))
+        old_path = _avatar_file_from_user(target)
+        now = _utc_now_iso()
+        meta.update({
+            "avatar_path": str(Path("identity") / "avatars" / filename),
+            "avatar_mime_type": content_type,
+            "avatar_original_name": original_name,
+            "avatar_updated_at": now,
+        })
+        update_user(user_id, {"meta_json": meta})
+        if old_path and old_path != dest:
+            try:
+                old_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+        row = _user_by_id(user_id) or {}
+        return JSONResponse(row)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/identity/scope/users/{user_id}/avatar")
+def api_scope_get_user_avatar(user_id: int):
+    target = _user_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found.")
+    path = _avatar_file_from_user(target)
+    if not path or not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="Avatar not found.")
+    meta = _json_meta(target.get("meta_json"))
+    media_type = str(meta.get("avatar_mime_type") or mimetypes.guess_type(path.name)[0] or "application/octet-stream")
+    return FileResponse(path, media_type=media_type, headers={"Cache-Control": "private, max-age=300"})
 
 
 @app.delete("/api/identity/scope/users/{user_id}")
