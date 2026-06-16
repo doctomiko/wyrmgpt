@@ -47,6 +47,8 @@ else
 fi
 
 runtime_root="${WYRMGPT_RUNTIME_ROOT:-/opt/openclaw-data/wyrmgpt}"
+config_root="${WYRMGPT_CONFIG_ROOT:-$runtime_root/config}"
+prompts_root="${WYRMGPT_PROMPTS_ROOT:-$runtime_root/prompts}"
 port="${WYRMGPT_PORT:-18080}"
 container_name="${WYRMGPT_CONTAINER_NAME:-wyrmgpt-web}"
 image_name="${WYRMGPT_IMAGE_NAME:-wyrmgpt-web:host}"
@@ -101,30 +103,21 @@ if [[ ! -f "$repo_root/Dockerfile" ]]; then
   exit 1
 fi
 
-compose_file="$(mktemp "${TMPDIR:-/tmp}/wyrmgpt-host-compose.XXXXXX.yml")"
-trap 'rm -f "$compose_file"' EXIT
-
-cat >"$compose_file" <<EOF
-services:
-  wyrmgpt:
-    build:
-      context: ${repo_root}
-      dockerfile: Dockerfile
-    image: ${image_name}
-    container_name: ${container_name}
-    restart: unless-stopped
-    ports:
-      - "${port}:8000"
-    volumes:
-      - ${runtime_root}/config/config.toml:/app/config.toml
-      - ${runtime_root}/config/config.secrets.toml:/app/config.secrets.toml
-      - ${runtime_root}/prompts:/app/prompts
-      - ${data_root}:/app/data
-    environment:
-      PYTHONUNBUFFERED: "1"
-EOF
+compose_file="$repo_root/docker-compose.host.yml"
+if [[ ! -f "$compose_file" ]]; then
+  echo "Host compose file not found: $compose_file" >&2
+  exit 1
+fi
 
 compose() {
+  WYRMGPT_HOST_REPO="$repo_root" \
+  WYRMGPT_RUNTIME_ROOT="$runtime_root" \
+  WYRMGPT_CONFIG_ROOT="$config_root" \
+  WYRMGPT_PROMPTS_ROOT="$prompts_root" \
+  WYRMGPT_DATA_ROOT="$data_root" \
+  WYRMGPT_PORT="$port" \
+  WYRMGPT_CONTAINER_NAME="$container_name" \
+  WYRMGPT_IMAGE_NAME="$image_name" \
   docker compose -p "$compose_project" -f "$compose_file" "$@"
 }
 
@@ -142,26 +135,26 @@ if [[ "$pull" -eq 1 ]]; then
   git -C "$repo_root" pull --ff-only
 fi
 
-mkdir -p "$runtime_root/config" "$runtime_root/prompts" "$data_root/sql"
+mkdir -p "$config_root" "$prompts_root" "$data_root/sql"
 
-if [[ ! -f "$runtime_root/config/config.toml" ]]; then
+if [[ ! -f "$config_root/config.toml" ]]; then
   if [[ -f "$repo_root/config.toml" ]]; then
-    cp "$repo_root/config.toml" "$runtime_root/config/config.toml"
+    cp "$repo_root/config.toml" "$config_root/config.toml"
   else
-    cp "$repo_root/config.toml.example" "$runtime_root/config/config.toml"
+    cp "$repo_root/config.toml.example" "$config_root/config.toml"
   fi
-  echo "Created $runtime_root/config/config.toml"
+  echo "Created $config_root/config.toml"
 fi
 
-if [[ ! -f "$runtime_root/config/config.secrets.toml" ]]; then
-  cp "$repo_root/config.secrets.toml.example" "$runtime_root/config/config.secrets.toml"
-  chmod 600 "$runtime_root/config/config.secrets.toml" || true
-  echo "Created $runtime_root/config/config.secrets.toml; edit it with real provider keys before remote-model testing."
+if [[ ! -f "$config_root/config.secrets.toml" ]]; then
+  cp "$repo_root/config.secrets.toml.example" "$config_root/config.secrets.toml"
+  chmod 600 "$config_root/config.secrets.toml" || true
+  echo "Created $config_root/config.secrets.toml; edit it with real provider keys before remote-model testing."
 fi
 
-if [[ -z "$(find "$runtime_root/prompts" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
-  cp -a "$repo_root/prompts/." "$runtime_root/prompts/"
-  echo "Seeded $runtime_root/prompts"
+if [[ -z "$(find "$prompts_root" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+  cp -a "$repo_root/prompts/." "$prompts_root/"
+  echo "Seeded $prompts_root"
 fi
 
 up_args=(up -d --remove-orphans)
@@ -171,7 +164,10 @@ fi
 
 echo "Rebuilding WyrmGPT from: $repo_root"
 echo "Runtime root: $runtime_root"
+echo "Config root: $config_root"
+echo "Prompts root: $prompts_root"
 echo "Data root: $data_root"
+echo "Compose file: $compose_file"
 compose "${up_args[@]}"
 
 echo "WyrmGPT is starting on http://localhost:${port}"

@@ -1,16 +1,17 @@
 services:
   wyrmgpt:
     build:
-      context: /opt/openclaw-data/workspace/wyrmgpt
+      context: ${WYRMGPT_HOST_REPO:-/opt/openclaw-data/workspace/wyrmgpt}
       dockerfile: Dockerfile
-    container_name: wyrmgpt-web
+    image: ${WYRMGPT_IMAGE_NAME:-wyrmgpt-web:host}
+    container_name: ${WYRMGPT_CONTAINER_NAME:-wyrmgpt-web}
     restart: unless-stopped
     ports:
-      - "18080:8000"
+      - "${WYRMGPT_PORT:-18080}:8000"
     volumes:
-      - /opt/openclaw-data/wyrmgpt/config/config.toml:/app/config.toml
-      - /opt/openclaw-data/wyrmgpt/config/config.secrets.toml:/app/config.secrets.toml
-      - /opt/openclaw-data/wyrmgpt/prompts:/app/prompts
-      - /opt/openclaw-data/wyrmgpt/data:/app/data
+      - ${WYRMGPT_CONFIG_ROOT:-/opt/openclaw-data/wyrmgpt/config}/config.toml:/app/config.toml
+      - ${WYRMGPT_CONFIG_ROOT:-/opt/openclaw-data/wyrmgpt/config}/config.secrets.toml:/app/config.secrets.toml
+      - ${WYRMGPT_PROMPTS_ROOT:-/opt/openclaw-data/wyrmgpt/prompts}:/app/prompts
+      - ${WYRMGPT_DATA_ROOT:-/opt/openclaw-data/workspace/wyrmgpt/data}:/app/data
     environment:
       PYTHONUNBUFFERED: "1"
