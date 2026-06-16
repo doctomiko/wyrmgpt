@@ -182,6 +182,34 @@
     } catch {}
   }
 
+  let identityToastTimer = null;
+  function showIdentityToast(message, tone = "ok") {
+    let toast = $("identityToast");
+    if (!toast) {
+      toast = document.createElement("div");
+      toast.id = "identityToast";
+      document.body.appendChild(toast);
+      const style = document.createElement("style");
+      style.id = "identityToastStyle";
+      style.textContent = `
+        #identityToast { position: fixed; right: 18px; bottom: 18px; z-index: 9999; padding: 10px 14px; border-radius: 10px; background: rgba(22, 90, 42, .94); color: #fff; box-shadow: 0 4px 18px rgba(0,0,0,.35); opacity: 0; transform: translateY(8px); transition: opacity .16s ease, transform .16s ease; pointer-events: none; max-width: 360px; }
+        #identityToast.visible { opacity: 1; transform: translateY(0); }
+        #identityToast.warn { background: rgba(122, 73, 16, .96); }
+        #identityToast.error { background: rgba(130, 35, 35, .96); }
+      `;
+      document.head.appendChild(style);
+    }
+    toast.textContent = message;
+    toast.className = tone;
+    requestAnimationFrame(() => toast.classList.add("visible"));
+    clearTimeout(identityToastTimer);
+    identityToastTimer = setTimeout(() => toast.classList.remove("visible"), 2600);
+  }
+
+  function emitIdentityEvent(name, detail = {}) {
+    document.dispatchEvent(new CustomEvent(name, { detail }));
+  }
+
   function fillSelect(el, rows, labelFn, { blank = false, blankLabel = "—", blankValue = "" } = {}) {
     if (!el) return;
     const prev = el.value;
@@ -453,7 +481,17 @@
   function closeModal(id) { $(id)?.classList.add("hidden"); }
 
   function buildTenantPayload() { return { name: ($("identityTenantName")?.value || "").trim(), kind: ($("identityTenantKind")?.value || "local").trim() || "local", acting_user_id: selectedUserId() }; }
-  async function saveTenant() { const p = buildTenantPayload(); if (!p.name) return alert("Tenant name required."); if (state.editingTenantId) await putJson(`/api/identity/scope/tenants/${encodeURIComponent(state.editingTenantId)}`, p); else await postJson("/api/identity/scope/tenants", p); resetTenantForm(); await loadIdentity(); }
+  async function saveTenant() {
+    const p = buildTenantPayload();
+    if (!p.name) return alert("Tenant name required.");
+    const wasEdit = !!state.editingTenantId;
+    const row = wasEdit
+      ? await putJson(`/api/identity/scope/tenants/${encodeURIComponent(state.editingTenantId)}`, p)
+      : await postJson("/api/identity/scope/tenants", p);
+    resetTenantForm();
+    await loadIdentity();
+    showIdentityToast(`Tenant ${wasEdit ? "updated" : "created"}: ${row?.name || p.name}`);
+  }
   function editTenant(row) { state.editingTenantId = row.id; if ($("identityTenantName")) $("identityTenantName").value = row.name || ""; if ($("identityTenantKind")) $("identityTenantKind").value = row.kind || "local"; renderTenants(); }
   function resetTenantForm() { state.editingTenantId = null; if ($("identityTenantName")) $("identityTenantName").value = ""; if ($("identityTenantKind")) $("identityTenantKind").value = "local"; renderTenants(); }
   async function toggleTenant(row) { const next = row.is_enabled === 0; if (!next && !confirm(`Disable tenant “${row.name || row.id}”?`)) return; await putJson(`/api/identity/scope/tenants/${encodeURIComponent(row.id)}`, { is_enabled: next, acting_user_id: selectedUserId() }); await loadIdentity(); }
@@ -473,9 +511,38 @@
       role: isGlobal && !!$("identityUserGlobalAdmin")?.checked ? "global_admin" : !isGlobal && !!$("identityUserTenantAdmin")?.checked ? "tenant_admin" : "member",
     };
   }
-  async function saveUser() { const p = buildUserPayload(); if (!p.display_name) return alert("User display name required."); if (state.editingUserId) await putJson(`/api/identity/scope/users/${encodeURIComponent(state.editingUserId)}`, p); else await postJson("/api/identity/scope/users", p); resetUserForm(); await loadIdentity(); }
-  function editUser(row) { state.editingUserId = row.id; if ($("identityUserName")) $("identityUserName").value = row.display_name || ""; if ($("identityUserSlug")) $("identityUserSlug").value = row.slug || row.handle || ""; fillUserScopeSelect(Number(row.is_global || 0) === 1 || Number(row.is_global_admin || 0) === 1 ? GLOBAL_USER_VALUE : String(row.tenant_id || selectedTenantId() || "")); if ($("identityUserTenantAdmin")) $("identityUserTenantAdmin").checked = Number(row.is_tenant_admin || 0) === 1; if ($("identityUserGlobalAdmin")) $("identityUserGlobalAdmin").checked = Number(row.is_global_admin || 0) === 1; updateUserAdminCheckboxes(); renderUsers(); }
-  function resetUserForm() { state.editingUserId = null; fillUserScopeSelect(selectedTenantId() != null ? String(selectedTenantId()) : GLOBAL_USER_VALUE); if ($("identityUserTenantAdmin")) $("identityUserTenantAdmin").checked = false; if ($("identityUserGlobalAdmin")) $("identityUserGlobalAdmin").checked = false; if ($("identityUserName")) $("identityUserName").value = ""; if ($("identityUserSlug")) $("identityUserSlug").value = ""; renderUsers(); }
+  async function saveUser() {
+    const p = buildUserPayload();
+    if (!p.display_name) return alert("User display name required.");
+    const wasEdit = !!state.editingUserId;
+    const row = wasEdit
+      ? await putJson(`/api/identity/scope/users/${encodeURIComponent(state.editingUserId)}`, p)
+      : await postJson("/api/identity/scope/users", p);
+    resetUserForm();
+    await loadIdentity();
+    showIdentityToast(`User ${wasEdit ? "updated" : "created"}: ${row?.display_name || p.display_name}`);
+  }
+  function editUser(row) {
+    state.editingUserId = row.id;
+    if ($("identityUserName")) $("identityUserName").value = row.display_name || "";
+    if ($("identityUserSlug")) $("identityUserSlug").value = row.slug || row.handle || "";
+    fillUserScopeSelect(Number(row.is_global || 0) === 1 || Number(row.is_global_admin || 0) === 1 ? GLOBAL_USER_VALUE : String(row.tenant_id || selectedTenantId() || ""));
+    if ($("identityUserTenantAdmin")) $("identityUserTenantAdmin").checked = Number(row.is_tenant_admin || 0) === 1;
+    if ($("identityUserGlobalAdmin")) $("identityUserGlobalAdmin").checked = Number(row.is_global_admin || 0) === 1;
+    updateUserAdminCheckboxes();
+    renderUsers();
+    emitIdentityEvent("wyrmgpt:identity-user-edit", { user: row, userId: row.id });
+  }
+  function resetUserForm() {
+    state.editingUserId = null;
+    fillUserScopeSelect(selectedTenantId() != null ? String(selectedTenantId()) : GLOBAL_USER_VALUE);
+    if ($("identityUserTenantAdmin")) $("identityUserTenantAdmin").checked = false;
+    if ($("identityUserGlobalAdmin")) $("identityUserGlobalAdmin").checked = false;
+    if ($("identityUserName")) $("identityUserName").value = "";
+    if ($("identityUserSlug")) $("identityUserSlug").value = "";
+    renderUsers();
+    emitIdentityEvent("wyrmgpt:identity-user-reset");
+  }
   async function toggleUser(row) { const next = row.is_enabled === 0; if (!next && !confirm(`Disable user “${row.display_name || row.id}”?`)) return; await putJson(`/api/identity/scope/users/${encodeURIComponent(row.id)}`, { is_enabled: next, acting_user_id: selectedUserId(), tenant_id: row.tenant_id }); await loadIdentity(); }
   async function hardDeleteUser(row) { if (!confirm(`Permanently delete user “${row.display_name || row.id}”? This cannot be undone.`)) return; await deleteJson(`/api/identity/scope/users/${encodeURIComponent(row.id)}`, { acting_user_id: selectedUserId(), tenant_id: row.tenant_id }); if (Number(state.editingUserId) === Number(row.id)) resetUserForm(); await loadIdentity(); }
 
@@ -494,7 +561,17 @@
       system_prompt: custom ? ($("identityPersonaPrompt")?.value || "").trim() : "",
     };
   }
-  async function savePersona() { const p = buildPersonaPayload(); if (!p.name) return alert("Persona name required."); if (state.editingPersonaId) await putJson(`/api/identity/scope/personas/${encodeURIComponent(state.editingPersonaId)}`, p); else await postJson("/api/identity/scope/personas", p); resetPersonaForm(); await loadIdentity(); }
+  async function savePersona() {
+    const p = buildPersonaPayload();
+    if (!p.name) return alert("Persona name required.");
+    const wasEdit = !!state.editingPersonaId;
+    const row = wasEdit
+      ? await putJson(`/api/identity/scope/personas/${encodeURIComponent(state.editingPersonaId)}`, p)
+      : await postJson("/api/identity/scope/personas", p);
+    resetPersonaForm();
+    await loadIdentity();
+    showIdentityToast(`Persona ${wasEdit ? "updated" : "created"}: ${row?.name || p.name}`);
+  }
   function editPersona(row) { state.editingPersonaId = row.id; fillPersonaScopeSelect(row.persona_scope || "tenant"); if ($("identityPersonaTenant")) $("identityPersonaTenant").value = row.tenant_id == null ? "" : String(row.tenant_id); if ($("identityPersonaName")) $("identityPersonaName").value = row.name || ""; if ($("identityPersonaSlug")) $("identityPersonaSlug").value = row.slug || ""; if ($("identityPersonaDescription")) $("identityPersonaDescription").value = row.description || ""; if (row.prompt_file) fillPromptFileSelect(row.prompt_file); else { fillPromptFileSelect(CUSTOM_PROMPT_VALUE); if ($("identityPersonaPrompt")) $("identityPersonaPrompt").value = row.system_prompt || ""; } renderPersonas(); }
   function resetPersonaForm() { state.editingPersonaId = null; fillPersonaScopeSelect("user"); if ($("identityPersonaTenant") && selectedTenantId() != null) $("identityPersonaTenant").value = String(selectedTenantId()); if ($("identityPersonaName")) $("identityPersonaName").value = ""; if ($("identityPersonaSlug")) $("identityPersonaSlug").value = ""; if ($("identityPersonaDescription")) $("identityPersonaDescription").value = ""; if ($("identityPersonaPrompt")) $("identityPersonaPrompt").value = ""; fillPromptFileSelect(CUSTOM_PROMPT_VALUE); renderPersonas(); }
   async function togglePersona(row) { const next = row.is_enabled === 0; if (!next && !confirm(`Disable persona “${row.name || row.id}”?`)) return; await putJson(`/api/identity/scope/personas/${encodeURIComponent(row.id)}`, { is_enabled: next, acting_user_id: selectedUserId(), tenant_id: row.tenant_id, persona_scope: row.persona_scope || "tenant" }); await loadIdentity(); }
@@ -537,18 +614,19 @@
     $("managePersonasTop")?.addEventListener("click", () => { renderPersonas(); openModal("identityPersonaModal"); });
     for (const [id, modal] of [["identityTenantClose", "identityTenantModal"], ["identityTenantCloseBottom", "identityTenantModal"], ["identityUserClose", "identityUserModal"], ["identityUserCloseBottom", "identityUserModal"], ["identityPersonaClose", "identityPersonaModal"], ["identityPersonaCloseBottom", "identityPersonaModal"]]) $(id)?.addEventListener("click", () => closeModal(modal));
     for (const id of ["identityTenantModal", "identityUserModal", "identityPersonaModal"]) $(id)?.querySelector(".modalBackdrop")?.addEventListener("click", () => closeModal(id));
-    $("identitySaveTenant")?.addEventListener("click", () => saveTenant().catch((e) => alert(`Failed to save tenant: ${e?.message || e}`)));
+    $("identitySaveTenant")?.addEventListener("click", () => saveTenant().catch((e) => showIdentityToast(`Failed to save tenant: ${e?.message || e}`, "error")));
     $("identityCancelTenantEdit")?.addEventListener("click", resetTenantForm);
-    $("identitySaveUser")?.addEventListener("click", () => saveUser().catch((e) => alert(`Failed to save user: ${e?.message || e}`)));
+    $("identitySaveUser")?.addEventListener("click", () => saveUser().catch((e) => showIdentityToast(`Failed to save user: ${e?.message || e}`, "error")));
     $("identityCancelUserEdit")?.addEventListener("click", resetUserForm);
     $("identityUserScope")?.addEventListener("change", updateUserAdminCheckboxes);
-    $("identitySavePersona")?.addEventListener("click", () => savePersona().catch((e) => alert(`Failed to save persona: ${e?.message || e}`)));
+    $("identitySavePersona")?.addEventListener("click", () => savePersona().catch((e) => showIdentityToast(`Failed to save persona: ${e?.message || e}`, "error")));
     $("identityCancelPersonaEdit")?.addEventListener("click", resetPersonaForm);
     $("identityPersonaScope")?.addEventListener("change", updatePersonaScopeControls);
     $("identityPersonaPromptFile")?.addEventListener("change", updatePromptTextareaState);
   }
 
-  window.wyrmgptIdentity = { state, loadIdentity, activeIdentityPayload, openIdentityModal: () => openModal("identityPersonaModal") };
+  window.wyrmgptIdentityToast = showIdentityToast;
+  window.wyrmgptIdentity = { state, loadIdentity, activeIdentityPayload, openIdentityModal: () => openModal("identityPersonaModal"), showToast: showIdentityToast };
   installIdentityRuntimeStyle();
   bind();
   installFetchPatch();

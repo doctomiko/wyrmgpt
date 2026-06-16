@@ -89,6 +89,10 @@
   }
 
   function showToast(message, tone = "ok") {
+    if (typeof window.wyrmgptIdentityToast === "function") {
+      window.wyrmgptIdentityToast(message, tone);
+      return;
+    }
     let toast = $("identityToast");
     if (!toast) {
       toast = document.createElement("div");
@@ -254,7 +258,7 @@
       `;
       document.head.appendChild(style);
     }
-    $("identitySaveUserBottom")?.addEventListener("click", interceptUserSave, true);
+    $("identitySaveUserBottom")?.addEventListener("click", handleUserSaveClick, true);
     $("identityUserName")?.addEventListener("input", () => {
       if (!currentEditingUserId()) setManagedAboutTitle(null);
     });
@@ -347,6 +351,10 @@
     if (typeof window.refreshContext === "function") await window.refreshContext();
   }
 
+  function handleUserSaveClick(event) {
+    interceptUserSave(event).catch((e) => showToast(`Failed to save user: ${e?.message || e}`, "error"));
+  }
+
   function effectiveForceAction(ref) {
     if (ref.force_action) return ref.force_action;
     if (ref.table === "tenant_users" && ref.column === "user_id") return "cascade_delete";
@@ -434,8 +442,8 @@
 
   function installProfileUiHooks() {
     ensureManageUserAboutPanel();
-    $("identitySaveUser")?.addEventListener("click", interceptUserSave, true);
-    $("identitySaveUserBottom")?.addEventListener("click", interceptUserSave, true);
+    $("identitySaveUser")?.addEventListener("click", handleUserSaveClick, true);
+    $("identitySaveUserBottom")?.addEventListener("click", handleUserSaveClick, true);
 
     const manageUsers = $("manageUsersTop");
     manageUsers?.addEventListener("click", () => {
@@ -454,17 +462,20 @@
       }, 0);
     });
 
-    document.addEventListener("click", (event) => {
-      const target = event.target;
-      if (!(target instanceof HTMLElement)) return;
-      if (target.textContent !== "Edit" || !target.closest("#identityUserList")) return;
-      const clickedUser = identifyClickedUserFromEditButton(target);
-      if (!clickedUser) return;
-      setTimeout(() => {
-        setUserSaveButtonLabels();
-        loadManagedAboutForUser(clickedUser.id).catch((e) => console.warn("load edited user's About You failed", e));
-      }, 0);
-    }, true);
+    document.addEventListener("wyrmgpt:identity-user-edit", (event) => {
+      const userId = event?.detail?.userId || event?.detail?.user?.id;
+      if (!userId) return;
+      setUserSaveButtonLabels();
+      loadManagedAboutForUser(userId).catch((e) => {
+        console.warn("load edited user's About You failed", e);
+        showToast(`Failed to load About This User: ${e?.message || e}`, "error");
+      });
+    });
+
+    document.addEventListener("wyrmgpt:identity-user-reset", () => {
+      clearManagedAboutFields();
+      setUserSaveButtonLabels();
+    });
 
     const list = $("identityUserList");
     if (list && !userListObserver) {
