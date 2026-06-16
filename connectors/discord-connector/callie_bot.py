@@ -25,7 +25,9 @@ from config_manager import ConfigManager
 from helpers import _norm_content, canonical_json, now_epoch
 from openai_helpers import build_trimmed_transcript, est_tokens, openai_respond, openai_upload_file, sanitize_content, summarize_messages_block
 from outage_helpers import classify_discord_exception, classify_openai_exception, format_admin_outage
+from provider_backends import resolve_oauth_tokens, validate_provider_config
 from pk_helper import PKInfo, build_pk_context_block, format_pk_proxy_note
+from reply_cleanup import strip_obvious_reply_prefix
 from word_helpers import extract_docx_markdown, extract_text_bytes
 from access_control import AccessDecision, compute_access_decision #, ChannelReplyMode
 
@@ -304,7 +306,7 @@ class CallieBot(discord.Client):
         message: discord.Message,
         cfg: "GuildConfig",
         *,
-        invoked: bool,
+        should_process: bool,
     ) -> Tuple[List[Dict[str, Any]], List[str]]:
         """
         Process Discord message attachments into model-ready extra parts.
@@ -319,8 +321,7 @@ class CallieBot(discord.Client):
         extra_parts: List[Dict[str, Any]] = []
         user_notes: List[str] = []
 
-        # Policy: attachments only processed on explicit invocation
-        if not invoked or not message.attachments:
+        if not should_process or not message.attachments:
             return extra_parts, user_notes
 
         blocked: List[str] = []
@@ -456,6 +457,21 @@ class CallieBot(discord.Client):
                 {"type": "input_text", "text": "Connector note (shielded/blocked): " + " | ".join(user_notes)}
             )
 
+        image_parts = sum(1 for part in extra_parts if part.get("type") == "input_image")
+        file_parts = sum(1 for part in extra_parts if part.get("type") == "input_file")
+        text_parts = sum(1 for part in extra_parts if part.get("type") == "input_text")
+        log.info(
+            "Attachment processing msg_id=%s attachments=%s extra_parts=%s image_parts=%s file_parts=%s text_parts=%s blocked=%s shielded=%s",
+            message.id,
+            len(message.attachments),
+            len(extra_parts),
+            image_parts,
+            file_parts,
+            text_parts,
+            len(blocked),
+            len(shielded),
+        )
+
         return extra_parts, user_notes
 
     async def _download_discord_attachment(self, att: discord.Attachment) -> bytes:
@@ -469,6 +485,42 @@ class CallieBot(discord.Client):
             r = await client.get(att.url)
             r.raise_for_status()
             return r.content
+
+    async def _maybe_send_attachment_invocation_reminder(
+        self,
+        message: discord.Message,
+        decision: AccessDecision,
+    ) -> None:
+        """
+        If attachments were withheld only because this was not an invocation,
+        tell the user how to get them inspected instead of silently dropping them.
+        """
+        if not getattr(message, "attachments", None):
+            return
+        if decision.is_invoked:
+            return
+        if not decision.record:
+            return
+        if decision.can_speak and not decision.speak_suppressed:
+            return
+
+        log.info(
+            "Attachment reminder: msg_id=%s attachments=%s mode=%s can_speak=%s speak_suppressed=%s reason=%s",
+            message.id,
+            len(message.attachments),
+            decision.mode.value,
+            decision.can_speak,
+            decision.speak_suppressed,
+            decision.reason,
+        )
+        reminder = (
+            "(Attachment note: I saw the upload, but I only inspect files/images when you mention me "
+            "or reply to me directly. Please resend it with a mention if you want me to look at it.)"
+        )
+        try:
+            await message.reply(reminder, mention_author=False)
+        except Exception as e:
+            log.warning("Attachment reminder send failed msg_id=%s err=%s", message.id, type(e).__name__)
 
     def _mark_pk_active(self, channel_id: int) -> None:
         self._pk_active_channels[channel_id] = time.time()
@@ -722,7 +774,8 @@ class CallieBot(discord.Client):
                     trimmed_batch,
                     await cfg.openai_model(),
                     summary_target_max_tokens,
-                    api_key=await cfg.openai_api_key()
+                    api_key=await cfg.openai_api_key(),
+                    cost_telemetry=await cfg.cost_telemetry_config(),
                 )
                 if not summary_text:
                     break
@@ -934,14 +987,17 @@ class CallieBot(discord.Client):
         raw_content = message.content or ""
 
         log.info(f"RX guild_id={message.guild.id if message.guild else None} "
-                 f"msg_id={message.id} author={author_name} author_id={message.author.id} chars={len(raw_content)}")
+                 f"msg_id={message.id} author={author_name} author_id={message.author.id} "
+                 f"chars={len(raw_content)} attachments={len(getattr(message, 'attachments', []) or [])}")
 
         # If we aren't allowed to speak, stop after recording/summary work.
         if not decision.can_speak:
+            await self._maybe_send_attachment_invocation_reminder(message, decision)
             log.info("Gate: speaking not allowed -> stop after recording")
             return
         # Ambient reply suppression
         if decision.speak_suppressed:
+            await self._maybe_send_attachment_invocation_reminder(message, decision)
             log.info("Gate: ambient/passive suppression -> stop after recording")
             return
         #if cfg.reply_policy == "Ambient":
@@ -1105,22 +1161,33 @@ class CallieBot(discord.Client):
                 pass
         log.info(f"Dispatch: transcript_msgs={len(transcript)}/{len(all_transcript)} memory_chars={len(memory_blob)} replying_to_msg_id={message.id}")
 
-        # Vivian! Oh we have a place were we cared about invoked!
-        # TODO make this a policy we can set from global or guild config
-        # Attachment handling (explicit invocation only)
-        extra_parts, user_notes = await self._build_attachment_parts(
-            message,
-            cfg,
-            invoked=bool(decision.is_invoked),
-        )
-
         # Call OpenAI to get a response
+        extra_parts: List[Dict[str, Any]] = []
+        user_notes: List[str] = []
         async with message.channel.typing():
             try:
+                provider_config = await cfg.connector_provider_config()
+                model = await cfg.openai_model()
+                oauth_sources = resolve_oauth_tokens(provider_config) if not provider_config.is_openai_api else None
+                log.info(
+                    "LLM provider selected backend=%s auth_mode=%s model=%s oauth_access_source=%s oauth_refresh_source=%s msg_id=%s",
+                    provider_config.backend,
+                    provider_config.auth_mode,
+                    model,
+                    oauth_sources.access_source if oauth_sources else "not_applicable",
+                    oauth_sources.refresh_source if oauth_sources else "not_applicable",
+                    message.id,
+                )
+                validate_provider_config(provider_config)
+
+                extra_parts, user_notes = await self._build_attachment_parts(
+                    message,
+                    cfg,
+                    should_process=bool(decision.can_speak),
+                )
                 system_prompt = await cfg.system_prompt()
                 max_output_tokens = await cfg.max_output_tokens()
                 api_key = await cfg.openai_api_key()
-                model = await cfg.openai_model()
                 # Hard guards with non-leaky errors
                 if not model or not str(model).strip():
                     raise RuntimeError("Missing OPENAI_MODEL")
@@ -1139,9 +1206,15 @@ class CallieBot(discord.Client):
                     api_key=api_key,
                     model=model,
                     extra_content_parts=extra_parts,
+                    cost_telemetry=await cfg.cost_telemetry_config(),
+                    provider_config=provider_config,
                 )
 
                 log.info("OpenAI response_id=%s chars=%s for msg_id=%s", response_id, len(reply), message.id)
+            except NotImplementedError as e:
+                response_id = ""
+                log.warning("Connector provider backend unavailable msg_id=%s err=%s", message.id, str(e))
+                reply = "(connector config error: selected LLM backend is not implemented yet; see logs)"
             except Exception as e:
                 response_id = ""
                 # Log full traceback to console logs, but DO NOT echo exception text to Discord
@@ -1194,6 +1267,16 @@ class CallieBot(discord.Client):
             shield_msg = "(Attachment notes: " + " | ".join(user_notes) + ")"
             reply = shield_msg + "\n\n" + reply
 
+        cleanup_names = [
+            decision.effective_author.author_name,
+            getattr(message.author, "display_name", None),
+            getattr(message.author, "name", None),
+        ]
+        before_cleanup = reply
+        reply = strip_obvious_reply_prefix(reply, [str(name) for name in cleanup_names if name])
+        if reply != before_cleanup:
+            log.info("Reply cleanup: stripped leading addressee prefix msg_id=%s", message.id)
+
         limit = await cfg.discord_safe_limit()
         chunks = chunk_for_discord(reply, limit)
         log.info(f"TX plan: chunks={len(chunks)} sizes={[len(c) for c in chunks]} in_reply_to={message.id}")
@@ -1209,12 +1292,7 @@ class CallieBot(discord.Client):
             # If that fails (deleted message, etc), fall back to a standard send.
             if idx == 0:
                 try:
-                    pk_proxy_name = (
-                        getattr(message.author, "display_name", None)
-                        or getattr(message.author, "name", None)
-                        or None
-                    )
-                    factory = (lambda ch=chunk: send_reply(message, ch, pk_proxy_name=pk_proxy_name))
+                    factory = (lambda ch=chunk: send_reply(message, ch))
                     fallback_factory = (lambda ch=chunk: message.channel.send(ch, silent=True))
                 except Exception:
                     log.error("Failed to build PK-aware reply factory; falling back to standard reply.")

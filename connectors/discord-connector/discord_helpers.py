@@ -840,12 +840,10 @@ async def send_reply(
     *,
     pk_proxy_name: Optional[str] = None,
 ) -> discord.Message:
-    """Send a reply to a message, optionally prefixing with the PK proxy name."""
+    """Send a Discord reply without pinging or adding redundant speaker prefixes."""
     if pk_proxy_name:
-        reply_text = f"{pk_proxy_name}: {reply_text}"
-        return await message.reply(reply_text, mention_author=False)
-    else:
-        return await message.reply(reply_text, mention_author=False)
+        log.debug("send_reply ignored deprecated pk_proxy_name prefix for msg_id=%s", message.id)
+    return await message.reply(reply_text, mention_author=False)
 
 async def resolve_member_for_gate(message: discord.Message, member: Optional[discord.Member]):
     """

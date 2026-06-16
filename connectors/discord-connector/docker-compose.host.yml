@@ -14,5 +14,6 @@ services:
       - /opt/openclaw-data/discord-connector/data:/runtime/data
       - /opt/openclaw-data/discord-connector/prompts:/runtime/prompts
       - /opt/openclaw-data/discord-connector/config:/runtime/config
+      - /opt/openclaw-data/workspace/wyrmgpt/server/model_catalog.json:/runtime/config/model_catalog.json:ro
       - /opt/openclaw-data/discord-connector/logs:/runtime/logs
       - /opt/openclaw-data/discord-connector/backups:/runtime/backups

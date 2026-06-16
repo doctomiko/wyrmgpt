@@ -8,8 +8,11 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
 from callie_logging import log, setup_logging
+from codex_transport import codex_respond
+from cost_tracking import CostTelemetryConfig, calculate_usage_cost, format_cost_log
 from guild_config import GuildConfig
 from helpers import _iso_utc
+from provider_backends import ConnectorProviderConfig, OPENAI_API_BACKEND
 log, _log_settings = setup_logging("openai_helpers")
 
 
@@ -62,7 +65,14 @@ def build_trimmed_transcript(all_msgs: List[dict], token_limit: int) -> Tuple[Li
     dropped_msgs: List[dict] = all_msgs[:dropped_count] if dropped_count else []
     return kept, dropped_msgs, used
 
-async def summarize_messages_block(messages: List[dict], model: str, max_output_tokens: int, *, api_key: Optional[str] = None) -> str:
+async def summarize_messages_block(
+    messages: List[dict],
+    model: str,
+    max_output_tokens: int,
+    *,
+    api_key: Optional[str] = None,
+    cost_telemetry: Optional[CostTelemetryConfig] = None,
+) -> str:
     """
     Ask the model to summarize a block of raw (non-summary) messages.
     Returns summary text (markdown).
@@ -133,6 +143,13 @@ async def summarize_messages_block(messages: List[dict], model: str, max_output_
             r = await client.post("https://api.openai.com/v1/responses", headers=headers, json=payload_req)
             r.raise_for_status()
             data = r.json()
+        if cost_telemetry is not None and cost_telemetry.enabled:
+            log.info(
+                "OpenAI summary %s model=%s max_out_tokens=%s",
+                format_cost_log(calculate_usage_cost(data, model, cost_telemetry)),
+                model,
+                max_output_tokens,
+            )
 
         out_text: List[str] = []
         for item in data.get("output", []):
@@ -159,6 +176,8 @@ async def openai_respond(
     api_key: Optional[str] = None,
     model: Optional[str] = None,
     extra_content_parts: Optional[List[Dict]] = None,
+    cost_telemetry: Optional[CostTelemetryConfig] = None,
+    provider_config: Optional[ConnectorProviderConfig] = None,
 ) -> Tuple[str, str]:
     api_key_to_use = (api_key if api_key is not None else "").strip()
     model_to_use = (model if model is not None else "gpt-4o-mini").strip() 
@@ -166,14 +185,6 @@ async def openai_respond(
     # model to use defaults to being stupid...
     if model is None:
         log.warning("No OpenAI model specified; defaulting to gpt-4o-mini.")
-    if not api_key or api_key_to_use == "":
-        log.error("OpenAI API key is missing!")
-        return "Sorry, nobody put in an Open AI key yet. Tell the server admin to fix the configuration.", "0"
-    headers = {
-        "Authorization": f"Bearer {api_key_to_use}",
-        "Content-Type": "application/json",
-    }
-
     chatlog_lines: List[str] = []
     for m in transcript:
         who = "Callie" if m["is_callie"] else m["author_name"]
@@ -198,6 +209,25 @@ async def openai_respond(
     if extra_content_parts:
         content_parts.extend(extra_content_parts)
 
+    if provider_config is not None and not provider_config.is_openai_api:
+        return await codex_respond(
+            system_prompt=system_prompt,
+            full_input=full_input,
+            content_parts=content_parts,
+            max_output_tokens=max_output_tokens,
+            provider_config=provider_config,
+            model=model_to_use,
+            cost_telemetry=cost_telemetry,
+        )
+
+    if not api_key or api_key_to_use == "":
+        log.error("OpenAI API key is missing!")
+        return "Sorry, nobody put in an Open AI key yet. Tell the server admin to fix the configuration.", "0"
+    headers = {
+        "Authorization": f"Bearer {api_key_to_use}",
+        "Content-Type": "application/json",
+    }
+
     payload = {
         "model": model_to_use,
         "input": [
@@ -217,6 +247,11 @@ async def openai_respond(
     dt_ms = int((time.time() - t0) * 1000)
 
     response_id = str(data.get("id", ""))
+    if cost_telemetry is None:
+        cost_telemetry = CostTelemetryConfig(enabled=False)
+    cost_log = ""
+    if cost_telemetry.enabled:
+        cost_log = " " + format_cost_log(calculate_usage_cost(data, model_to_use, cost_telemetry))
 
     out_text: List[str] = []
     for item in data.get("output", []):
@@ -229,6 +264,7 @@ async def openai_respond(
     log.info(
         f"OpenAI ok response_id={response_id} dt_ms={dt_ms} "
         f"in_est_tokens≈{est_input_tokens} out_chars={len(text)} model={model_to_use} max_out_tokens={max_output_tokens}"
+        f"{cost_log}"
     )
     return text, response_id
 
