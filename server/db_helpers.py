@@ -43,6 +43,92 @@ def _audit_json(value: Any | None) -> str | None:
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
 def ensure_audit_events_schema(conn: sqlite3.Connection) -> None:
+    table_row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='audit_events'"
+    ).fetchone()
+    if table_row is not None:
+        table_info = conn.execute("PRAGMA table_info(audit_events)").fetchall()
+        id_type = ""
+        for row in table_info:
+            row_name = row["name"] if isinstance(row, sqlite3.Row) else row[1]
+            if row_name == "id":
+                id_type = str(row["type"] if isinstance(row, sqlite3.Row) else row[2]).upper()
+                break
+        if id_type and id_type != "TEXT":
+            conn.executescript(
+                """
+                ALTER TABLE audit_events RENAME TO audit_events__legacy_integer_id;
+
+                CREATE TABLE audit_events (
+                    id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL DEFAULT 'default',
+                    event_type TEXT NOT NULL,
+                    actor_principal_type TEXT,
+                    actor_principal_id TEXT,
+                    resource_type TEXT,
+                    resource_id TEXT,
+                    target_principal_type TEXT,
+                    target_principal_id TEXT,
+                    action TEXT,
+                    decision TEXT,
+                    reason TEXT,
+                    summary TEXT,
+                    before_json TEXT,
+                    after_json TEXT,
+                    request_id TEXT,
+                    source_ip TEXT,
+                    user_agent TEXT,
+                    metadata_json TEXT,
+                    created_at TEXT NOT NULL,
+                    event_uuid TEXT,
+                    actor_user_id INTEGER,
+                    actor_persona_id INTEGER,
+                    resource_kind TEXT,
+                    target_user_id INTEGER,
+                    target_persona_id INTEGER
+                );
+
+                INSERT INTO audit_events (
+                    id, tenant_id, event_type, actor_principal_type, actor_principal_id,
+                    resource_type, resource_id, target_principal_type, target_principal_id,
+                    action, decision, reason, summary, before_json, after_json, request_id,
+                    source_ip, user_agent, metadata_json, created_at,
+                    event_uuid, actor_user_id, actor_persona_id, resource_kind,
+                    target_user_id, target_persona_id
+                )
+                SELECT
+                    COALESCE(event_uuid, CAST(id AS TEXT)),
+                    COALESCE(CAST(tenant_id AS TEXT), 'default'),
+                    event_type,
+                    NULL,
+                    CASE WHEN actor_user_id IS NOT NULL THEN CAST(actor_user_id AS TEXT) ELSE NULL END,
+                    resource_kind,
+                    resource_id,
+                    NULL,
+                    CASE WHEN target_user_id IS NOT NULL THEN CAST(target_user_id AS TEXT) ELSE NULL END,
+                    NULL,
+                    NULL,
+                    NULL,
+                    summary,
+                    before_json,
+                    after_json,
+                    NULL,
+                    NULL,
+                    NULL,
+                    metadata_json,
+                    created_at,
+                    event_uuid,
+                    actor_user_id,
+                    actor_persona_id,
+                    resource_kind,
+                    target_user_id,
+                    target_persona_id
+                FROM audit_events__legacy_integer_id;
+
+                DROP TABLE audit_events__legacy_integer_id;
+                """
+            )
+
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS audit_events (
@@ -67,7 +153,32 @@ def ensure_audit_events_schema(conn: sqlite3.Connection) -> None:
             metadata_json TEXT,
             created_at TEXT NOT NULL
         );
-
+        """
+    )
+    _add_column_if_missing(conn, "audit_events", "actor_principal_type", "TEXT")
+    _add_column_if_missing(conn, "audit_events", "actor_principal_id", "TEXT")
+    _add_column_if_missing(conn, "audit_events", "resource_type", "TEXT")
+    _add_column_if_missing(conn, "audit_events", "resource_id", "TEXT")
+    _add_column_if_missing(conn, "audit_events", "target_principal_type", "TEXT")
+    _add_column_if_missing(conn, "audit_events", "target_principal_id", "TEXT")
+    _add_column_if_missing(conn, "audit_events", "action", "TEXT")
+    _add_column_if_missing(conn, "audit_events", "decision", "TEXT")
+    _add_column_if_missing(conn, "audit_events", "reason", "TEXT")
+    _add_column_if_missing(conn, "audit_events", "summary", "TEXT")
+    _add_column_if_missing(conn, "audit_events", "before_json", "TEXT")
+    _add_column_if_missing(conn, "audit_events", "after_json", "TEXT")
+    _add_column_if_missing(conn, "audit_events", "request_id", "TEXT")
+    _add_column_if_missing(conn, "audit_events", "source_ip", "TEXT")
+    _add_column_if_missing(conn, "audit_events", "user_agent", "TEXT")
+    _add_column_if_missing(conn, "audit_events", "metadata_json", "TEXT")
+    _add_column_if_missing(conn, "audit_events", "event_uuid", "TEXT")
+    _add_column_if_missing(conn, "audit_events", "actor_user_id", "INTEGER")
+    _add_column_if_missing(conn, "audit_events", "actor_persona_id", "INTEGER")
+    _add_column_if_missing(conn, "audit_events", "resource_kind", "TEXT")
+    _add_column_if_missing(conn, "audit_events", "target_user_id", "INTEGER")
+    _add_column_if_missing(conn, "audit_events", "target_persona_id", "INTEGER")
+    conn.executescript(
+        """
         CREATE INDEX IF NOT EXISTS idx_audit_events_tenant_created
             ON audit_events(tenant_id, created_at);
         CREATE INDEX IF NOT EXISTS idx_audit_events_resource
@@ -80,11 +191,6 @@ def ensure_audit_events_schema(conn: sqlite3.Connection) -> None:
             ON audit_events(request_id);
         """
     )
-    _add_column_if_missing(conn, "audit_events", "target_principal_type", "TEXT")
-    _add_column_if_missing(conn, "audit_events", "target_principal_id", "TEXT")
-    _add_column_if_missing(conn, "audit_events", "summary", "TEXT")
-    _add_column_if_missing(conn, "audit_events", "before_json", "TEXT")
-    _add_column_if_missing(conn, "audit_events", "after_json", "TEXT")
     conn.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_audit_events_target
@@ -147,14 +253,14 @@ def log_audit_event(
         target.execute(
             """
             INSERT INTO audit_events (
-                id, tenant_id, event_type, actor_principal_type, actor_principal_id,
+                id, event_uuid, tenant_id, event_type, actor_principal_type, actor_principal_id,
                 resource_type, resource_id, target_principal_type, target_principal_id,
                 action, decision, reason, summary, before_json, after_json, request_id,
                 source_ip, user_agent, metadata_json, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            values,
+            (audit_id, *values),
         )
 
     try:

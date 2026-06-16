@@ -18,7 +18,7 @@ from .logging_helper import log_warn
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS audit_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT PRIMARY KEY,
     event_uuid TEXT NOT NULL UNIQUE,
     tenant_id INTEGER,
     actor_user_id INTEGER,
@@ -88,7 +88,7 @@ def ensure_audit_events_schema(conn: sqlite3.Connection | None = None) -> None:
 def record_audit_event(
     *,
     event_type: str,
-    tenant_id: int | None = None,
+    tenant_id: int | str | None = None,
     actor_user_id: int | None = None,
     actor_persona_id: int | None = None,
     resource_kind: str | None = None,
@@ -109,8 +109,9 @@ def record_audit_event(
     event_uuid = new_uuid()
     created_at = _utc_now_iso()
     params = {
+        "id": event_uuid,
         "event_uuid": event_uuid,
-        "tenant_id": tenant_id,
+        "tenant_id": tenant_id if tenant_id is not None else "default",
         "actor_user_id": actor_user_id,
         "actor_persona_id": actor_persona_id,
         "event_type": event_type,
@@ -130,12 +131,12 @@ def record_audit_event(
         cur = active_conn.execute(
             """
             INSERT INTO audit_events(
-                event_uuid, tenant_id, actor_user_id, actor_persona_id,
+                id, event_uuid, tenant_id, actor_user_id, actor_persona_id,
                 event_type, resource_kind, resource_id,
                 target_user_id, target_persona_id, summary,
                 before_json, after_json, metadata_json, created_at
             ) VALUES (
-                :event_uuid, :tenant_id, :actor_user_id, :actor_persona_id,
+                :id, :event_uuid, :tenant_id, :actor_user_id, :actor_persona_id,
                 :event_type, :resource_kind, :resource_id,
                 :target_user_id, :target_persona_id, :summary,
                 :before_json, :after_json, :metadata_json, :created_at
