@@ -352,6 +352,7 @@
     return {
       display_name: ($("identityUserName")?.value || "").trim(),
       slug: ($("identityUserSlug")?.value || "").trim(),
+      email: ($("identityUserEmail")?.value || "").trim(),
       acting_user_id: activeIdentity().user_id,
       is_global: isGlobal,
       is_global_admin: isGlobalAdmin,

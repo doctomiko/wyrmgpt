@@ -218,6 +218,7 @@ def api_scope_create_user(payload: dict[str, Any] = Body(default_factory=dict)):
             display_name=str(payload.get("display_name") or payload.get("name") or "").strip(),
             handle=payload.get("slug") or payload.get("handle"),
             slug=payload.get("slug"),
+            email=payload.get("email"),
             tenant_id=tenant_id,
             is_global=is_global,
             is_global_admin=is_global_admin,
