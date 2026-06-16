@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .db_helpers import db_session, _add_column_if_missing, _utc_now_iso
+from .db_helpers import db_session, _add_column_if_missing, _utc_now_iso, new_uuid
 
 _PROFILE_KIND = "about_you"
 
@@ -68,9 +68,60 @@ def ensure_user_profile_schema() -> None:
             )
             """
         )
+        _add_column_if_missing(conn, "user_profiles", "profile_kind", "TEXT")
+        _add_column_if_missing(conn, "user_profiles", "title", "TEXT")
+        _add_column_if_missing(conn, "user_profiles", "content_text", "TEXT")
+        _add_column_if_missing(conn, "user_profiles", "meta_json", "TEXT")
         _add_column_if_missing(conn, "user_profiles", "value_json", "TEXT")
+        conn.execute(
+            """
+            UPDATE user_profiles
+            SET
+                profile_kind = COALESCE(profile_kind, 'about_you'),
+                title = COALESCE(title, display_name, 'About You'),
+                content_text = COALESCE(content_text, about_text, '')
+            WHERE profile_kind IS NULL OR content_text IS NULL
+            """
+        )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_user_profiles_user_kind ON user_profiles(user_id, profile_kind)")
         _clone_legacy_about_you_to_users_conn(conn)
+
+
+def _profile_id_is_text(conn) -> bool:
+    for row in conn.execute("PRAGMA table_info(user_profiles)").fetchall():
+        name = row["name"] if hasattr(row, "keys") else row[1]
+        if name == "id":
+            col_type = row["type"] if hasattr(row, "keys") else row[2]
+            return str(col_type or "").upper() != "INTEGER"
+    return False
+
+
+def _insert_about_profile_conn(
+    conn,
+    *,
+    tenant_id: int | str | None,
+    user_id: int,
+    text: str,
+    value_json: str,
+    now: str,
+) -> None:
+    tenant_value = tenant_id if tenant_id is not None else "default"
+    if _profile_id_is_text(conn):
+        conn.execute(
+            """
+            INSERT INTO user_profiles(id,tenant_id,user_id,profile_kind,title,content_text,visibility,created_at,updated_at,meta_json,value_json)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (new_uuid(), tenant_value, int(user_id), _PROFILE_KIND, "About You", text, "user", now, now, None, value_json),
+        )
+        return
+    conn.execute(
+        """
+        INSERT INTO user_profiles(tenant_id,user_id,profile_kind,title,content_text,visibility,created_at,updated_at,meta_json,value_json)
+        VALUES(?,?,?,?,?,?,?,?,?,?)
+        """,
+        (tenant_value, int(user_id), _PROFILE_KIND, "About You", text, "user", now, now, None, value_json),
+    )
 
 
 def _legacy_about_you_conn(conn) -> dict[str, Any] | None:
@@ -112,12 +163,13 @@ def _clone_legacy_about_you_to_users_conn(conn) -> None:
             continue
         value = {k: legacy.get(k, "") for k in ("nickname", "age", "occupation", "more_about_you")}
         text = legacy.get("text") or _compose_about_text(value)
-        conn.execute(
-            """
-            INSERT INTO user_profiles(tenant_id,user_id,profile_kind,title,content_text,visibility,created_at,updated_at,meta_json,value_json)
-            VALUES(?,?,?,?,?,?,?,?,?,?)
-            """,
-            (user["tenant_id"], int(user["id"]), _PROFILE_KIND, "About You", text, "user", now, now, None, json.dumps(value, ensure_ascii=False)),
+        _insert_about_profile_conn(
+            conn,
+            tenant_id=user["tenant_id"],
+            user_id=int(user["id"]),
+            text=text,
+            value_json=json.dumps(value, ensure_ascii=False),
+            now=now,
         )
 
 
@@ -179,11 +231,12 @@ def upsert_user_about_you(user_id: int, value: dict[str, Any], *, tenant_id: int
                 (tenant_id, text, now, json.dumps(clean, ensure_ascii=False), int(row["id"])),
             )
         else:
-            conn.execute(
-                """
-                INSERT INTO user_profiles(tenant_id,user_id,profile_kind,title,content_text,visibility,created_at,updated_at,meta_json,value_json)
-                VALUES(?,?,?,?,?,?,?,?,?,?)
-                """,
-                (tenant_id, int(user_id), _PROFILE_KIND, "About You", text, "user", now, now, None, json.dumps(clean, ensure_ascii=False)),
+            _insert_about_profile_conn(
+                conn,
+                tenant_id=tenant_id,
+                user_id=int(user_id),
+                text=text,
+                value_json=json.dumps(clean, ensure_ascii=False),
+                now=now,
             )
     return get_user_about_you(int(user_id))

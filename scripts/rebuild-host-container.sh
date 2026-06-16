@@ -23,6 +23,8 @@ Options:
 Environment:
   WYRMGPT_HOST_REPO       Source checkout. Default: script repo, or /opt/openclaw-data/workspace/wyrmgpt when present
   WYRMGPT_RUNTIME_ROOT    Persistent runtime root. Default: /opt/openclaw-data/wyrmgpt
+  WYRMGPT_DATA_ROOT       Persistent app data folder. Default: $WYRMGPT_HOST_REPO/data when it has a DB,
+                          otherwise $WYRMGPT_RUNTIME_ROOT/data
   WYRMGPT_PORT            Host port. Default: 18080
   WYRMGPT_CONTAINER_NAME  Container name. Default: wyrmgpt-web
   WYRMGPT_IMAGE_NAME      Image name. Default: wyrmgpt-web:host
@@ -49,6 +51,13 @@ port="${WYRMGPT_PORT:-18080}"
 container_name="${WYRMGPT_CONTAINER_NAME:-wyrmgpt-web}"
 image_name="${WYRMGPT_IMAGE_NAME:-wyrmgpt-web:host}"
 compose_project="${WYRMGPT_COMPOSE_PROJECT:-wyrmgpt}"
+if [[ -n "${WYRMGPT_DATA_ROOT:-}" ]]; then
+  data_root="$WYRMGPT_DATA_ROOT"
+elif [[ -f "$repo_root/data/sql/wyrmgpt.sqlite3" ]]; then
+  data_root="$repo_root/data"
+else
+  data_root="$runtime_root/data"
+fi
 
 pull=0
 build=1
@@ -110,7 +119,7 @@ services:
       - ${runtime_root}/config/config.toml:/app/config.toml
       - ${runtime_root}/config/config.secrets.toml:/app/config.secrets.toml
       - ${runtime_root}/prompts:/app/prompts
-      - ${runtime_root}/data:/app/data
+      - ${data_root}:/app/data
     environment:
       PYTHONUNBUFFERED: "1"
 EOF
@@ -133,7 +142,7 @@ if [[ "$pull" -eq 1 ]]; then
   git -C "$repo_root" pull --ff-only
 fi
 
-mkdir -p "$runtime_root/config" "$runtime_root/prompts" "$runtime_root/data/sql"
+mkdir -p "$runtime_root/config" "$runtime_root/prompts" "$data_root/sql"
 
 if [[ ! -f "$runtime_root/config/config.toml" ]]; then
   if [[ -f "$repo_root/config.toml" ]]; then
@@ -162,6 +171,7 @@ fi
 
 echo "Rebuilding WyrmGPT from: $repo_root"
 echo "Runtime root: $runtime_root"
+echo "Data root: $data_root"
 compose "${up_args[@]}"
 
 echo "WyrmGPT is starting on http://localhost:${port}"
