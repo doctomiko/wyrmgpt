@@ -5,6 +5,8 @@
 (function () {
   const $ = (id) => document.getElementById(id);
   let managedAboutUserId = null;
+  let managedAboutProfileLoaded = false;
+  let managedAboutLoadSeq = 0;
   let userListObserver = null;
   let toastTimer = null;
 
@@ -191,6 +193,8 @@
 
   function clearManagedAboutFields() {
     managedAboutUserId = null;
+    managedAboutProfileLoaded = false;
+    managedAboutLoadSeq += 1;
     if ($("identityAboutNickname")) $("identityAboutNickname").value = "";
     if ($("identityAboutAge")) $("identityAboutAge").value = "";
     if ($("identityAboutOccupation")) $("identityAboutOccupation").value = "";
@@ -263,14 +267,22 @@
       clearManagedAboutFields();
       return;
     }
+    const requestSeq = managedAboutLoadSeq + 1;
+    managedAboutLoadSeq = requestSeq;
     managedAboutUserId = Number(userId);
+    managedAboutProfileLoaded = false;
+    const user = userPool().find((u) => Number(u.id) === Number(userId));
+    setManagedAboutTitle(user || { id: userId });
+    setUserSaveButtonLabels();
     const data = await fetchUserAboutYou(userId, actorUserId);
+    if (requestSeq !== managedAboutLoadSeq || Number(managedAboutUserId) !== Number(userId)) return;
+    managedAboutProfileLoaded = !!data.id;
     if ($("identityAboutNickname")) $("identityAboutNickname").value = data.nickname || "";
     if ($("identityAboutAge")) $("identityAboutAge").value = data.age || "";
     if ($("identityAboutOccupation")) $("identityAboutOccupation").value = data.occupation || "";
     if ($("identityAboutMore")) $("identityAboutMore").value = data.more_about_you || "";
-    const user = userPool().find((u) => Number(u.id) === Number(userId));
     setManagedAboutTitle(user || { id: userId });
+    setUserSaveButtonLabels();
   }
 
   function buildUserPayloadFromForm() {
@@ -293,7 +305,9 @@
 
   function setUserSaveButtonLabels() {
     const isEdit = !!currentEditingUserId();
+    if ($("identitySaveUser")) $("identitySaveUser").textContent = isEdit ? "Update User" : "Create User";
     if ($("identitySaveUserBottom")) $("identitySaveUserBottom").textContent = isEdit ? "Update User" : "Create User";
+    $("identityCancelUserEdit")?.classList.toggle("hidden", !isEdit);
   }
 
   async function interceptUserSave(event) {
@@ -315,18 +329,19 @@
       body: JSON.stringify(payload),
     });
 
+    const savedUserId = savedUser?.id || editingUserId;
     const aboutPayload = readManagedAboutFields();
-    if (savedUser?.id && hasAnyAboutFields(aboutPayload)) {
-      await saveUserAboutYou(savedUser.id, activeIdentity().user_id, aboutPayload);
+    if (savedUserId && (hasAnyAboutFields(aboutPayload) || editingUserId || managedAboutProfileLoaded)) {
+      await saveUserAboutYou(savedUserId, activeIdentity().user_id, aboutPayload);
     }
 
     const state = identityState();
-    if (savedUser?.id) {
-      state.editingUserId = savedUser.id;
-      managedAboutUserId = Number(savedUser.id);
+    if (savedUserId) {
+      state.editingUserId = savedUserId;
+      managedAboutUserId = Number(savedUserId);
     }
     if (window.wyrmgptIdentity?.loadIdentity) await window.wyrmgptIdentity.loadIdentity();
-    if (savedUser?.id) await loadManagedAboutForUser(savedUser.id);
+    if (savedUserId) await loadManagedAboutForUser(savedUserId);
     setUserSaveButtonLabels();
     showToast(`User ${editingUserId ? "updated" : "created"}: ${savedUser?.display_name || payload.display_name}`);
     if (typeof window.refreshContext === "function") await window.refreshContext();
@@ -453,10 +468,16 @@
 
     const list = $("identityUserList");
     if (list && !userListObserver) {
-      userListObserver = new MutationObserver(() => enhanceUserList());
+      userListObserver = new MutationObserver(() => {
+        enhanceUserList();
+        setUserSaveButtonLabels();
+      });
       userListObserver.observe(list, { childList: true, subtree: true });
     }
-    setTimeout(enhanceUserList, 0);
+    setTimeout(() => {
+      enhanceUserList();
+      setUserSaveButtonLabels();
+    }, 0);
   }
 
   window.wyrmgptUserProfiles = {
@@ -465,6 +486,7 @@
     loadManageUserAbout: loadManagedAboutForUser,
     clearManagedAboutFields,
     enhanceUserList,
+    syncUserSaveButtonLabels: setUserSaveButtonLabels,
   };
 
   installProfileUiHooks();

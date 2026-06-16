@@ -268,6 +268,10 @@
     rows.forEach((row) => {
       const item = document.createElement("div");
       item.className = "identityListItem";
+      if (row.id != null) item.dataset.rowId = String(row.id);
+      if (id === "identityUserList" && row.id != null) item.dataset.userId = String(row.id);
+      if (id === "identityPersonaList" && row.id != null) item.dataset.personaId = String(row.id);
+      if (id === "identityTenantList" && row.id != null) item.dataset.tenantId = String(row.id);
       const label = document.createElement("div");
       label.className = "identityListLabel";
       label.textContent = labelFn(row);
