@@ -293,7 +293,7 @@ def api_create_user(payload: dict[str, Any] = Body(default_factory=dict)):
             raise HTTPException(status_code=403, detail="Only a global admin can create global users or global admins.")
         if not wants_global and payload.get("tenant_id") in (None, ""):
             raise HTTPException(status_code=400, detail="Tenant-scoped users require tenant_id.")
-        return JSONResponse(create_user(display_name=str(payload.get("display_name") or payload.get("name") or "").strip(), handle=payload.get("slug") or payload.get("handle"), slug=payload.get("slug"), email=payload.get("email"), tenant_id=payload.get("tenant_id"), is_global=bool(payload.get("is_global")), is_global_admin=bool(payload.get("is_global_admin")), role=str(payload.get("role") or "member"), meta_json=payload.get("meta_json")))
+        return JSONResponse(create_user(display_name=str(payload.get("display_name") or payload.get("name") or "").strip(), handle=payload.get("slug") or payload.get("handle"), slug=payload.get("slug"), email=payload.get("email"), discord_user_id=payload.get("discord_user_id"), tenant_id=payload.get("tenant_id"), is_global=bool(payload.get("is_global")), is_global_admin=bool(payload.get("is_global_admin")), role=str(payload.get("role") or "member"), meta_json=payload.get("meta_json")))
     except HTTPException:
         raise
     except Exception as exc:
