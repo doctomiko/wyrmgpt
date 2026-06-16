@@ -557,6 +557,10 @@ class CallieBot(discord.Client):
         self,
         message: discord.Message,
         decision: AccessDecision,
+        *,
+        force: bool = False,
+        source: str = "gate",
+        reminder: Optional[str] = None,
     ) -> None:
         """
         If attachments were withheld only because this was not an invocation,
@@ -568,22 +572,24 @@ class CallieBot(discord.Client):
             return
         if not decision.record:
             return
-        if decision.can_speak and not decision.speak_suppressed:
+        if not force and decision.can_speak and not decision.speak_suppressed:
             return
 
         log.info(
-            "Attachment reminder: msg_id=%s attachments=%s mode=%s can_speak=%s speak_suppressed=%s reason=%s",
+            "Attachment reminder: msg_id=%s attachments=%s source=%s mode=%s can_speak=%s speak_suppressed=%s reason=%s",
             message.id,
             len(message.attachments),
+            source,
             decision.mode.value,
             decision.can_speak,
             decision.speak_suppressed,
             decision.reason,
         )
-        reminder = (
-            "(Attachment note: I saw the upload, but I only inspect files/images when you mention me "
-            "or reply to me directly. Please resend it with a mention if you want me to look at it.)"
-        )
+        if reminder is None:
+            reminder = (
+                "(Attachment note: I saw the upload, but I only inspect files/images when you mention me "
+                "or reply to me directly. Please resend it with a mention if you want me to look at it.)"
+            )
         try:
             await message.reply(reminder, mention_author=False)
         except Exception as e:
@@ -1067,6 +1073,36 @@ class CallieBot(discord.Client):
             await self._maybe_send_attachment_invocation_reminder(message, decision)
             log.info("Gate: ambient/passive suppression -> stop after recording")
             return
+
+        attachment_policy = await cfg.attachment_inspection_policy()
+        if getattr(message, "attachments", None):
+            log.info(
+                "Attachment policy msg_id=%s policy=%s invoked=%s can_speak=%s attachments=%s",
+                message.id,
+                attachment_policy,
+                decision.is_invoked,
+                decision.can_speak,
+                len(message.attachments),
+            )
+        if attachment_policy == "disabled" and getattr(message, "attachments", None):
+            log.info("Attachment policy disabled -> stop before model msg_id=%s", message.id)
+            await self._maybe_send_attachment_invocation_reminder(
+                message,
+                decision,
+                force=True,
+                source="attachment_policy_disabled",
+                reminder="(Attachment note: file/image inspection is currently disabled for this connector.)",
+            )
+            return
+        if attachment_policy == "invoked" and getattr(message, "attachments", None) and not decision.is_invoked:
+            await self._maybe_send_attachment_invocation_reminder(
+                message,
+                decision,
+                force=True,
+                source="attachment_policy_requires_invocation",
+            )
+            log.info("Attachment policy requires invocation -> stop before model msg_id=%s", message.id)
+            return
         #if cfg.reply_policy == "Ambient":
         #    if should_suppress_ambient_reply(
         #      message, bot_user=self.user,
@@ -1251,7 +1287,10 @@ class CallieBot(discord.Client):
                 extra_parts, user_notes = await self._build_attachment_parts(
                     message,
                     cfg,
-                    should_process=bool(decision.can_speak),
+                    should_process=bool(
+                        decision.can_speak
+                        and (attachment_policy == "reply" or decision.is_invoked)
+                    ),
                 )
                 system_prompt = await cfg.system_prompt()
                 max_output_tokens = await cfg.max_output_tokens()
