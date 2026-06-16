@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
 from callie_logging import setup_logging
-from cost_tracking import CostTelemetryConfig, calculate_usage_cost, format_cost_log
+from cost_tracking import CostTelemetryConfig, calculate_usage_cost, format_cost_log, usage_cost_to_dict
 from provider_backends import ConnectorProviderConfig, resolve_oauth_tokens
 
 log, _log_settings = setup_logging("codex_transport")
@@ -133,7 +133,7 @@ async def codex_respond(
     provider_config: ConnectorProviderConfig,
     model: str,
     cost_telemetry: Optional[CostTelemetryConfig] = None,
-) -> Tuple[str, str]:
+) -> Tuple[str, str, Dict[str, Any]]:
     tokens = resolve_oauth_tokens(provider_config)
     if not tokens.has_access:
         raise RuntimeError("OPENAI_OAUTH_TOKEN or OPENAI_OAUTH_TOKEN_PATH is missing.")
@@ -178,9 +178,12 @@ async def codex_respond(
     text, final_response = _extract_text_from_events(events)
     response_id = str(final_response.get("id") or "")
     text = text or "(no output)"
+    if cost_telemetry is None:
+        cost_telemetry = CostTelemetryConfig(enabled=False)
+    cost = calculate_usage_cost(final_response, model, cost_telemetry) if final_response else None
     cost_log = ""
-    if cost_telemetry is not None and cost_telemetry.enabled and final_response:
-        cost_log = " " + format_cost_log(calculate_usage_cost(final_response, model, cost_telemetry))
+    if cost_telemetry.enabled and cost is not None:
+        cost_log = " " + format_cost_log(cost)
     log.info(
         "Codex ok response_id=%s dt_ms=%s input_chars=%s out_chars=%s model=%s max_out_tokens=%s%s",
         response_id,
@@ -191,4 +194,15 @@ async def codex_respond(
         max_output_tokens,
         cost_log,
     )
-    return text, response_id
+    diagnostics: Dict[str, Any] = {
+        "provider": "codex",
+        "response_id": response_id,
+        "model": model,
+        "dt_ms": int((time.time() - t0) * 1000),
+        "input_chars": len(full_input),
+        "max_output_tokens": max_output_tokens,
+        "output_chars": len(text),
+    }
+    if cost is not None:
+        diagnostics.update(usage_cost_to_dict(cost))
+    return text, response_id, diagnostics

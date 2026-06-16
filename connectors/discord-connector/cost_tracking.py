@@ -176,3 +176,20 @@ def format_cost_log(cost: UsageCost) -> str:
         f"total_tokens={cost.total_tokens if cost.total_tokens is not None else 'unknown'} "
         f"{cost_part} pricing_source={cost.pricing_source} {budget_part}"
     )
+
+
+def usage_cost_to_dict(cost: UsageCost) -> Dict[str, Any]:
+    budget_used_pct: Optional[float] = None
+    if cost.monthly_budget_usd > 0:
+        budget_used_pct = (cost.effective_month_to_date_usd / cost.monthly_budget_usd) * 100.0
+    return {
+        "input_tokens": cost.input_tokens,
+        "output_tokens": cost.output_tokens,
+        "total_tokens": cost.total_tokens,
+        "estimated_cost_usd": cost.estimated_cost_usd,
+        "pricing_source": cost.pricing_source,
+        "connector_month_to_date_usd": cost.connector_month_to_date_usd,
+        "effective_month_to_date_usd": cost.effective_month_to_date_usd,
+        "monthly_budget_usd": cost.monthly_budget_usd,
+        "budget_used_pct": budget_used_pct,
+    }

@@ -9,7 +9,7 @@ import httpx
 
 from callie_logging import log, setup_logging
 from codex_transport import codex_respond
-from cost_tracking import CostTelemetryConfig, calculate_usage_cost, format_cost_log
+from cost_tracking import CostTelemetryConfig, calculate_usage_cost, format_cost_log, usage_cost_to_dict
 from guild_config import GuildConfig
 from helpers import _iso_utc
 from provider_backends import ConnectorProviderConfig, OPENAI_API_BACKEND
@@ -178,7 +178,7 @@ async def openai_respond(
     extra_content_parts: Optional[List[Dict]] = None,
     cost_telemetry: Optional[CostTelemetryConfig] = None,
     provider_config: Optional[ConnectorProviderConfig] = None,
-) -> Tuple[str, str]:
+) -> Tuple[str, str, Dict[str, Any]]:
     api_key_to_use = (api_key if api_key is not None else "").strip()
     model_to_use = (model if model is not None else "gpt-4o-mini").strip() 
     ## we used to use else (os.getenv("OPENAI_API_KEY") / else (os.getenv("OPENAI_MODEL") but we are moving away from doing that
@@ -222,7 +222,7 @@ async def openai_respond(
 
     if not api_key or api_key_to_use == "":
         log.error("OpenAI API key is missing!")
-        return "Sorry, nobody put in an Open AI key yet. Tell the server admin to fix the configuration.", "0"
+        return "Sorry, nobody put in an Open AI key yet. Tell the server admin to fix the configuration.", "0", {}
     headers = {
         "Authorization": f"Bearer {api_key_to_use}",
         "Content-Type": "application/json",
@@ -249,9 +249,8 @@ async def openai_respond(
     response_id = str(data.get("id", ""))
     if cost_telemetry is None:
         cost_telemetry = CostTelemetryConfig(enabled=False)
-    cost_log = ""
-    if cost_telemetry.enabled:
-        cost_log = " " + format_cost_log(calculate_usage_cost(data, model_to_use, cost_telemetry))
+    cost = calculate_usage_cost(data, model_to_use, cost_telemetry)
+    cost_log = " " + format_cost_log(cost) if cost_telemetry.enabled else ""
 
     out_text: List[str] = []
     for item in data.get("output", []):
@@ -266,7 +265,17 @@ async def openai_respond(
         f"in_est_tokens≈{est_input_tokens} out_chars={len(text)} model={model_to_use} max_out_tokens={max_output_tokens}"
         f"{cost_log}"
     )
-    return text, response_id
+    diagnostics: Dict[str, Any] = {
+        "provider": "openai",
+        "response_id": response_id,
+        "model": model_to_use,
+        "dt_ms": dt_ms,
+        "estimated_input_tokens": est_input_tokens,
+        "max_output_tokens": max_output_tokens,
+        "output_chars": len(text),
+        **usage_cost_to_dict(cost),
+    }
+    return text, response_id, diagnostics
 
 async def openai_upload_file(
         data: bytes, 
