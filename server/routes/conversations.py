@@ -293,13 +293,18 @@ def api_conversation_context(
         tenant_id=tenant_id,
         admin_view=admin_view,
     )
-    payload = build_context_panel_payload(
-        conversation_id=conversation_id,
-        user_text=user_text or "",
-        ctx_cfg=ctx_cfg,
-        tool_cfg=TOOL_CFG,
-        principal=principal,
-    )
+    try:
+        payload = build_context_panel_payload(
+            conversation_id=conversation_id,
+            user_text=user_text or "",
+            ctx_cfg=ctx_cfg,
+            tool_cfg=TOOL_CFG,
+            principal=principal,
+        )
+    except KeyError as exc:
+        if "Conversation not found" in str(exc):
+            raise HTTPException(status_code=404, detail="conversation_not_found") from exc
+        raise
     return JSONResponse(payload)
 
 # endregion
