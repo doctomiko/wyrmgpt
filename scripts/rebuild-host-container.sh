@@ -23,8 +23,7 @@ Options:
 Environment:
   WYRMGPT_HOST_REPO       Source checkout. Default: script repo, or /opt/openclaw-data/workspace/wyrmgpt when present
   WYRMGPT_RUNTIME_ROOT    Persistent runtime root. Default: /opt/openclaw-data/wyrmgpt
-  WYRMGPT_DATA_ROOT       Persistent app data folder. Default: $WYRMGPT_HOST_REPO/data when it has a DB,
-                          otherwise $WYRMGPT_RUNTIME_ROOT/data
+  WYRMGPT_DATA_ROOT       Persistent app data folder. Default: $WYRMGPT_RUNTIME_ROOT/data
   WYRMGPT_PORT            Host port. Default: 18080
   WYRMGPT_CONTAINER_NAME  Container name. Default: wyrmgpt-web
   WYRMGPT_IMAGE_NAME      Image name. Default: wyrmgpt-web:host
@@ -53,13 +52,7 @@ port="${WYRMGPT_PORT:-18080}"
 container_name="${WYRMGPT_CONTAINER_NAME:-wyrmgpt-web}"
 image_name="${WYRMGPT_IMAGE_NAME:-wyrmgpt-web:host}"
 compose_project="${WYRMGPT_COMPOSE_PROJECT:-wyrmgpt}"
-if [[ -n "${WYRMGPT_DATA_ROOT:-}" ]]; then
-  data_root="$WYRMGPT_DATA_ROOT"
-elif [[ -f "$repo_root/data/sql/wyrmgpt.sqlite3" ]]; then
-  data_root="$repo_root/data"
-else
-  data_root="$runtime_root/data"
-fi
+data_root="${WYRMGPT_DATA_ROOT:-$runtime_root/data}"
 
 pull=0
 build=1

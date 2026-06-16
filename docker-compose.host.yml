@@ -12,6 +12,6 @@ services:
       - ${WYRMGPT_CONFIG_ROOT:-/opt/openclaw-data/wyrmgpt/config}/config.toml:/app/config.toml
       - ${WYRMGPT_CONFIG_ROOT:-/opt/openclaw-data/wyrmgpt/config}/config.secrets.toml:/app/config.secrets.toml
       - ${WYRMGPT_PROMPTS_ROOT:-/opt/openclaw-data/wyrmgpt/prompts}:/app/prompts
-      - ${WYRMGPT_DATA_ROOT:-/opt/openclaw-data/workspace/wyrmgpt/data}:/app/data
+      - ${WYRMGPT_DATA_ROOT:-/opt/openclaw-data/wyrmgpt/data}:/app/data
     environment:
       PYTHONUNBUFFERED: "1"
