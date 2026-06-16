@@ -127,6 +127,7 @@ def ensure_identity_schema() -> None:
             handle TEXT,
             email TEXT,
             discord_user_id TEXT,
+            is_pk_identity INTEGER NOT NULL DEFAULT 0,
             is_enabled INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
@@ -175,6 +176,7 @@ def ensure_identity_schema() -> None:
         _add_column_if_missing(conn, "users", "slug", "TEXT")
         _add_column_if_missing(conn, "users", "email", "TEXT")
         _add_column_if_missing(conn, "users", "discord_user_id", "TEXT")
+        _add_column_if_missing(conn, "users", "is_pk_identity", "INTEGER NOT NULL DEFAULT 0")
         _add_column_if_missing(conn, "users", "tenant_id", "INTEGER")
         _add_column_if_missing(conn, "users", "is_global", "INTEGER NOT NULL DEFAULT 0")
         _add_column_if_missing(conn, "users", "is_global_admin", "INTEGER NOT NULL DEFAULT 0")
@@ -412,7 +414,7 @@ def list_users(tenant_id: int | None = None, include_disabled: bool = True) -> l
     return [_decorate_user(_row(r) or {}) for r in rows]
 
 
-def create_user(display_name: str, handle: str | None = None, tenant_id: int | None = None, role: str = "member", meta_json: Any = None, is_global: bool = False, is_global_admin: bool = False, slug: str | None = None, email: str | None = None, discord_user_id: str | None = None) -> dict[str, Any]:
+def create_user(display_name: str, handle: str | None = None, tenant_id: int | None = None, role: str = "member", meta_json: Any = None, is_global: bool = False, is_global_admin: bool = False, slug: str | None = None, email: str | None = None, discord_user_id: str | None = None, is_pk_identity: bool = False) -> dict[str, Any]:
     ensure_identity_schema(); now = _utc_now_iso(); display_name = _txt(display_name)
     if not display_name: raise ValueError("User display name is required.")
     user_slug = _slug(slug or handle or display_name, "user")
@@ -425,10 +427,10 @@ def create_user(display_name: str, handle: str | None = None, tenant_id: int | N
     with db_session() as conn:
         cur = conn.execute(
             """
-            INSERT INTO users(uuid,display_name,handle,slug,email,discord_user_id,tenant_id,is_global,is_global_admin,role,created_at,updated_at,meta_json)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+            INSERT INTO users(uuid,display_name,handle,slug,email,discord_user_id,is_pk_identity,tenant_id,is_global,is_global_admin,role,created_at,updated_at,meta_json)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
-            (new_uuid(), display_name, user_slug, user_slug, email_value, discord_value, tenant_value, global_flag, admin_flag, role_value, now, now, _json(meta_json)),
+            (new_uuid(), display_name, user_slug, user_slug, email_value, discord_value, _bool_int(is_pk_identity), tenant_value, global_flag, admin_flag, role_value, now, now, _json(meta_json)),
         )
         user_id = int(cur.lastrowid)
         if tenant_value is not None:
@@ -438,7 +440,7 @@ def create_user(display_name: str, handle: str | None = None, tenant_id: int | N
 
 
 def update_user(user_id: int, patch: dict[str, Any]) -> dict[str, Any]:
-    ensure_identity_schema(); allowed={"display_name","handle","slug","email","discord_user_id","tenant_id","is_global","is_global_admin","role","is_enabled","meta_json"}; sets=[]; vals=[]
+    ensure_identity_schema(); allowed={"display_name","handle","slug","email","discord_user_id","is_pk_identity","tenant_id","is_global","is_global_admin","role","is_enabled","meta_json"}; sets=[]; vals=[]
     patch = dict(patch or {})
     if "slug" in patch and "handle" not in patch:
         patch["handle"] = patch["slug"]
@@ -455,7 +457,7 @@ def update_user(user_id: int, patch: dict[str, Any]) -> dict[str, Any]:
         if k == "email": v = _txt(v) or None
         if k == "discord_user_id": v = _txt(v) or _slug(patch.get("slug") or patch.get("handle"), "user")
         if k == "tenant_id": v = int(v) if v not in (None, "") else None
-        if k in {"is_global", "is_global_admin", "is_enabled"}: v = _bool_int(v)
+        if k in {"is_global", "is_global_admin", "is_enabled", "is_pk_identity"}: v = _bool_int(v)
         if k == "role": v = _slug(v, "member")
         if k == "meta_json": v = _json(v)
         sets.append(f"{k}=?"); vals.append(v)

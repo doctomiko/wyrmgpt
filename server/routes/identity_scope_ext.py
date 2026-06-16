@@ -220,6 +220,7 @@ def api_scope_create_user(payload: dict[str, Any] = Body(default_factory=dict)):
             slug=payload.get("slug"),
             email=payload.get("email"),
             discord_user_id=payload.get("discord_user_id"),
+            is_pk_identity=bool(payload.get("is_pk_identity")),
             tenant_id=tenant_id,
             is_global=is_global,
             is_global_admin=is_global_admin,

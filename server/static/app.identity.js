@@ -104,6 +104,7 @@
               <input id="identityUserSlug" placeholder="slug / short name" />
               <input id="identityUserEmail" type="email" placeholder="email" />
               <input id="identityUserDiscordId" placeholder="Discord user ID / slug" />
+              <label class="identityCheckboxRow"><input id="identityUserPkIdentity" type="checkbox" /> Discord profile is a PK identity</label>
               <button id="identitySaveUser">Create User</button>
               <button id="identityCancelUserEdit" class="hidden">Cancel Update</button>
               <div id="identityUserScopeNote" class="identityScopeNote"></div>
@@ -457,7 +458,7 @@
     fillUserScopeSelect($("identityUserScope")?.value || (selectedTenantId() != null ? String(selectedTenantId()) : GLOBAL_USER_VALUE));
     renderList("identityUserList", usersForTenant(selectedTenantId()), (u) => {
       const scope = Number(u.is_global_admin || 0) === 1 ? "global admin" : Number(u.is_tenant_admin || 0) === 1 ? "tenant admin" : Number(u.is_global || 0) === 1 ? "global" : (u.tenant_name || `tenant ${u.tenant_id || "?"}`);
-      return `${u.display_name || `User ${u.id}`} · ${u.slug || u.handle || "user"}${u.email ? ` · ${u.email}` : ""}${u.discord_user_id ? ` · Discord: ${u.discord_user_id}` : ""} · ${scope}${u.is_enabled === 0 ? " · disabled" : ""}${u.reference_count ? ` · refs=${u.reference_count}` : ""}`;
+      return `${u.display_name || `User ${u.id}`} · ${u.slug || u.handle || "user"}${u.email ? ` · ${u.email}` : ""}${u.discord_user_id ? ` · Discord: ${u.discord_user_id}` : ""}${Number(u.is_pk_identity || 0) === 1 ? " · PK identity" : ""} · ${scope}${u.is_enabled === 0 ? " · disabled" : ""}${u.reference_count ? ` · refs=${u.reference_count}` : ""}`;
     }, { edit: editUser, toggle: toggleUser, delete: hardDeleteUser });
     $("identitySaveUser") && ($("identitySaveUser").textContent = state.editingUserId ? "Update User" : "Create User");
     $("identityCancelUserEdit")?.classList.toggle("hidden", !state.editingUserId);
@@ -507,6 +508,7 @@
       slug: ($("identityUserSlug")?.value || "").trim(),
       email: ($("identityUserEmail")?.value || "").trim(),
       discord_user_id: ($("identityUserDiscordId")?.value || "").trim() || ($("identityUserSlug")?.value || "").trim(),
+      is_pk_identity: !!$("identityUserPkIdentity")?.checked,
       acting_user_id: selectedUserId(),
       is_global: isGlobal,
       is_global_admin: isGlobal && !!$("identityUserGlobalAdmin")?.checked,
@@ -532,6 +534,7 @@
     if ($("identityUserSlug")) $("identityUserSlug").value = row.slug || row.handle || "";
     if ($("identityUserEmail")) $("identityUserEmail").value = row.email || "";
     if ($("identityUserDiscordId")) $("identityUserDiscordId").value = row.discord_user_id || row.slug || row.handle || "";
+    if ($("identityUserPkIdentity")) $("identityUserPkIdentity").checked = Number(row.is_pk_identity || 0) === 1;
     fillUserScopeSelect(Number(row.is_global || 0) === 1 || Number(row.is_global_admin || 0) === 1 ? GLOBAL_USER_VALUE : String(row.tenant_id || selectedTenantId() || ""));
     if ($("identityUserTenantAdmin")) $("identityUserTenantAdmin").checked = Number(row.is_tenant_admin || 0) === 1;
     if ($("identityUserGlobalAdmin")) $("identityUserGlobalAdmin").checked = Number(row.is_global_admin || 0) === 1;
@@ -548,6 +551,7 @@
     if ($("identityUserSlug")) $("identityUserSlug").value = "";
     if ($("identityUserEmail")) $("identityUserEmail").value = "";
     if ($("identityUserDiscordId")) $("identityUserDiscordId").value = "";
+    if ($("identityUserPkIdentity")) $("identityUserPkIdentity").checked = false;
     renderUsers();
     emitIdentityEvent("wyrmgpt:identity-user-reset");
   }
