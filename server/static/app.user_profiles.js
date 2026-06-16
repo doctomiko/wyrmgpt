@@ -116,6 +116,13 @@
     toastTimer = setTimeout(() => toast.classList.remove("visible"), 2600);
   }
 
+  function setUserSaveStatus(message, tone = "ok") {
+    const el = $("identityUserStatus");
+    if (!el) return;
+    el.textContent = message || "";
+    el.className = `identityStatus ${tone || "ok"}`;
+  }
+
   function updateAboutYouTitle(user) {
     const section = document.getElementById("aboutYouNickname")?.closest(".memSection");
     if (!section) return;
@@ -403,6 +410,7 @@
       alert("User display name required.");
       return;
     }
+    setUserSaveStatus(`${editingUserId ? "Updating" : "Creating"} user...`, "warn");
     const url = editingUserId
       ? `/api/identity/scope/users/${encodeURIComponent(editingUserId)}`
       : "/api/identity/scope/users";
@@ -430,12 +438,16 @@
     if (window.wyrmgptIdentity?.loadIdentity) await window.wyrmgptIdentity.loadIdentity();
     if (savedUserId) await loadManagedAboutForUser(savedUserId);
     setUserSaveButtonLabels();
+    setUserSaveStatus(`User ${editingUserId ? "updated" : "created"}: ${savedUser?.display_name || payload.display_name}`, "ok");
     showToast(`User ${editingUserId ? "updated" : "created"}: ${savedUser?.display_name || payload.display_name}`);
     if (typeof window.refreshContext === "function") await window.refreshContext();
   }
 
   function handleUserSaveClick(event) {
-    interceptUserSave(event).catch((e) => showToast(`Failed to save user: ${e?.message || e}`, "error"));
+    interceptUserSave(event).catch((e) => {
+      setUserSaveStatus(`Failed to save user: ${e?.message || e}`, "error");
+      showToast(`Failed to save user: ${e?.message || e}`, "error");
+    });
   }
 
   function effectiveForceAction(ref) {

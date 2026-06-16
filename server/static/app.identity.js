@@ -37,11 +37,17 @@
       .identityList { display: grid; gap: 5px; margin-top: 8px; max-height: 56vh; overflow: auto; }
       .identityListItem, .identityEmpty { padding: 6px 8px; border-radius: 6px; background: rgba(128,128,128,.10); font-size: .85rem; }
       .identityListItem { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: start; }
+      .identityListItem.identityActiveUser { outline: 2px solid rgba(94, 179, 255, .82); background: rgba(94, 179, 255, .16); }
       .identityListLabel { min-width: 0; overflow-wrap: anywhere; }
+      .identityActiveBadge { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: rgba(94, 179, 255, .22); color: #d9eeff; font-size: .72rem; font-weight: 700; vertical-align: baseline; }
       .identityListActions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
       .identityMiniButton { padding: 2px 6px; font-size: 0.75rem; line-height: 1.4; }
       .identityMiniButton.danger { opacity: 0.9; }
       .identityScopeNote { font-size: 0.72rem; opacity: 0.7; line-height: 1.25; }
+      .identityStatus { min-height: 1.25rem; font-size: .82rem; line-height: 1.25; }
+      .identityStatus.ok { color: #8ee0a2; }
+      .identityStatus.warn { color: #f2c779; }
+      .identityStatus.error { color: #ff9a9a; }
       .identityFormStack button.hidden, .identityTopHidden { display: none !important; }
       @media (max-width: 1100px) { .identityManagerGrid { grid-template-columns: 1fr; } }
     `;
@@ -107,6 +113,7 @@
               <label class="identityCheckboxRow"><input id="identityUserPkIdentity" type="checkbox" /> Discord profile is a PK identity</label>
               <button id="identitySaveUser">Create User</button>
               <button id="identityCancelUserEdit" class="hidden">Cancel Update</button>
+              <div id="identityUserStatus" class="identityStatus" role="status" aria-live="polite"></div>
               <div id="identityUserScopeNote" class="identityScopeNote"></div>
             </div></section>
             <section class="identityManagerCol"><h3>Existing Users</h3><div id="identityUserList" class="identityList"></div></section>
@@ -211,6 +218,13 @@
 
   function emitIdentityEvent(name, detail = {}) {
     document.dispatchEvent(new CustomEvent(name, { detail }));
+  }
+
+  function setIdentityUserStatus(message, tone = "ok") {
+    const el = $("identityUserStatus");
+    if (!el) return;
+    el.textContent = message || "";
+    el.className = `identityStatus ${tone || "ok"}`;
   }
 
   function fillSelect(el, rows, labelFn, { blank = false, blankLabel = "—", blankValue = "" } = {}) {
@@ -460,6 +474,19 @@
       const scope = Number(u.is_global_admin || 0) === 1 ? "global admin" : Number(u.is_tenant_admin || 0) === 1 ? "tenant admin" : Number(u.is_global || 0) === 1 ? "global" : (u.tenant_name || `tenant ${u.tenant_id || "?"}`);
       return `${u.display_name || `User ${u.id}`} · ${u.slug || u.handle || "user"}${u.email ? ` · ${u.email}` : ""}${u.discord_user_id ? ` · Discord: ${u.discord_user_id}` : ""}${Number(u.is_pk_identity || 0) === 1 ? " · PK identity" : ""} · ${scope}${u.is_enabled === 0 ? " · disabled" : ""}${u.reference_count ? ` · refs=${u.reference_count}` : ""}`;
     }, { edit: editUser, toggle: toggleUser, delete: hardDeleteUser });
+    const activeId = selectedUserId();
+    document.querySelectorAll("#identityUserList .identityListItem").forEach((row) => {
+      const isActive = activeId != null && Number(row.dataset.userId || 0) === Number(activeId);
+      row.classList.toggle("identityActiveUser", isActive);
+      row.toggleAttribute("aria-current", isActive);
+      const label = row.querySelector(".identityListLabel");
+      if (label && isActive && !label.querySelector(".identityActiveBadge")) {
+        const badge = document.createElement("span");
+        badge.className = "identityActiveBadge";
+        badge.textContent = "Active";
+        label.appendChild(badge);
+      }
+    });
     $("identitySaveUser") && ($("identitySaveUser").textContent = state.editingUserId ? "Update User" : "Create User");
     $("identityCancelUserEdit")?.classList.toggle("hidden", !state.editingUserId);
   }
@@ -521,11 +548,13 @@
     const p = buildUserPayload();
     if (!p.display_name) return alert("User display name required.");
     const wasEdit = !!state.editingUserId;
+    setIdentityUserStatus(`${wasEdit ? "Updating" : "Creating"} user...`, "warn");
     const row = wasEdit
       ? await putJson(`/api/identity/scope/users/${encodeURIComponent(state.editingUserId)}`, p)
       : await postJson("/api/identity/scope/users", p);
     resetUserForm();
     await loadIdentity();
+    setIdentityUserStatus(`User ${wasEdit ? "updated" : "created"}: ${row?.display_name || p.display_name}`, "ok");
     showIdentityToast(`User ${wasEdit ? "updated" : "created"}: ${row?.display_name || p.display_name}`);
   }
   function editUser(row) {
@@ -628,7 +657,10 @@
     for (const id of ["identityTenantModal", "identityUserModal", "identityPersonaModal"]) $(id)?.querySelector(".modalBackdrop")?.addEventListener("click", () => closeModal(id));
     $("identitySaveTenant")?.addEventListener("click", () => saveTenant().catch((e) => showIdentityToast(`Failed to save tenant: ${e?.message || e}`, "error")));
     $("identityCancelTenantEdit")?.addEventListener("click", resetTenantForm);
-    $("identitySaveUser")?.addEventListener("click", () => saveUser().catch((e) => showIdentityToast(`Failed to save user: ${e?.message || e}`, "error")));
+    $("identitySaveUser")?.addEventListener("click", () => saveUser().catch((e) => {
+      setIdentityUserStatus(`Failed to save user: ${e?.message || e}`, "error");
+      showIdentityToast(`Failed to save user: ${e?.message || e}`, "error");
+    }));
     $("identityCancelUserEdit")?.addEventListener("click", resetUserForm);
     $("identityUserScope")?.addEventListener("change", updateUserAdminCheckboxes);
     $("identitySavePersona")?.addEventListener("click", () => savePersona().catch((e) => showIdentityToast(`Failed to save persona: ${e?.message || e}`, "error")));
