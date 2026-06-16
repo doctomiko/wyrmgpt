@@ -38,6 +38,7 @@
       .identityListItem, .identityEmpty { padding: 6px 8px; border-radius: 6px; background: rgba(128,128,128,.10); font-size: .85rem; }
       .identityListItem { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: start; }
       .identityListItem.identityActiveUser { outline: 2px solid rgba(94, 179, 255, .82); background: rgba(94, 179, 255, .16); }
+      .identityListItem.identityEditingUser { outline: 2px solid rgba(142, 224, 162, .9); background: rgba(142, 224, 162, .14); }
       .identityListLabel { min-width: 0; overflow-wrap: anywhere; }
       .identityActiveBadge { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: rgba(94, 179, 255, .22); color: #d9eeff; font-size: .72rem; font-weight: 700; vertical-align: baseline; }
       .identityListActions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
@@ -475,15 +476,21 @@
       return `${u.display_name || `User ${u.id}`} · ${u.slug || u.handle || "user"}${u.email ? ` · ${u.email}` : ""}${u.discord_user_id ? ` · Discord: ${u.discord_user_id}` : ""}${Number(u.is_pk_identity || 0) === 1 ? " · PK identity" : ""} · ${scope}${u.is_enabled === 0 ? " · disabled" : ""}${u.reference_count ? ` · refs=${u.reference_count}` : ""}`;
     }, { edit: editUser, toggle: toggleUser, delete: hardDeleteUser });
     const activeId = selectedUserId();
+    const editingId = state.editingUserId == null ? null : Number(state.editingUserId);
+    const highlightedId = editingId ?? activeId;
     document.querySelectorAll("#identityUserList .identityListItem").forEach((row) => {
-      const isActive = activeId != null && Number(row.dataset.userId || 0) === Number(activeId);
-      row.classList.toggle("identityActiveUser", isActive);
-      row.toggleAttribute("aria-current", isActive);
+      const rowUserId = Number(row.dataset.userId || 0);
+      const isActive = activeId != null && rowUserId === Number(activeId);
+      const isEditing = editingId != null && rowUserId === Number(editingId);
+      const isHighlighted = highlightedId != null && rowUserId === Number(highlightedId);
+      row.classList.toggle("identityActiveUser", isActive && editingId == null);
+      row.classList.toggle("identityEditingUser", isEditing);
+      row.toggleAttribute("aria-current", isHighlighted);
       const label = row.querySelector(".identityListLabel");
-      if (label && isActive && !label.querySelector(".identityActiveBadge")) {
+      if (label && isHighlighted && !label.querySelector(".identityActiveBadge")) {
         const badge = document.createElement("span");
         badge.className = "identityActiveBadge";
-        badge.textContent = "Active";
+        badge.textContent = isEditing ? "Editing" : "Active";
         label.appendChild(badge);
       }
     });
