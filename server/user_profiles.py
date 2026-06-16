@@ -68,6 +68,9 @@ def ensure_user_profile_schema() -> None:
             )
             """
         )
+        _add_column_if_missing(conn, "user_profiles", "display_name", "TEXT")
+        _add_column_if_missing(conn, "user_profiles", "profile_json", "TEXT")
+        _add_column_if_missing(conn, "user_profiles", "about_text", "TEXT")
         _add_column_if_missing(conn, "user_profiles", "profile_kind", "TEXT")
         _add_column_if_missing(conn, "user_profiles", "title", "TEXT")
         _add_column_if_missing(conn, "user_profiles", "content_text", "TEXT")
@@ -109,18 +112,24 @@ def _insert_about_profile_conn(
     if _profile_id_is_text(conn):
         conn.execute(
             """
-            INSERT INTO user_profiles(id,tenant_id,user_id,profile_kind,title,content_text,visibility,created_at,updated_at,meta_json,value_json)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            INSERT INTO user_profiles(
+                id,tenant_id,user_id,display_name,profile_json,about_text,
+                profile_kind,title,content_text,visibility,created_at,updated_at,meta_json,value_json
+            )
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
-            (new_uuid(), tenant_value, int(user_id), _PROFILE_KIND, "About You", text, "user", now, now, None, value_json),
+            (new_uuid(), tenant_value, int(user_id), "About You", value_json, text, _PROFILE_KIND, "About You", text, "user", now, now, None, value_json),
         )
         return
     conn.execute(
         """
-        INSERT INTO user_profiles(tenant_id,user_id,profile_kind,title,content_text,visibility,created_at,updated_at,meta_json,value_json)
-        VALUES(?,?,?,?,?,?,?,?,?,?)
+        INSERT INTO user_profiles(
+            tenant_id,user_id,display_name,profile_json,about_text,
+            profile_kind,title,content_text,visibility,created_at,updated_at,meta_json,value_json
+        )
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
-        (tenant_value, int(user_id), _PROFILE_KIND, "About You", text, "user", now, now, None, value_json),
+        (tenant_value, int(user_id), "About You", value_json, text, _PROFILE_KIND, "About You", text, "user", now, now, None, value_json),
     )
 
 
