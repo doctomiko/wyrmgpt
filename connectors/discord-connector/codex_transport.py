@@ -4,6 +4,7 @@ import base64
 import json
 import re
 import time
+import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
@@ -45,16 +46,20 @@ def extract_codex_account_id(token: str) -> str:
     raise RuntimeError("Could not extract ChatGPT account id from OAuth token.")
 
 
-def _headers(access_token: str, account_id: str) -> Dict[str, str]:
-    return {
+def _headers(access_token: str, account_id: str, request_id: str) -> Dict[str, str]:
+    headers = {
         "Authorization": f"Bearer {access_token}",
         "chatgpt-account-id": account_id,
-        "originator": "wyrmgpt-discord-connector",
-        "User-Agent": "wyrmgpt-discord-connector",
+        "originator": "openclaw",
+        "User-Agent": "openclaw (wyrmgpt-discord-connector)",
         "OpenAI-Beta": "responses=experimental",
         "accept": "text/event-stream",
         "content-type": "application/json",
     }
+    if request_id:
+        headers["session_id"] = request_id
+        headers["x-client-request-id"] = request_id
+    return headers
 
 
 def _iter_sse_events(text: str):
@@ -98,6 +103,13 @@ def _unsupported_parameter_from_message(message: str) -> str:
 
 def _codex_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in payload.items() if k not in CODEX_UNSUPPORTED_PAYLOAD_FIELDS}
+
+
+def _error_preview(text: str, *, limit: int = 500) -> str:
+    compact = " ".join((text or "").split())
+    if len(compact) <= limit:
+        return compact
+    return compact[:limit].rstrip() + "..."
 
 
 def _extract_text_from_events(events: List[Dict[str, Any]]) -> Tuple[str, Dict[str, Any]]:
@@ -144,8 +156,11 @@ async def codex_respond(
         "stream": True,
         "instructions": system_prompt or "You are a helpful assistant.",
         "input": [{"role": "user", "content": content_parts}],
+        "text": {"verbosity": "low"},
+        "include": ["reasoning.encrypted_content"],
         "max_output_tokens": max_output_tokens,
     })
+    request_id = str(uuid.uuid4())
 
     t0 = time.time()
     async with httpx.AsyncClient(timeout=120.0) as client:
@@ -153,7 +168,7 @@ async def codex_respond(
         while True:
             response = await client.post(
                 CODEX_RESPONSES_URL,
-                headers=_headers(tokens.access_token, account_id),
+                headers=_headers(tokens.access_token, account_id, request_id),
                 json=payload,
             )
             body_text = response.text
@@ -172,6 +187,12 @@ async def codex_respond(
                 removed_fields.append(unsupported)
                 log.warning("Codex transport removed unsupported payload field and retrying: %s", unsupported)
                 continue
+            log.error(
+                "Codex transport failed status=%s request_id=%s body=%s",
+                response.status_code,
+                request_id,
+                _error_preview(str(message or body_text)),
+            )
             raise RuntimeError(f"Codex transport failed: HTTP {response.status_code} {message}")
 
     events = list(_iter_sse_events(body_text))

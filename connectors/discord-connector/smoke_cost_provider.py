@@ -7,6 +7,7 @@ import tempfile
 
 from codex_transport import (
     _codex_payload,
+    _error_preview,
     _extract_text_from_events,
     _unsupported_parameter_from_message,
     extract_codex_account_id,
@@ -122,6 +123,10 @@ def main() -> None:
     payload = _codex_payload({"model": "gpt-5.5", "max_output_tokens": 100, "stream": True})
     assert "max_output_tokens" not in payload
     assert payload["model"] == "gpt-5.5"
+    payload = _codex_payload({"model": "gpt-5.5", "text": {"verbosity": "low"}, "include": ["reasoning.encrypted_content"]})
+    assert payload["text"]["verbosity"] == "low"
+    assert payload["include"] == ["reasoning.encrypted_content"]
+    assert _error_preview("one\n two\tthree") == "one two three"
 
     print("cost/provider smoke ok")
 
