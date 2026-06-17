@@ -226,6 +226,7 @@ def upsert_user_about_you(user_id: int, value: dict[str, Any], *, tenant_id: int
         if tenant_id is None:
             u = conn.execute("SELECT tenant_id FROM users WHERE id=?", (int(user_id),)).fetchone()
             tenant_id = u["tenant_id"] if u else None
+        tenant_value = tenant_id if tenant_id is not None else "default"
         row = conn.execute(
             """
             SELECT id FROM user_profiles
@@ -243,12 +244,12 @@ def upsert_user_about_you(user_id: int, value: dict[str, Any], *, tenant_id: int
                     content_text=?, updated_at=?, value_json=?
                 WHERE id=?
                 """,
-                (tenant_id, json.dumps(clean, ensure_ascii=False), text, text, now, json.dumps(clean, ensure_ascii=False), row["id"]),
+                (tenant_value, json.dumps(clean, ensure_ascii=False), text, text, now, json.dumps(clean, ensure_ascii=False), row["id"]),
             )
         else:
             _insert_about_profile_conn(
                 conn,
-                tenant_id=tenant_id,
+                tenant_id=tenant_value,
                 user_id=int(user_id),
                 text=text,
                 value_json=json.dumps(clean, ensure_ascii=False),
