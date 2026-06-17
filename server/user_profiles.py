@@ -20,6 +20,10 @@ def _compose_about_text(value: dict[str, Any]) -> str:
     parts: list[str] = []
     if value.get("nickname"):
         parts.append(f"Nickname: {value.get('nickname')}")
+    if value.get("discord_user_id"):
+        parts.append(f"Discord identity: {value.get('discord_user_id')}")
+    if value.get("is_pk_identity"):
+        parts.append("Discord profile is a PK identity.")
     if value.get("age"):
         parts.append(f"Approximate age: {value.get('age')}")
     if value.get("occupation"):
@@ -36,6 +40,8 @@ def _empty_profile(user_id: int | None = None) -> dict[str, Any]:
         "age": "",
         "occupation": "",
         "more_about_you": "",
+        "discord_user_id": "",
+        "is_pk_identity": 0,
         "text": "",
     }
 
@@ -187,6 +193,10 @@ def get_user_about_you(user_id: int | None) -> dict[str, Any]:
     if user_id is None:
         return _empty_profile(None)
     with db_session() as conn:
+        user = conn.execute(
+            "SELECT discord_user_id, is_pk_identity FROM users WHERE id=?",
+            (int(user_id),),
+        ).fetchone()
         row = conn.execute(
             """
             SELECT * FROM user_profiles
@@ -197,7 +207,11 @@ def get_user_about_you(user_id: int | None) -> dict[str, Any]:
             (int(user_id), _PROFILE_KIND),
         ).fetchone()
     if not row:
-        return _empty_profile(int(user_id))
+        empty = _empty_profile(int(user_id))
+        if user:
+            empty["discord_user_id"] = user["discord_user_id"] or ""
+            empty["is_pk_identity"] = int(user["is_pk_identity"] or 0)
+        return empty
     value = _decode(row["value_json"])
     return {
         "id": row["id"],
@@ -207,6 +221,8 @@ def get_user_about_you(user_id: int | None) -> dict[str, Any]:
         "age": value.get("age", ""),
         "occupation": value.get("occupation", ""),
         "more_about_you": value.get("more_about_you", ""),
+        "discord_user_id": value.get("discord_user_id") or (user["discord_user_id"] if user else "") or "",
+        "is_pk_identity": int(value.get("is_pk_identity") if "is_pk_identity" in value else (user["is_pk_identity"] if user else 0) or 0),
         "text": row["content_text"] or _compose_about_text(value),
         "updated_at": row["updated_at"],
     }
@@ -219,6 +235,8 @@ def upsert_user_about_you(user_id: int, value: dict[str, Any], *, tenant_id: int
         "age": str(value.get("age") or "").strip(),
         "occupation": str(value.get("occupation") or "").strip(),
         "more_about_you": str(value.get("more_about_you") or "").strip(),
+        "discord_user_id": str(value.get("discord_user_id") or "").strip(),
+        "is_pk_identity": 1 if value.get("is_pk_identity") else 0,
     }
     text = _compose_about_text(clean)
     now = _utc_now_iso()
@@ -227,6 +245,16 @@ def upsert_user_about_you(user_id: int, value: dict[str, Any], *, tenant_id: int
             u = conn.execute("SELECT tenant_id FROM users WHERE id=?", (int(user_id),)).fetchone()
             tenant_id = u["tenant_id"] if u else None
         tenant_value = tenant_id
+        discord_value = clean["discord_user_id"]
+        if not discord_value:
+            u = conn.execute("SELECT slug, handle FROM users WHERE id=?", (int(user_id),)).fetchone()
+            discord_value = (u["slug"] or u["handle"] or "") if u else ""
+            clean["discord_user_id"] = discord_value
+            text = _compose_about_text(clean)
+        conn.execute(
+            "UPDATE users SET discord_user_id=?, is_pk_identity=?, updated_at=? WHERE id=?",
+            (discord_value or None, clean["is_pk_identity"], now, int(user_id)),
+        )
         row = conn.execute(
             """
             SELECT id FROM user_profiles

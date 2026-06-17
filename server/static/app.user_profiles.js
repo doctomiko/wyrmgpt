@@ -190,11 +190,13 @@
       age: ($("identityAboutAge")?.value || "").trim(),
       occupation: ($("identityAboutOccupation")?.value || "").trim(),
       more_about_you: ($("identityAboutMore")?.value || "").trim(),
+      discord_user_id: ($("identityUserDiscordId")?.value || "").trim() || ($("identityUserSlug")?.value || "").trim(),
+      is_pk_identity: !!$("identityUserPkIdentity")?.checked,
     };
   }
 
   function hasAnyAboutFields(payload) {
-    return !!(payload?.nickname || payload?.age || payload?.occupation || payload?.more_about_you);
+    return !!(payload?.nickname || payload?.age || payload?.occupation || payload?.more_about_you || payload?.discord_user_id || payload?.is_pk_identity);
   }
 
   function setManagedAboutTitle(user) {
@@ -211,6 +213,8 @@
     if ($("identityAboutAge")) $("identityAboutAge").value = "";
     if ($("identityAboutOccupation")) $("identityAboutOccupation").value = "";
     if ($("identityAboutMore")) $("identityAboutMore").value = "";
+    if ($("identityUserDiscordId")) $("identityUserDiscordId").value = "";
+    if ($("identityUserPkIdentity")) $("identityUserPkIdentity").checked = false;
     clearManagedAvatarSelection();
     setManagedAvatarPreview(null);
     setManagedAboutTitle(null);
@@ -279,6 +283,13 @@
           More About This User
           <textarea id="identityAboutMore" rows="8" placeholder="Anything enduring, useful, or identity-shaping about this user."></textarea>
         </label>
+        <label>
+          Discord tag or user ID
+          <input id="identityUserDiscordId" placeholder="Discord user ID / slug" />
+        </label>
+        <label class="identityCheckboxRow identityAboutCheckbox">
+          <input id="identityUserPkIdentity" type="checkbox" /> Discord profile is a PK identity
+        </label>
         <label class="span2">
           Profile Image
           <input id="identityUserAvatar" type="file" accept="image/jpeg,image/png,image/gif,image/webp,image/*" />
@@ -302,6 +313,7 @@
         #identityManageUserAboutPanel { grid-column: 1 / -1; }
         .identityAboutGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
         .identityAboutGrid label { display: grid; gap: 4px; }
+        .identityAboutCheckbox { align-self: end; min-height: 34px; }
         .identityAboutGrid .span2 { grid-column: 1 / -1; }
         .identityAboutGrid input, .identityAboutGrid textarea { width: 100%; box-sizing: border-box; }
         .identityAvatarPreviewRow { display: flex; align-items: center; gap: 10px; min-height: 44px; }
@@ -346,6 +358,8 @@
     if ($("identityAboutAge")) $("identityAboutAge").value = data.age || "";
     if ($("identityAboutOccupation")) $("identityAboutOccupation").value = data.occupation || "";
     if ($("identityAboutMore")) $("identityAboutMore").value = data.more_about_you || "";
+    if ($("identityUserDiscordId")) $("identityUserDiscordId").value = data.discord_user_id || user?.discord_user_id || user?.slug || user?.handle || "";
+    if ($("identityUserPkIdentity")) $("identityUserPkIdentity").checked = Number(data.is_pk_identity ?? user?.is_pk_identity ?? 0) === 1;
     setManagedAboutTitle(user || { id: userId });
     setUserSaveButtonLabels();
   }

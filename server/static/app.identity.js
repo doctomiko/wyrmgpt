@@ -110,8 +110,6 @@
               <input id="identityUserName" placeholder="Display name" />
               <input id="identityUserSlug" placeholder="slug / short name" />
               <input id="identityUserEmail" type="email" placeholder="email" />
-              <input id="identityUserDiscordId" placeholder="Discord user ID / slug" />
-              <label class="identityCheckboxRow"><input id="identityUserPkIdentity" type="checkbox" /> Discord profile is a PK identity</label>
               <button id="identitySaveUser">Create User</button>
               <button id="identityCancelUserEdit" class="hidden">Cancel Update</button>
               <div id="identityUserStatus" class="identityStatus" role="status" aria-live="polite"></div>
