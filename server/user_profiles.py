@@ -108,7 +108,7 @@ def _insert_about_profile_conn(
     value_json: str,
     now: str,
 ) -> None:
-    tenant_value = tenant_id if tenant_id is not None else "default"
+    tenant_value = tenant_id
     if _profile_id_is_text(conn):
         conn.execute(
             """
@@ -226,7 +226,7 @@ def upsert_user_about_you(user_id: int, value: dict[str, Any], *, tenant_id: int
         if tenant_id is None:
             u = conn.execute("SELECT tenant_id FROM users WHERE id=?", (int(user_id),)).fetchone()
             tenant_id = u["tenant_id"] if u else None
-        tenant_value = tenant_id if tenant_id is not None else "default"
+        tenant_value = tenant_id
         row = conn.execute(
             """
             SELECT id FROM user_profiles

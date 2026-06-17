@@ -31,6 +31,7 @@ from .db_helpers import (
     ensure_parent_dir, _table_exists, _add_column_if_missing,
     ensure_audit_events_schema, ensure_resource_ownership_columns,
     ensure_access_control_schema, ensure_identity_group_role_schema,
+    ensure_identity_tenant_nullable_schema,
     create_access_control_entry, list_access_control_entries, remove_access_control_entry,
     log_audit_event,
 )
@@ -112,6 +113,10 @@ def _migrate_schema_v30(conn) -> None:
     )
 
 
+def _migrate_schema_v31(conn) -> None:
+    ensure_identity_tenant_nullable_schema(conn)
+
+
 MIGRATIONS: list[tuple[int, Callable]] = [
     (8, _migrate_schema_v8),
     (9, _migrate_schema_v9),
@@ -136,6 +141,7 @@ MIGRATIONS: list[tuple[int, Callable]] = [
     (28, _migrate_schema_v28),
     (29, _migrate_schema_v29),
     (30, _migrate_schema_v30),
+    (31, _migrate_schema_v31),
 ]
 
 # endregion

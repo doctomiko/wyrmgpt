@@ -9,7 +9,7 @@ from typing import Any, Callable, Iterable, Iterator
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-SCHEMA_VERSION = 30
+SCHEMA_VERSION = 31
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
@@ -1414,6 +1414,61 @@ def _add_column_if_missing(conn: sqlite3.Connection, table: str, col: str, colde
     cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
     if col not in cols:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coldef}")
+
+
+def _column_is_not_null(conn: sqlite3.Connection, table: str, col: str) -> bool:
+    for row in conn.execute(f"PRAGMA table_info({table})").fetchall():
+        if row["name"] == col:
+            return bool(row["notnull"])
+    return False
+
+
+def _nullable_column_create_sql(create_sql: str, col: str) -> str:
+    pattern = re.compile(rf"(\b{re.escape(col)}\b\s+[^,\n)]*?)\s+NOT\s+NULL", re.IGNORECASE)
+    return pattern.sub(r"\1", create_sql)
+
+
+def _rebuild_table_with_nullable_columns(conn: sqlite3.Connection, table: str, cols: Iterable[str]) -> bool:
+    if not _table_exists(conn, table):
+        return False
+    target_cols = [col for col in cols if _column_is_not_null(conn, table, col)]
+    if not target_cols:
+        return False
+    row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
+    create_sql = (row["sql"] if row else "") or ""
+    if not create_sql:
+        return False
+    new_create_sql = create_sql
+    for col in target_cols:
+        new_create_sql = _nullable_column_create_sql(new_create_sql, col)
+    if new_create_sql == create_sql:
+        return False
+
+    index_rows = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name=? AND sql IS NOT NULL",
+        (table,),
+    ).fetchall()
+    index_sqls = [r["sql"] for r in index_rows if r["sql"]]
+    old_table = f"{table}__notnull_backup_{uuid.uuid4().hex}"
+    old_cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+
+    conn.execute(f"ALTER TABLE {table} RENAME TO {old_table}")
+    conn.execute(new_create_sql)
+    new_cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+    common_cols = [col for col in old_cols if col in new_cols]
+    quoted_cols = ", ".join(f'"{col}"' for col in common_cols)
+    conn.execute(f'INSERT INTO {table} ({quoted_cols}) SELECT {quoted_cols} FROM "{old_table}"')
+    conn.execute(f'DROP TABLE "{old_table}"')
+    for index_sql in index_sqls:
+        conn.execute(index_sql)
+    return True
+
+
+def ensure_identity_tenant_nullable_schema(conn: sqlite3.Connection) -> None:
+    """Repair legacy identity tables whose tenant_id column was created NOT NULL."""
+    for table in ("users", "user_profiles", "chat_personas"):
+        _rebuild_table_with_nullable_columns(conn, table, ("tenant_id",))
+
 
 def drop_empty_tables(tables: Iterable[str], conn: sqlite3.Connection | None = None) -> list[str]:
     """

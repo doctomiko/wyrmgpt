@@ -9,7 +9,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from .db_helpers import db_session, new_uuid, _utc_now_iso, _add_column_if_missing
+from .db_helpers import db_session, new_uuid, _utc_now_iso, _add_column_if_missing, ensure_identity_tenant_nullable_schema
 
 _ACTIVE_IDENTITY: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar("wyrmgpt_active_identity", default=None)
 _PATCH_INSTALLED = False
@@ -182,6 +182,7 @@ def ensure_identity_schema() -> None:
         _add_column_if_missing(conn, "users", "is_global_admin", "INTEGER NOT NULL DEFAULT 0")
         _add_column_if_missing(conn, "users", "role", "TEXT NOT NULL DEFAULT 'member'")
         _add_column_if_missing(conn, "chat_personas", "prompt_file", "TEXT")
+        ensure_identity_tenant_nullable_schema(conn)
 
         _add_column_if_missing(conn, "conversations", "tenant_id", "INTEGER")
         _add_column_if_missing(conn, "conversations", "active_user_id", "INTEGER")
