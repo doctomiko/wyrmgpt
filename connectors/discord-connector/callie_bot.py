@@ -1016,7 +1016,6 @@ class CallieBot(discord.Client):
             bot_user=self.user,
             pk_info=pk_info,
             #resolved_member=member # <-- optional but useful
-            force_invoked=False # we want all messages evaluated here
         )
         # Centralized gate logging (short + useful)
         # The way return logic works in compute_access_decision, it is not easy to log it inside the function.
@@ -1129,9 +1128,8 @@ class CallieBot(discord.Client):
             )
             return
 
-        session_channel_id = message.channel.id
-        # This was set above already - then we commented it out
-        parent_channel_id = get_effective_channel_id(message, parent=True)
+        session_channel_id = decision.effective_channel_id
+        parent_channel_id = decision.parent_channel_id
 
         st = await self.store.get_session(session_channel_id)
         if not await self.check_session_gate(decision):
