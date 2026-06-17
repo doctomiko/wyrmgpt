@@ -242,6 +242,7 @@ let projectsCache = []; // cache of projects for quick lookup when showing the "
 let metaInfoModal = null;
 let metaInfoTitleEl = null;
 let metaInfoPreEl = null;
+let metaInfoSharingEditorEl = null;
 // Upload modal state:
 let uploadProjectIdForced = null;
 // Library modal state:

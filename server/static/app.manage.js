@@ -1157,6 +1157,7 @@ function ensureMetaInfoModal() {
         <button class="btn" id="metaInfoClose">Close</button>
       </div>
       <div class="modalBody">
+        <div id="metaInfoSharingEditor" class="sharingEditor hidden"></div>
         <pre id="metaInfoPre" style="white-space: pre-wrap; word-break: break-word; margin: 0;"></pre>
       </div>
       <div class="modalActions">
@@ -1170,6 +1171,7 @@ function ensureMetaInfoModal() {
   metaInfoModal = modal;
   metaInfoTitleEl = modal.querySelector("#metaInfoTitle");
   metaInfoPreEl = modal.querySelector("#metaInfoPre");
+  metaInfoSharingEditorEl = modal.querySelector("#metaInfoSharingEditor");
 
   const closeBtn = modal.querySelector("#metaInfoClose");
   const copyBtn = modal.querySelector("#metaInfoCopy");
@@ -1195,8 +1197,185 @@ function openMetaInfo(title, obj) {
   ensureMetaInfoModal();
   metaInfoTitleEl.textContent = title || "Details";
   metaInfoPreEl.textContent = JSON.stringify(obj || {}, null, 2);
+  if (metaInfoSharingEditorEl) {
+    metaInfoSharingEditorEl.classList.add("hidden");
+    metaInfoSharingEditorEl.innerHTML = "";
+  }
   hideAllTransientUI({ except: [projMenuEl] });
   metaInfoModal.classList.remove("hidden");
+}
+
+function sharingRequestIdentity() {
+  const identity = (typeof getCurrentIdentity === "function" ? getCurrentIdentity() : null) || {};
+  return {
+    requester_type: "user",
+    requester_id: identity.user_id != null ? String(identity.user_id) : "local",
+    requester_tenant_id: identity.tenant_id != null ? String(identity.tenant_id) : null,
+    admin_view: libraryAdminViewToggle && libraryAdminViewToggle.checked ? "true" : "false",
+  };
+}
+
+function sharingJsonFetch(url, body, method = "POST") {
+  return fetchJsonDebug(url, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+}
+
+function renderSharingDiagnosticsEditor(data) {
+  if (!metaInfoSharingEditorEl || !data || !data.resource) return;
+  const resource = data.resource;
+  const resourceType = resource.resource_type;
+  const resourceId = resource.resource_id;
+  const provenance = resource.provenance_json || {};
+  const directEntries = data.direct_access_control_entries || [];
+
+  metaInfoSharingEditorEl.classList.remove("hidden");
+  metaInfoSharingEditorEl.innerHTML = `
+    <div class="sharingEditorGrid">
+      <label>Visibility
+        <select id="sharingEditorVisibility">
+          <option value="">Leave unchanged</option>
+          <option value="private">Private</option>
+          <option value="tenant">Tenant</option>
+          <option value="public">Public</option>
+          <option value="inherit">Inherit</option>
+        </select>
+      </label>
+      <label>Sharing
+        <select id="sharingEditorMode">
+          <option value="">Leave unchanged</option>
+          <option value="owner">Owner</option>
+          <option value="tenant">Tenant</option>
+          <option value="public">Public</option>
+          <option value="custom">Custom</option>
+          <option value="inherit">Inherit</option>
+        </select>
+      </label>
+    </div>
+    <label class="sharingEditorWide">Provenance JSON
+      <textarea id="sharingEditorProvenance" rows="4"></textarea>
+    </label>
+    <div class="modalActions sharingEditorActions">
+      <button class="btn primary" id="sharingEditorSave">Save Sharing</button>
+      <button class="btn" id="sharingEditorReload">Reload</button>
+    </div>
+    <div class="sharingEditorSection">
+      <div class="sharingEditorTitle">Direct access entries</div>
+      <div id="sharingEditorAceList" class="sharingAceList"></div>
+    </div>
+    <div class="sharingEditorGrid">
+      <label>Effect
+        <select id="sharingAceEffect">
+          <option value="allow">Allow</option>
+          <option value="deny">Deny</option>
+        </select>
+      </label>
+      <label>Action
+        <select id="sharingAceAction">
+          <option value="read">Read</option>
+          <option value="write">Write</option>
+          <option value="share">Share</option>
+          <option value="audit">Audit</option>
+          <option value="use_in_context">Use in context</option>
+          <option value="manage">Manage</option>
+        </select>
+      </label>
+      <label>Principal type
+        <select id="sharingAcePrincipalType">
+          <option value="user">User</option>
+          <option value="group">Group</option>
+          <option value="role">Role</option>
+          <option value="persona">Persona</option>
+          <option value="tenant_users">Tenant users</option>
+          <option value="tenant_personas">Tenant personas</option>
+          <option value="public">Public</option>
+          <option value="service">Service</option>
+        </select>
+      </label>
+      <label>Principal ID
+        <input id="sharingAcePrincipalId" placeholder="local">
+      </label>
+    </div>
+    <label class="sharingEditorWide">Reason
+      <input id="sharingAceReason" placeholder="Admin sharing edit">
+    </label>
+    <div class="modalActions sharingEditorActions">
+      <button class="btn" id="sharingAceAdd">Add Entry</button>
+    </div>
+  `;
+
+  const visibilityEl = metaInfoSharingEditorEl.querySelector("#sharingEditorVisibility");
+  const modeEl = metaInfoSharingEditorEl.querySelector("#sharingEditorMode");
+  const provenanceEl = metaInfoSharingEditorEl.querySelector("#sharingEditorProvenance");
+  if (resource.visibility && visibilityEl) visibilityEl.value = resource.visibility;
+  if (resource.sharing_mode && modeEl) modeEl.value = resource.sharing_mode;
+  if (provenanceEl) provenanceEl.value = JSON.stringify(provenance, null, 2);
+
+  const aceList = metaInfoSharingEditorEl.querySelector("#sharingEditorAceList");
+  if (aceList) {
+    if (!directEntries.length) {
+      aceList.textContent = "No direct entries.";
+    } else {
+      directEntries.forEach((entry) => {
+        const row = document.createElement("div");
+        row.className = "sharingAceRow";
+        const label = document.createElement("span");
+        label.textContent = `${entry.effect} ${entry.action} for ${entry.principal_type}:${entry.principal_id}`;
+        const removeBtn = document.createElement("button");
+        removeBtn.className = "btn danger";
+        removeBtn.textContent = "Remove";
+        removeBtn.addEventListener("click", async () => {
+          await sharingJsonFetch(`/api/sharing/access-control/${encodeURIComponent(entry.id)}`, sharingRequestIdentity(), "DELETE");
+          await openSharingDiagnostics(resourceType, resourceId);
+        });
+        row.append(label, removeBtn);
+        aceList.appendChild(row);
+      });
+    }
+  }
+
+  metaInfoSharingEditorEl.querySelector("#sharingEditorReload")?.addEventListener("click", () => {
+    openSharingDiagnostics(resourceType, resourceId).catch(console.error);
+  });
+  metaInfoSharingEditorEl.querySelector("#sharingEditorSave")?.addEventListener("click", async () => {
+    let parsedProvenance = {};
+    try {
+      parsedProvenance = JSON.parse(provenanceEl?.value || "{}");
+    } catch (e) {
+      alert("Provenance must be valid JSON.");
+      return;
+    }
+    await sharingJsonFetch("/api/sharing/resource", {
+      ...sharingRequestIdentity(),
+      resource_type: resourceType,
+      resource_id: resourceId,
+      visibility: visibilityEl?.value || null,
+      sharing_mode: modeEl?.value || null,
+      provenance_json: JSON.stringify(parsedProvenance),
+    }, "PUT");
+    await openSharingDiagnostics(resourceType, resourceId);
+  });
+  metaInfoSharingEditorEl.querySelector("#sharingAceAdd")?.addEventListener("click", async () => {
+    const principalType = metaInfoSharingEditorEl.querySelector("#sharingAcePrincipalType")?.value || "user";
+    const principalId = metaInfoSharingEditorEl.querySelector("#sharingAcePrincipalId")?.value.trim() || "";
+    if (!principalId) {
+      alert("Principal ID is required.");
+      return;
+    }
+    await sharingJsonFetch("/api/sharing/access-control", {
+      ...sharingRequestIdentity(),
+      resource_type: resourceType,
+      resource_id: resourceId,
+      effect: metaInfoSharingEditorEl.querySelector("#sharingAceEffect")?.value || "allow",
+      action: metaInfoSharingEditorEl.querySelector("#sharingAceAction")?.value || "read",
+      principal_type: principalType,
+      principal_id: principalId,
+      reason: metaInfoSharingEditorEl.querySelector("#sharingAceReason")?.value || "Admin sharing edit",
+    });
+    await openSharingDiagnostics(resourceType, resourceId);
+  });
 }
 
 async function openSharingDiagnostics(resourceType, resourceId) {
@@ -1210,6 +1389,7 @@ async function openSharingDiagnostics(resourceType, resourceId) {
   });
   const data = await fetchJsonDebug(`/api/sharing/diagnostics?${params.toString()}`);
   openMetaInfo(`Sharing: ${resourceType} ${resourceId}`, data);
+  renderSharingDiagnosticsEditor(data);
 }
 
 // #endregion
