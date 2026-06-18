@@ -887,9 +887,52 @@ function closeLibraryModal() {
   libraryModalProjectId = null;
 }
 
+function formatLibraryDetailValue(value) {
+  if (value === null || value === undefined || value === "") return "";
+  if (typeof value === "object") {
+    try { return JSON.stringify(value, null, 2); } catch { return String(value); }
+  }
+  return String(value);
+}
+
+function appendLibraryDetailSection(container, title, rows) {
+  const liveRows = (rows || [])
+    .map(([label, value]) => [label, formatLibraryDetailValue(value)])
+    .filter(([, value]) => value);
+  if (!container || !liveRows.length) return;
+
+  const section = document.createElement("section");
+  section.className = "libraryDetailSection";
+  const heading = document.createElement("div");
+  heading.className = "libraryDetailHeading";
+  heading.textContent = title;
+  section.appendChild(heading);
+
+  const dl = document.createElement("dl");
+  dl.className = "libraryDetailList";
+  liveRows.forEach(([label, value]) => {
+    const dt = document.createElement("dt");
+    dt.textContent = label;
+    const dd = document.createElement("dd");
+    dd.textContent = value;
+    dl.appendChild(dt);
+    dl.appendChild(dd);
+  });
+  section.appendChild(dl);
+  container.appendChild(section);
+}
+
 function renderLibraryItemCard(item, fallbackScopeLabel = "") {
-  const card = document.createElement("div");
+  const card = document.createElement("details");
   card.className = "libraryCard";
+
+  const summary = document.createElement("summary");
+  summary.className = "libraryCardSummary";
+  const summaryTitle = document.createElement("span");
+  summaryTitle.className = "libraryCardSummaryTitle";
+  summaryTitle.textContent = item.title || item.id || "Untitled";
+  summary.appendChild(summaryTitle);
+  card.appendChild(summary);
 
   const body = document.createElement("div");
   body.className = "libraryCardBody";
@@ -967,6 +1010,33 @@ function renderLibraryItemCard(item, fallbackScopeLabel = "") {
   header.appendChild(left);
   header.appendChild(right);
   content.appendChild(header);
+
+  const details = document.createElement("div");
+  details.className = "libraryDetails";
+  const provenanceJson = identity.provenance_json || {};
+  const provenanceJsonHasKeys = provenanceJson && typeof provenanceJson === "object" && Object.keys(provenanceJson).length > 0;
+  appendLibraryDetailSection(details, "Scope", [
+    ["Scope", item.scope_type || "global"],
+    ["Scope label", item.scope_label || resolvedScopeLabel],
+    ["Scope ID", item.scope_id],
+    ["Scope UUID", item.scope_uuid],
+    ["Inherited from", item.inherited_from],
+  ]);
+  appendLibraryDetailSection(details, "Ownership", [
+    ["Tenant", identity.tenant_id],
+    ["Owner", identity.owner],
+    ["Visibility", identity.visibility],
+    ["Sharing", identity.sharing_mode],
+    ["Created by", identity.created_by],
+    ["Source principal", identity.source],
+    ["Resource type", identity.resource_type || item.sharing_resource_type],
+    ["Resource ID", item.sharing_resource_id || item.id],
+  ]);
+  appendLibraryDetailSection(details, "Provenance", [
+    ["Provenance", item.provenance],
+    ["Provenance JSON", provenanceJsonHasKeys ? provenanceJson : null],
+  ]);
+  if (details.children.length) content.appendChild(details);
 
   const meta = document.createElement("div");
   meta.className = "libraryMeta";

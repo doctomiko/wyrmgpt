@@ -1541,10 +1541,30 @@ button.libraryGroupHeader {
 
 .libraryCard {
   border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.libraryCardSummary {
+  display: flex;
+  align-items: center;
+  min-height: 38px;
+  padding: 8px 12px;
+  cursor: pointer;
+  list-style-position: inside;
+}
+
+.libraryCardSummaryTitle {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-weight: 600;
+}
+
 .libraryCardBody {
   display: flex;
   gap: 12px;
   align-items: flex-start;
+  padding: 0 12px 12px;
 }
 
 .libraryCardContent {
@@ -1569,11 +1589,6 @@ button.libraryGroupHeader {
   display: block;
 }
 
-  border-radius: 8px;
-  padding: 10px 12px;
-  background: rgba(255, 255, 255, 0.03);
-}
-
 .libraryCardHeader {
   display: flex;
   align-items: flex-start;
@@ -1590,6 +1605,44 @@ button.libraryGroupHeader {
   color: var(--muted);
   font-size: 0.88rem;
   margin-top: 2px;
+}
+
+.libraryDetails {
+  display: grid;
+  gap: 10px;
+  margin: 8px 0 10px;
+}
+
+.libraryDetailSection {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.libraryDetailHeading {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+
+.libraryDetailList {
+  display: grid;
+  grid-template-columns: minmax(96px, max-content) minmax(0, 1fr);
+  gap: 4px 10px;
+  margin: 0;
+  font-size: 0.83rem;
+}
+
+.libraryDetailList dt {
+  color: var(--muted);
+}
+
+.libraryDetailList dd {
+  margin: 0;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .libraryBadges {

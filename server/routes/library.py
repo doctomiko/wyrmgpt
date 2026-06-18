@@ -236,6 +236,7 @@ def _make_artifact_library_item(
         "scope_uuid": artifact_row.get("scope_uuid"),
         "updated_at": artifact_row.get("updated_at"),
         "inherited_from": inherited_from,
+        "provenance": artifact_row.get("provenance"),
         "badges": badges,
         "promote_targets": promote_targets,
         "promote_disabled_reason": promote_disabled_reason,
