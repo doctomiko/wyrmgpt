@@ -558,8 +558,20 @@ def _scope_access_defaults_conn(
             })
     return defaults
 
+def _access_resource_provenance(value: Any) -> dict:
+    if isinstance(value, dict):
+        return value
+    text = (value or "").strip() if isinstance(value, str) else ""
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
 def _access_resource_from_owned_row(resource_type: str, row: sqlite3.Row | dict, inherited_from: list[dict] | None = None) -> dict:
-    return {
+    resource = {
         "resource_type": resource_type,
         "resource_id": str(row["id"]),
         "tenant_id": row["tenant_id"] or "default",
@@ -568,11 +580,22 @@ def _access_resource_from_owned_row(resource_type: str, row: sqlite3.Row | dict,
         "visibility": row["visibility"],
         "inherited_from": inherited_from or [],
     }
+    if "sharing_mode" in row.keys():
+        resource["sharing_mode"] = row["sharing_mode"]
+    if "provenance_json" in row.keys():
+        resource["provenance_json"] = _access_resource_provenance(row["provenance_json"])
+    return resource
 
 def db_get_project_access_resource(project_id: int) -> dict | None:
     with db_session() as conn:
         row = conn.execute(
-            "SELECT id, tenant_id, owner_principal_type, owner_principal_id, visibility FROM projects WHERE id = ?",
+            """
+            SELECT
+                id, tenant_id, owner_principal_type, owner_principal_id,
+                visibility, sharing_mode, provenance_json
+            FROM projects
+            WHERE id = ?
+            """,
             (int(project_id),),
         ).fetchone()
         return _access_resource_from_owned_row("project", row) if row else None
@@ -623,7 +646,9 @@ def db_get_user_profile_access_resource(profile_id: str = "local") -> dict | Non
             return None
         row = conn.execute(
             """
-            SELECT id, tenant_id, owner_principal_type, owner_principal_id, visibility
+            SELECT
+                id, tenant_id, owner_principal_type, owner_principal_id,
+                visibility, sharing_mode, provenance_json
             FROM user_profiles
             WHERE id = ? OR user_id = ?
             ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END
@@ -640,6 +665,8 @@ def db_get_user_profile_access_resource(profile_id: str = "local") -> dict | Non
             "owner_principal_type": row["owner_principal_type"],
             "owner_principal_id": row["owner_principal_id"],
             "visibility": row["visibility"],
+            "sharing_mode": row["sharing_mode"],
+            "provenance_json": _access_resource_provenance(row["provenance_json"]),
             "inherited_from": [],
         }
 
@@ -1174,7 +1201,7 @@ def _principal_from_payload(
     return "user", "local"
 
 def _conversation_access_resource_from_row(row: sqlite3.Row | dict) -> dict:
-    return {
+    resource = {
         "resource_type": "conversation",
         "resource_id": row["id"],
         "tenant_id": row["tenant_id"] or "default",
@@ -1182,12 +1209,19 @@ def _conversation_access_resource_from_row(row: sqlite3.Row | dict) -> dict:
         "owner_principal_id": row["owner_principal_id"],
         "visibility": row["visibility"],
     }
+    if "sharing_mode" in row.keys():
+        resource["sharing_mode"] = row["sharing_mode"]
+    if "provenance_json" in row.keys():
+        resource["provenance_json"] = _access_resource_provenance(row["provenance_json"])
+    return resource
 
 def db_get_conversation_access_resource(conversation_id: str) -> dict | None:
     with db_session() as conn:
         row = conn.execute(
             """
-            SELECT id, tenant_id, owner_principal_type, owner_principal_id, visibility
+            SELECT
+                id, tenant_id, owner_principal_type, owner_principal_id,
+                visibility, sharing_mode, provenance_json
             FROM conversations
             WHERE id = ?
             """,
@@ -1204,6 +1238,8 @@ def db_get_message_access_resource(message_id: int) -> dict | None:
                 m.conversation_id,
                 m.tenant_id,
                 m.visibility,
+                m.sharing_mode,
+                m.provenance_json,
                 c.tenant_id AS conversation_tenant_id
             FROM messages m
             LEFT JOIN conversations c ON c.id = m.conversation_id
@@ -1221,6 +1257,8 @@ def db_get_message_access_resource(message_id: int) -> dict | None:
             "owner_principal_type": None,
             "owner_principal_id": None,
             "visibility": row["visibility"] or "inherit",
+            "sharing_mode": row["sharing_mode"],
+            "provenance_json": _access_resource_provenance(row["provenance_json"]),
             "inherited_from": [
                 {"resource_type": "conversation", "resource_id": row["conversation_id"]}
             ],
@@ -3219,6 +3257,8 @@ def db_get_memory_access_resource(memory_id: str) -> dict | None:
         "owner_principal_type": mem.get("owner_principal_type"),
         "owner_principal_id": mem.get("owner_principal_id"),
         "visibility": mem.get("visibility"),
+        "sharing_mode": mem.get("sharing_mode"),
+        "provenance_json": _access_resource_provenance(mem.get("provenance_json")),
         "inherited_from": inherited,
     }
 
