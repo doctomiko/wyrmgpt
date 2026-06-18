@@ -9327,6 +9327,20 @@ def db_list_global_artifacts(include_deleted: bool = False) -> list[dict]:
         _hydrate_artifact_content_text(art)
     return deduped
 
+
+def db_list_all_artifacts(include_deleted: bool = False) -> list[dict]:
+    with db_session() as conn:
+        sql = "SELECT * FROM artifacts"
+        params: list[object] = []
+        if not include_deleted:
+            sql += " WHERE (is_deleted IS NULL OR is_deleted = 0)"
+        rows = conn.execute(sql, params).fetchall()
+
+    out = [dict(r) for r in rows]
+    for art in out:
+        _hydrate_artifact_content_text(art)
+    return out
+
 # region Add/Upsert File-Artifact
 
 def db_artifact_file(file_row) -> str:

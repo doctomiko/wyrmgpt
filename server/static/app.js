@@ -246,7 +246,7 @@ let metaInfoSharingEditorEl = null;
 // Upload modal state:
 let uploadProjectIdForced = null;
 // Library modal state:
-let libraryModalMode = null; // "conversation" | "project" | "global"
+let libraryModalMode = null; // "conversation" | "project" | "global" | "all"
 let libraryModalConversationId = null;
 let libraryModalProjectId = null;
 const LIBRARY_COLLAPSE_THRESHOLD = 12;

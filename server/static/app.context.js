@@ -879,12 +879,86 @@ function openLibraryModalGlobal() {
   loadLibraryModal();
 }
 
+function openLibraryModalAll() {
+  libraryModalMode = "all";
+  libraryModalConversationId = null;
+  libraryModalProjectId = null;
+  loadLibraryModal();
+}
+
 function closeLibraryModal() {
   if (!libraryModal) return;
   libraryModal.classList.add("hidden");
   libraryModalMode = null;
   libraryModalConversationId = null;
   libraryModalProjectId = null;
+}
+
+function libraryScopeSelectValue() {
+  if (libraryModalMode === "project" && libraryModalProjectId != null) return `project:${libraryModalProjectId}`;
+  if (libraryModalMode === "all") return "all";
+  return "global";
+}
+
+function applyLibraryScopeSelectValue(value) {
+  const raw = String(value || "global");
+  if (raw === "all") {
+    libraryModalMode = "all";
+    libraryModalProjectId = null;
+    libraryModalConversationId = null;
+    return;
+  }
+  if (raw.startsWith("project:")) {
+    const projectId = Number(raw.slice("project:".length));
+    if (Number.isFinite(projectId)) {
+      libraryModalMode = "project";
+      libraryModalProjectId = projectId;
+      libraryModalConversationId = null;
+      return;
+    }
+  }
+  libraryModalMode = "global";
+  libraryModalProjectId = null;
+  libraryModalConversationId = null;
+}
+
+function updateLibraryScopeSelect() {
+  const select = document.getElementById("libraryScopeSelect");
+  const picker = select?.closest(".libraryScopePicker");
+  if (!select || !picker) return;
+
+  const showPicker = libraryModalMode !== "conversation";
+  picker.classList.toggle("hidden", !showPicker);
+  if (!showPicker) return;
+
+  select.innerHTML = "";
+  const globalOpt = document.createElement("option");
+  globalOpt.value = "global";
+  globalOpt.textContent = "Global";
+  select.appendChild(globalOpt);
+
+  const allOpt = document.createElement("option");
+  allOpt.value = "all";
+  allOpt.textContent = "All";
+  select.appendChild(allOpt);
+
+  (projectsCache || [])
+    .filter((project) => String(project?.visibility || "").toLowerCase() !== "global")
+    .forEach((project) => {
+      const opt = document.createElement("option");
+      opt.value = `project:${project.id}`;
+      opt.textContent = project.name || `Project ${project.id}`;
+      select.appendChild(opt);
+    });
+
+  select.value = libraryScopeSelectValue();
+  if (!select.dataset.boundLibraryScope) {
+    select.dataset.boundLibraryScope = "1";
+    select.addEventListener("change", () => {
+      applyLibraryScopeSelectValue(select.value);
+      loadLibraryModal();
+    });
+  }
 }
 
 function formatLibraryDetailValue(value) {
@@ -1405,12 +1479,15 @@ async function loadLibraryModal() {
   if (!libraryModal || !librarySectionsEl) return;
   hideAllTransientUI({ except: [libraryModal] });
   await ensureProjectsCacheLoaded();
+  updateLibraryScopeSelect();
 
   let url = "/api/library/global";
   if (libraryModalMode === "conversation" && libraryModalConversationId) {
     url = `/api/conversation/${encodeURIComponent(libraryModalConversationId)}/library`;
   } else if (libraryModalMode === "project" && libraryModalProjectId != null) {
     url = `/api/projects/${encodeURIComponent(libraryModalProjectId)}/library`;
+  } else if (libraryModalMode === "all") {
+    url = "/api/library/all";
   }
   const params = new URLSearchParams({
     principal_type: "user",

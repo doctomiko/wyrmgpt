@@ -14,10 +14,12 @@ from server.db import (
     db_list_projects, db_get_conversation_title,
     db_list_conversations, db_get_conversation_project_id,
     # File reading helpers
+    db_list_all_files,
     db_list_global_files,
     db_list_files_for_conversation,
     db_list_files_for_project,
     # Artifact reading helpers
+    db_list_all_artifacts,
     db_list_global_artifacts, 
     db_list_artifacts_for_conversation,
     db_list_artifacts_for_project,
@@ -219,6 +221,29 @@ def _plan_events_for_conversation(conversation_id: str, *, limit: int = 100) -> 
         if event_kind == "artifact_reading_plan" or "web" in event_kind or channel == "web":
             out.append(event)
     return out
+
+
+def _scope_group_title(scope_type: str) -> str:
+    if scope_type == "global":
+        return "Global scope"
+    if scope_type == "project":
+        return "Project scope"
+    if scope_type == "conversation":
+        return "Conversation scope"
+    return "Other scope"
+
+
+def _group_library_items_by_scope(items: list[RowDict]) -> list[RowDict]:
+    order = ["global", "project", "conversation", "other"]
+    groups: dict[str, RowDict] = {
+        key: {"key": key, "title": _scope_group_title(key), "items": []}
+        for key in order
+    }
+    for item in items:
+        scope_type = normalize_scope_type(item.get("scope_type"))
+        key = scope_type if scope_type in {"global", "project", "conversation"} else "other"
+        groups[key]["items"].append(item)
+    return [groups[key] for key in order if groups[key]["items"]]
 
 
 def _make_artifact_library_item(
@@ -565,6 +590,39 @@ def api_project_library(
                 _pack_library_section("artifacts", "Artifacts", artifact_groups),
                 _pack_library_section("reading_sessions", "Reading Sessions", session_groups),
                 _pack_library_section("plans", "Plans", plan_groups),
+            ],
+        }
+    )
+
+
+@app.get("/api/library/all")
+def api_all_library(
+    principal_type: str = "user",
+    principal_id: str = "local",
+    tenant_id: str = "default",
+    admin_view: bool = True,
+):
+    principal = _library_principal(principal_type=principal_type, principal_id=principal_id, tenant_id=tenant_id)
+    files = [
+        _make_file_library_item(f, inherited_from=normalize_scope_type(f.get("scope_type")))
+        for f in _visible_library_rows(db_list_all_files(), "file", principal=principal, admin_view=admin_view)
+    ]
+    artifacts = [
+        _make_artifact_library_item(a, inherited_from=normalize_scope_type(a.get("scope_type")))
+        for a in _visible_library_rows(db_list_all_artifacts(), "artifact", principal=principal, admin_view=admin_view)
+    ]
+    return JSONResponse(
+        {
+            "scope_type": "all",
+            "scope_id": "all",
+            "scope_label": "All Library",
+            "scope_note": "Showing all visible files and artifacts grouped by their current scope.",
+            "admin_view": admin_view,
+            "sections": [
+                _pack_library_section("files", "Files", _group_library_items_by_scope(files)),
+                _pack_library_section("artifacts", "Artifacts", _group_library_items_by_scope(artifacts)),
+                _pack_library_section("reading_sessions", "Reading Sessions", []),
+                _pack_library_section("plans", "Plans", []),
             ],
         }
     )

@@ -1660,6 +1660,23 @@ button.libraryGroupHeader {
   white-space: nowrap;
 }
 
+.libraryScopePicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+.libraryScopePicker.hidden {
+  display: none;
+}
+
+.libraryScopePicker select {
+  max-width: 220px;
+}
+
 .libraryBadge {
   font-size: 0.72rem;
   padding: 2px 6px;
