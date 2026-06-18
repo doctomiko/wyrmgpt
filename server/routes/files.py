@@ -170,6 +170,31 @@ def _augment_file_row_for_ui(file_row: RowDict) -> RowDict:
 
 # region Image Processing helpers - Descriptions and OCR
 
+def _stored_file_path(file_row: RowDict) -> Path:
+    return Path(str(file_row.get("path") or "")).expanduser()
+
+
+def _safe_is_existing_file(path: Path, *, file_id: str | None = None) -> bool:
+    try:
+        return path.exists() and path.is_file()
+    except OSError as e:
+        log_warn(
+            "Stored file path could not be stat'ed. file_id=%s path_prefix=%s errno=%s error_type=%s",
+            file_id or "",
+            str(path)[:500],
+            getattr(e, "errno", ""),
+            type(e).__name__,
+        )
+        return False
+
+
+def _require_existing_file_path(file_row: RowDict, *, not_found_message: str = "File content not found on disk.") -> Path:
+    path = _stored_file_path(file_row)
+    if not _safe_is_existing_file(path, file_id=str(file_row.get("id") or "")):
+        raise ValueError(not_found_message)
+    return path
+
+
 def _generate_image_caption_for_file(
     file_row: RowDict,
     *,
@@ -178,9 +203,7 @@ def _generate_image_caption_for_file(
 ) -> tuple[str, str]:
     providers = providers or runtime.PROVIDER_REGISTRY
     mime_type = (file_row.get("mime_type") or "").strip() or None
-    path = Path(str(file_row.get("path") or "")).expanduser()
-    if not path.exists() or not path.is_file():
-        raise ValueError("Image file content was not found on disk.")
+    path = _require_existing_file_path(file_row, not_found_message="Image file content was not found on disk.")
     if not is_image_file(path, mime_type):
         raise ValueError("Only image files can be described.")
 
@@ -254,9 +277,7 @@ def _generate_image_ocr_for_file(
 ) -> tuple[str | None, str]:
     providers = providers or runtime.PROVIDER_REGISTRY
     mime_type = (file_row.get("mime_type") or "").strip() or None
-    path = Path(str(file_row.get("path") or "")).expanduser()
-    if not path.exists() or not path.is_file():
-        raise ValueError("Image file content was not found on disk.")
+    path = _require_existing_file_path(file_row, not_found_message="Image file content was not found on disk.")
     if not is_image_file(path, mime_type):
         raise ValueError("Only image files can be OCR'd.")
 
@@ -627,9 +648,9 @@ def api_file_thumbnail(file_id: str):
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-    path = Path(str(file_row.get("path") or "")).expanduser()
+    path = _stored_file_path(file_row)
     mime_type = (file_row.get("mime_type") or "").strip() or None
-    if not path.exists() or not path.is_file():
+    if not _safe_is_existing_file(path, file_id=file_id):
         raise HTTPException(status_code=404, detail="File content not found on disk.")
     if not is_image_file(path, mime_type):
         raise HTTPException(status_code=400, detail="Only image files support thumbnail preview.")
@@ -683,9 +704,9 @@ def api_describe_image_file(file_id: str, body: FileImageDescribeRequest | None 
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-    path = Path(str(file_row.get("path") or "")).expanduser()
+    path = _stored_file_path(file_row)
     mime_type = (file_row.get("mime_type") or "").strip() or None
-    if not path.exists() or not path.is_file():
+    if not _safe_is_existing_file(path, file_id=file_id):
         raise HTTPException(status_code=404, detail="File content not found on disk.")
     if not is_image_file(path, mime_type):
         raise HTTPException(status_code=400, detail="Only image files can be described.")
@@ -725,9 +746,9 @@ def api_ocr_image_file(file_id: str, body: FileImageOcrRequest | None = None):
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-    path = Path(str(file_row.get("path") or "")).expanduser()
+    path = _stored_file_path(file_row)
     mime_type = (file_row.get("mime_type") or "").strip() or None
-    if not path.exists() or not path.is_file():
+    if not _safe_is_existing_file(path, file_id=file_id):
         raise HTTPException(status_code=404, detail="File content not found on disk.")
     if not is_image_file(path, mime_type):
         raise HTTPException(status_code=400, detail="Only image files can be OCR'd.")
