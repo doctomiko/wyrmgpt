@@ -38,7 +38,7 @@
       .identityListItem, .identityEmpty { padding: 6px 8px; border-radius: 6px; background: rgba(128,128,128,.10); font-size: .85rem; }
       .identityListItem { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: start; }
       .identityListItem.identityActiveUser { outline: 2px solid rgba(94, 179, 255, .82); background: rgba(94, 179, 255, .16); }
-      .identityListItem.identityEditingUser { outline: 2px solid rgba(142, 224, 162, .9); background: rgba(142, 224, 162, .14); }
+      .identityListItem.identityEditingItem, .identityListItem.identityEditingUser { outline: 2px solid rgba(142, 224, 162, .9); background: rgba(142, 224, 162, .14); }
       .identityListLabel { min-width: 0; overflow-wrap: anywhere; }
       .identityActiveBadge { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: rgba(94, 179, 255, .22); color: #d9eeff; font-size: .72rem; font-weight: 700; vertical-align: baseline; }
       .identityListActions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
@@ -461,8 +461,27 @@
     updateMenuVisibility();
   }
 
+  function applyEditingHighlight(listSelector, dataKey, editingId) {
+    const targetId = editingId == null ? null : Number(editingId);
+    document.querySelectorAll(`${listSelector} .identityListItem`).forEach((row) => {
+      const rowId = Number(row.dataset[dataKey] || 0);
+      const isEditing = targetId != null && rowId === targetId;
+      row.classList.toggle("identityEditingItem", isEditing);
+      if (isEditing) row.setAttribute("aria-current", "true");
+      else if (!row.classList.contains("identityActiveUser")) row.removeAttribute("aria-current");
+      const label = row.querySelector(".identityListLabel");
+      if (label && isEditing && !label.querySelector(".identityActiveBadge")) {
+        const badge = document.createElement("span");
+        badge.className = "identityActiveBadge";
+        badge.textContent = "Editing";
+        label.appendChild(badge);
+      }
+    });
+  }
+
   function renderTenants() {
     renderList("identityTenantList", state.tenants, (t) => `${t.name || `Tenant ${t.id}`} · ${t.kind || "local"}${t.is_enabled === 0 ? " · disabled" : ""}${t.reference_count ? ` · refs=${t.reference_count}` : ""}`, { edit: editTenant, toggle: toggleTenant, delete: hardDeleteTenant });
+    applyEditingHighlight("#identityTenantList", "tenantId", state.editingTenantId);
     $("identitySaveTenant") && ($("identitySaveTenant").textContent = state.editingTenantId ? "Update Tenant" : "Create Tenant");
     $("identityCancelTenantEdit")?.classList.toggle("hidden", !state.editingTenantId);
   }
@@ -482,6 +501,7 @@
       const isEditing = editingId != null && rowUserId === Number(editingId);
       const isHighlighted = highlightedId != null && rowUserId === Number(highlightedId);
       row.classList.toggle("identityActiveUser", isActive && editingId == null);
+      row.classList.toggle("identityEditingItem", isEditing);
       row.classList.toggle("identityEditingUser", isEditing);
       row.toggleAttribute("aria-current", isHighlighted);
       const label = row.querySelector(".identityListLabel");
@@ -502,6 +522,7 @@
     fillPersonaScopeSelect($("identityPersonaScope")?.value || "user");
     fillPromptFileSelect($("identityPersonaPromptFile")?.value || CUSTOM_PROMPT_VALUE);
     renderList("identityPersonaList", state.personas, (p) => `${p.name || `Persona ${p.id}`} · ${p.slug || "persona"} · ${p.persona_scope || "tenant"}${p.tenant_name ? ` · ${p.tenant_name}` : ""}${p.prompt_file ? ` · ${p.prompt_file}` : ""}${p.is_enabled === 0 ? " · disabled" : ""}${p.reference_count ? ` · refs=${p.reference_count}` : ""}`, { edit: editPersona, toggle: togglePersona, delete: hardDeletePersona });
+    applyEditingHighlight("#identityPersonaList", "personaId", state.editingPersonaId);
     $("identitySavePersona") && ($("identitySavePersona").textContent = state.editingPersonaId ? "Update Persona" : "Create Persona");
     $("identityCancelPersonaEdit")?.classList.toggle("hidden", !state.editingPersonaId);
   }

@@ -275,6 +275,13 @@
           Approximate Age
           <input id="identityAboutAge" placeholder="Approximate age" />
         </label>
+        <label>
+          Discord tag or user ID
+          <input id="identityUserDiscordId" placeholder="Discord user ID / slug" />
+        </label>
+        <label class="identityCheckboxRow identityAboutCheckbox">
+          <input id="identityUserPkIdentity" type="checkbox" /> Discord profile is a PK identity
+        </label>
         <label class="span2">
           Occupation
           <textarea id="identityAboutOccupation" rows="4" placeholder="Occupation"></textarea>
@@ -282,13 +289,6 @@
         <label class="span2">
           More About This User
           <textarea id="identityAboutMore" rows="8" placeholder="Anything enduring, useful, or identity-shaping about this user."></textarea>
-        </label>
-        <label>
-          Discord tag or user ID
-          <input id="identityUserDiscordId" placeholder="Discord user ID / slug" />
-        </label>
-        <label class="identityCheckboxRow identityAboutCheckbox">
-          <input id="identityUserPkIdentity" type="checkbox" /> Discord profile is a PK identity
         </label>
         <label class="span2">
           Profile Image
@@ -313,9 +313,10 @@
         #identityManageUserAboutPanel { grid-column: 1 / -1; }
         .identityAboutGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
         .identityAboutGrid label { display: grid; gap: 4px; }
-        .identityAboutCheckbox { align-self: end; min-height: 34px; }
+        .identityAboutCheckbox { align-self: end; justify-self: start; display: inline-flex !important; align-items: center; gap: 6px; min-height: 34px; width: auto; }
         .identityAboutGrid .span2 { grid-column: 1 / -1; }
         .identityAboutGrid input, .identityAboutGrid textarea { width: 100%; box-sizing: border-box; }
+        .identityAboutGrid .identityAboutCheckbox input { width: auto; }
         .identityAvatarPreviewRow { display: flex; align-items: center; gap: 10px; min-height: 44px; }
         .identityUserAvatarPreview, .identityUserAvatarThumb { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; background: rgba(128,128,128,.18); border: 1px solid rgba(128,128,128,.35); }
         .identityUserAvatarEmpty { font-size: .82rem; opacity: .72; }
