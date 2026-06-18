@@ -922,6 +922,148 @@ function appendLibraryDetailSection(container, title, rows) {
   container.appendChild(section);
 }
 
+function getLibraryMovableProjects() {
+  return (projectsCache || []).filter((p) => {
+    const visibilityOk = !p?.is_hidden;
+    return visibilityOk && String(p?.visibility || "").toLowerCase() !== "global";
+  });
+}
+
+function renderLibraryProjectPicker(defaultProjectId = "") {
+  const wrap = document.createElement("span");
+  wrap.className = "filesProjectPicker";
+  const select = document.createElement("select");
+  select.className = "filesProjectSelect";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "Project...";
+  select.appendChild(placeholder);
+  getLibraryMovableProjects().forEach((project) => {
+    const opt = document.createElement("option");
+    opt.value = String(project.id);
+    opt.textContent = project.name;
+    if (String(defaultProjectId || "") === String(project.id)) opt.selected = true;
+    select.appendChild(opt);
+  });
+  wrap.appendChild(select);
+  return { wrap, select };
+}
+
+async function refreshLibraryAndRelatedState() {
+  await loadLibraryModal();
+  try { await refreshContext(); } catch (e) { console.warn("refreshContext after library action failed", e); }
+  try { await refreshGlobalFilesState(); } catch (e) { console.warn("refreshGlobalFilesState after library action failed", e); }
+  if (libraryModalProjectId != null) {
+    try { await refreshProjectFilesState(libraryModalProjectId); } catch (e) { console.warn("refreshProjectFilesState after library action failed", e); }
+  }
+  if (libraryModalConversationId) {
+    try { await refreshConversationFilesState(libraryModalConversationId); } catch (e) { console.warn("refreshConversationFilesState after library action failed", e); }
+  }
+}
+
+async function moveLibraryItemToScope(item, target) {
+  const kind = item.item_kind === "file" ? "file" : item.item_kind === "artifact" ? "artifact" : "";
+  if (!kind) return false;
+  const label = target?.label || `Move ${kind}`;
+  const ok = confirm(`${label} "${item.title || item.id}"?`);
+  if (!ok) return false;
+  const url = kind === "file"
+    ? `/api/files/${encodeURIComponent(item.id)}/move_scope`
+    : `/api/artifacts/${encodeURIComponent(item.id)}/move_scope`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      scope_type: target.scope_type,
+      scope_id: target.scope_id ?? null,
+      scope_uuid: target.scope_uuid ?? null,
+    }),
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    alert(`Move failed (HTTP ${res.status}). ${txt.slice(0, 240)}`);
+    return false;
+  }
+  await refreshLibraryAndRelatedState();
+  return true;
+}
+
+async function renameLibraryFile(item) {
+  const current = item.title || item.id || "";
+  const next = prompt("Rename file:", current);
+  if (next === null) return false;
+  const name = String(next || "").trim();
+  if (!name || name === current) return false;
+  const res = await fetch(`/api/files/${encodeURIComponent(item.id)}/rename`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    alert(`Rename failed (HTTP ${res.status}). ${txt.slice(0, 240)}`);
+    return false;
+  }
+  await refreshLibraryAndRelatedState();
+  return true;
+}
+
+async function saveLibraryFileDescription(fileId, description) {
+  const res = await fetch(`/api/files/${encodeURIComponent(fileId)}/description`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ description: description || "" }),
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    alert(`Description save failed (HTTP ${res.status}). ${txt.slice(0, 240)}`);
+    return false;
+  }
+  await refreshLibraryAndRelatedState();
+  return true;
+}
+
+async function deleteLibraryFile(item) {
+  const ok = confirm(`Delete file "${item.title || item.id}" and its artifacts/chunks?`);
+  if (!ok) return false;
+  const res = await fetch(`/api/files/${encodeURIComponent(item.id)}`, { method: "DELETE" });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    alert(`Delete failed (HTTP ${res.status}). ${txt.slice(0, 240)}`);
+    return false;
+  }
+  await refreshLibraryAndRelatedState();
+  return true;
+}
+
+async function runLibraryFileImageAction(item, action, buttonEl = null) {
+  if (buttonEl) {
+    buttonEl.disabled = true;
+    buttonEl.dataset.originalText = buttonEl.textContent;
+    buttonEl.textContent = action === "ocr_image" ? "Reading..." : "Thinking...";
+  }
+  try {
+    const res = await fetch(`/api/files/${encodeURIComponent(item.id)}/${action}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ overwrite: true }),
+    });
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      alert(`Image action failed (HTTP ${res.status}). ${txt.slice(0, 300)}`);
+      return false;
+    }
+    await refreshLibraryAndRelatedState();
+    return true;
+  } finally {
+    if (buttonEl) {
+      buttonEl.disabled = false;
+      buttonEl.textContent = buttonEl.dataset.originalText || "Run";
+      delete buttonEl.dataset.originalText;
+    }
+  }
+}
+
 function renderLibraryItemCard(item, fallbackScopeLabel = "") {
   const card = document.createElement("details");
   card.className = "libraryCard";
@@ -1049,6 +1191,78 @@ function renderLibraryItemCard(item, fallbackScopeLabel = "") {
 
   const actions = document.createElement("div");
   actions.className = "libraryActions";
+
+  if (item.item_kind === "file") {
+    const descInput = document.createElement("input");
+    descInput.className = "filesDescInput";
+    descInput.type = "text";
+    descInput.placeholder = "Description / what this file is for...";
+    descInput.value = item.description || item.subtitle || "";
+    descInput.addEventListener("change", async () => {
+      await saveLibraryFileDescription(item.id, descInput.value);
+    });
+    actions.appendChild(descInput);
+
+    const renameBtn = document.createElement("button");
+    renameBtn.textContent = "Rename";
+    renameBtn.addEventListener("click", async () => {
+      await renameLibraryFile(item);
+    });
+    actions.appendChild(renameBtn);
+
+    if ((item.badges || []).includes("image")) {
+      const describeBtn = document.createElement("button");
+      describeBtn.textContent = (item.meta_json && item.meta_json.image_caption) ? "Refresh Summary" : "Describe Image";
+      describeBtn.addEventListener("click", async () => {
+        await runLibraryFileImageAction(item, "describe_image", describeBtn);
+      });
+      actions.appendChild(describeBtn);
+
+      const ocrBtn = document.createElement("button");
+      ocrBtn.textContent = (item.meta_json && item.meta_json.image_ocr_text) ? "Refresh OCR" : "Read Text";
+      ocrBtn.addEventListener("click", async () => {
+        await runLibraryFileImageAction(item, "ocr_image", ocrBtn);
+      });
+      actions.appendChild(ocrBtn);
+    }
+  }
+
+  if (item.item_kind === "file" || item.item_kind === "artifact") {
+    const picker = renderLibraryProjectPicker(item.scope_type === "project" ? item.scope_id : "");
+    actions.appendChild(picker.wrap);
+
+    const moveProjectBtn = document.createElement("button");
+    moveProjectBtn.textContent = "Move to Project";
+    moveProjectBtn.addEventListener("click", async () => {
+      const projectId = String(picker.select.value || "").trim();
+      if (!projectId) {
+        alert("Choose a target project first.");
+        return;
+      }
+      await moveLibraryItemToScope(item, {
+        label: "Move to Project",
+        scope_type: "project",
+        scope_id: Number(projectId),
+        scope_uuid: null,
+      });
+    });
+    actions.appendChild(moveProjectBtn);
+
+    if (item.scope_type !== "global") {
+      const makeGlobalBtn = document.createElement("button");
+      makeGlobalBtn.textContent = "Make Global";
+      makeGlobalBtn.addEventListener("click", async () => {
+        await moveLibraryItemToScope(item, {
+          label: "Make Global",
+          scope_type: "global",
+          scope_id: null,
+          scope_uuid: null,
+        });
+      });
+      actions.appendChild(makeGlobalBtn);
+    }
+  }
+
   if (item.sharing_resource_type && item.sharing_resource_id && typeof openSharingDiagnostics === "function") {
     const sharingBtn = document.createElement("button");
     sharingBtn.textContent = "Sharing...";
@@ -1062,38 +1276,16 @@ function renderLibraryItemCard(item, fallbackScopeLabel = "") {
     });
     actions.appendChild(sharingBtn);
   }
-  (item.promote_targets || []).forEach((target) => {
-    const btn = document.createElement("button");
-    btn.textContent = target.label || "Promote";
-    btn.addEventListener("click", async () => {
-      const what = item.item_kind === "file" ? "file" : "artifact";
-      const ok = confirm(`${target.label} “${item.title || item.id}”?`);
-      if (!ok) return;
 
-      const url = item.item_kind === "file"
-        ? `/api/files/${encodeURIComponent(item.id)}/move_scope`
-        : `/api/artifacts/${encodeURIComponent(item.id)}/move_scope`;
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          scope_type: target.scope_type,
-          scope_id: target.scope_id ?? null,
-          scope_uuid: target.scope_uuid ?? null,
-        }),
-      });
-      if (!res.ok) {
-        const txt = await res.text().catch(() => "");
-        alert(`Failed to promote ${what} (HTTP ${res.status}). ${txt.slice(0, 200)}`);
-        return;
-      }
-      try { await refreshContext(); } catch (e) { console.warn("refreshContext failed after librarian promote", e); }
-      try { await refreshConversationLists(); } catch (e) { console.warn("refreshConversationLists failed after librarian promote", e); }
-      try { await refreshGlobalFilesState(); } catch (e) { console.warn("refreshGlobalFilesState failed after librarian promote", e); }
-      await loadLibraryModal();
+  if (item.item_kind === "file") {
+    const deleteBtn = document.createElement("button");
+    deleteBtn.className = "filesDeleteBtn";
+    deleteBtn.textContent = "Delete";
+    deleteBtn.addEventListener("click", async () => {
+      await deleteLibraryFile(item);
     });
-    actions.appendChild(btn);
-  });
+    actions.appendChild(deleteBtn);
+  }
 
   if (!actions.children.length && item.promote_disabled_reason) {
     const hint = document.createElement("div");
@@ -1167,7 +1359,7 @@ function renderLibraryGroup(section, group, scopeKey, fallbackScopeLabel = "") {
 function renderLibraryModal(data) {
   if (!librarySectionsEl) return;
   librarySectionsEl.innerHTML = "";
-  libraryTitleEl.textContent = `${data?.scope_label || "Library"}`;
+  libraryTitleEl.textContent = `Manage Library - ${data?.scope_label || "Library"}`;
   libraryScopeNoteEl.textContent = data?.scope_note || "";
 
   const sections = Array.isArray(data?.sections) ? data.sections : [];

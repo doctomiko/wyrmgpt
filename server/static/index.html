@@ -19,9 +19,9 @@
           </button>
           <div id="topMenu" class="topMenu hidden">
             <button id="openMemory">Personalization…</button>
-            <button id="manageFilesTop">Manage Files…</button>
-            <button id="openLibraryTop">Library…</button>
-            <button id="artifactsDebugTop">View Artifacts</button>
+            <button id="manageFilesTop" class="hidden">Manage Files…</button>
+            <button id="openLibraryTop">Manage Library…</button>
+            <button id="artifactsDebugTop" class="hidden">View Artifacts</button>
             <label class="menuAdvanced">
               <input type="checkbox" id="searchChatHistoryToggle" />
               Search Chat History
@@ -369,7 +369,7 @@
     <div class="modalPanel" style="max-width: 980px;">
       <div class="modalHeader">
         <div>
-          <div class="modalTitle" id="libraryModalTitle">Library</div>
+          <div class="modalTitle" id="libraryModalTitle">Manage Library</div>
           <div id="libraryScopeNote" class="memHint"></div>
         </div>
         <label class="libraryAdminToggle">
@@ -419,9 +419,9 @@
     <hr />
     <button id="menuMoveTo">Move To…</button>
     <button id="menuExportTranscript">Export Transcript</button>
-    <button id="menuConvLibrary">Library…</button>
+    <button id="menuConvLibrary">Manage Library…</button>
     <!-- TODO normalize the naming conventions so all start with "menuConvViewFiles" between here and app.js -->
-    <button id="menuConvViewFiles">Manage files…</button>
+    <button id="menuConvViewFiles" class="hidden">Manage files…</button>
     <button id="menuConvCitations">View citations…</button>
     <button id="menuConvSharing">Sharing diagnostics…</button>
     <hr />
@@ -435,10 +435,10 @@
     <button id="projDesc">Edit description…</button>
     <button id="projSettings">Project Settings…</button>
     <button id="projToggleVisibility">Toggle Global Availability</button>
-    <button id="projLibrary">Library…</button>
+    <button id="projLibrary">Manage Library…</button>
     <hr />
     <button id="projUpload">Add files…</button>
-    <button id="projFiles">Manage files…</button>
+    <button id="projFiles" class="hidden">Manage files…</button>
     <button id="projCitations">View citations…</button>
     <button id="projSharing">Sharing diagnostics…</button>
     <hr />

@@ -22,6 +22,7 @@ from server.db import (
     db_list_artifacts_for_conversation,
     db_list_artifacts_for_project,
     db_list_artifact_reading_sessions,
+    list_conversation_artifact_events,
     db_replace_citations_for_message,
 )
 
@@ -173,6 +174,51 @@ def _make_session_library_item(session_row: RowDict, *, inherited_from: str, con
         "badges": [session_row.get("status") or "active"],
         "promote_targets": [],
     }
+
+
+def _make_plan_library_item(event_row: RowDict, *, conversation_title: str | None = None) -> RowDict:
+    event_kind = (event_row.get("event_kind") or "plan").strip()
+    channel = (event_row.get("retrieval_channel") or "").strip()
+    meta = [
+        f"Kind: {event_kind}",
+        f"Artifact: {event_row.get('artifact_id') or 'unknown'}",
+    ]
+    if channel:
+        meta.append(f"Channel: {channel}")
+    if conversation_title:
+        meta.append(f"Conversation: {conversation_title}")
+    if event_row.get("inclusion_kind"):
+        meta.append(f"Inclusion: {event_row.get('inclusion_kind')}")
+    if event_row.get("note_text"):
+        meta.append(f"Note: {event_row.get('note_text')}")
+    if event_row.get("meta_json"):
+        meta.append(f"Plan JSON: {event_row.get('meta_json')}")
+    return {
+        "item_kind": "plan",
+        "id": str(event_row.get("id")),
+        "title": event_row.get("title") or event_row.get("note_text") or event_kind.replace("_", " ").title(),
+        "subtitle": event_row.get("note_text") or "",
+        "meta": meta,
+        "scope_type": "conversation",
+        "scope_uuid": event_row.get("conversation_id"),
+        "scope_label": conversation_title or event_row.get("conversation_id"),
+        "updated_at": event_row.get("created_at"),
+        "inherited_from": "conversation",
+        "badges": [event_kind.replace("_", " ")],
+        "promote_targets": [],
+        "provenance": event_row.get("retrieval_channel") or event_kind,
+    }
+
+
+def _plan_events_for_conversation(conversation_id: str, *, limit: int = 100) -> list[RowDict]:
+    events = list_conversation_artifact_events(conversation_id, limit=limit)
+    out: list[RowDict] = []
+    for event in events:
+        event_kind = (event.get("event_kind") or "").strip().lower()
+        channel = (event.get("retrieval_channel") or "").strip().lower()
+        if event_kind == "artifact_reading_plan" or "web" in event_kind or channel == "web":
+            out.append(event)
+    return out
 
 
 def _make_artifact_library_item(
@@ -429,6 +475,9 @@ def api_conversation_library(
     session_groups = [
         {"key": "conversation", "title": "Reading sessions in this conversation", "items": [_make_session_library_item(s, inherited_from="conversation") for s in db_list_artifact_reading_sessions(conversation_id=conversation_id, limit=200)]},
     ]
+    plan_groups = [
+        {"key": "conversation", "title": "Plans in this conversation", "items": [_make_plan_library_item(e, conversation_title=conversation_title) for e in _plan_events_for_conversation(conversation_id, limit=200)]},
+    ]
     return JSONResponse(
         {
             "scope_type": "conversation",
@@ -440,6 +489,7 @@ def api_conversation_library(
                 _pack_library_section("files", "Files", files_groups),
                 _pack_library_section("artifacts", "Artifacts", artifact_groups),
                 _pack_library_section("reading_sessions", "Reading Sessions", session_groups),
+                _pack_library_section("plans", "Plans", plan_groups),
             ],
         }
     )
@@ -494,6 +544,15 @@ def api_project_library(
     session_groups = [
         {"key": "project_sessions", "title": "Reading sessions across this project", "items": [_make_session_library_item(s, inherited_from="conversation", conversation_title=conv_title_by_id.get(s.get("conversation_id"))) for s in db_list_artifact_reading_sessions(project_id=project_id, limit=500)]},
     ]
+    plan_items: list[RowDict] = []
+    for conv in convs:
+        plan_items.extend(
+            _make_plan_library_item(e, conversation_title=conv_title_by_id.get(conv["id"]))
+            for e in _plan_events_for_conversation(conv["id"], limit=50)
+        )
+    plan_groups = [
+        {"key": "project_plans", "title": "Plans across this project", "items": plan_items[:500]},
+    ]
     return JSONResponse(
         {
             "scope_type": "project",
@@ -505,6 +564,7 @@ def api_project_library(
                 _pack_library_section("files", "Files", files_groups),
                 _pack_library_section("artifacts", "Artifacts", artifact_groups),
                 _pack_library_section("reading_sessions", "Reading Sessions", session_groups),
+                _pack_library_section("plans", "Plans", plan_groups),
             ],
         }
     )
@@ -529,6 +589,7 @@ def api_global_library(
                 _pack_library_section("files", "Files", [{"key": "global", "title": "Global scope", "items": [_make_file_library_item(f, inherited_from="global") for f in _visible_library_rows(db_list_global_files(), "file", principal=principal, admin_view=admin_view)]}]),
                 _pack_library_section("artifacts", "Artifacts", [{"key": "global", "title": "Global scope", "items": [_make_artifact_library_item(a, inherited_from="global") for a in _visible_library_rows(db_list_global_artifacts(), "artifact", principal=principal, admin_view=admin_view)]}]),
                 _pack_library_section("reading_sessions", "Reading Sessions", []),
+                _pack_library_section("plans", "Plans", []),
             ],
         }
     )
